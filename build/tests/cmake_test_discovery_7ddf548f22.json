@@ -1,0 +1,103 @@
+{
+  "tests": 17,
+  "name": "AllTests",
+  "testsuites": [
+    {
+      "name": "LogRecordCodecTest",
+      "tests": 9,
+      "testsuite": [
+        {
+          "name": "EncodeAndDecodePutRecord",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/log_record_test.cpp",
+          "line": 10
+        },
+        {
+          "name": "EncodeAndDecodeDeleteRecord",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/log_record_test.cpp",
+          "line": 34
+        },
+        {
+          "name": "RejectZeroSequence",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/log_record_test.cpp",
+          "line": 55
+        },
+        {
+          "name": "RejectDeleteRecordWithValue",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/log_record_test.cpp",
+          "line": 69
+        },
+        {
+          "name": "DetectChecksumCorruption",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/log_record_test.cpp",
+          "line": 83
+        },
+        {
+          "name": "DetectTruncatedBuffer",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/log_record_test.cpp",
+          "line": 104
+        },
+        {
+          "name": "RejectUnknownRecordType",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/log_record_test.cpp",
+          "line": 125
+        },
+        {
+          "name": "NullOutputBufferIsRejected",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/log_record_test.cpp",
+          "line": 146
+        },
+        {
+          "name": "NullRecordOutputIsRejected",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/log_record_test.cpp",
+          "line": 158
+        }
+      ]
+    },
+    {
+      "name": "WALWriterTest",
+      "tests": 8,
+      "testsuite": [
+        {
+          "name": "OpenWithEmptyPathIsRejected",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/wal_writer_test.cpp",
+          "line": 64
+        },
+        {
+          "name": "AppendWithoutOpenFails",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/wal_writer_test.cpp",
+          "line": 71
+        },
+        {
+          "name": "OpenAppendSyncCloseWorks",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/wal_writer_test.cpp",
+          "line": 79
+        },
+        {
+          "name": "AppendModeKeepsExistingContent",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/wal_writer_test.cpp",
+          "line": 122
+        },
+        {
+          "name": "TruncateModeReplacesOldContent",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/wal_writer_test.cpp",
+          "line": 170
+        },
+        {
+          "name": "CloseWithoutOpenIsOk",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/wal_writer_test.cpp",
+          "line": 208
+        },
+        {
+          "name": "SyncWithoutOpenFails",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/wal_writer_test.cpp",
+          "line": 214
+        },
+        {
+          "name": "EncodedBytesMatchFileSizeGrowth",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/wal\/wal_writer_test.cpp",
+          "line": 221
+        }
+      ]
+    }
+  ]
+}

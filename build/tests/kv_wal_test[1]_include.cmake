@@ -1,0 +1,5 @@
+if(EXISTS "/Users/aiziqi/Desktop/KV_/build/tests/kv_wal_test[1]_tests.cmake")
+  include("/Users/aiziqi/Desktop/KV_/build/tests/kv_wal_test[1]_tests.cmake")
+else()
+  add_test(kv_wal_test_NOT_BUILT kv_wal_test_NOT_BUILT)
+endif()

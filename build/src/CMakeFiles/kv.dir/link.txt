@@ -1,0 +1,2 @@
+/usr/bin/ar qc libkv.a CMakeFiles/kv.dir/common/status.cpp.o CMakeFiles/kv.dir/common/slice.cpp.o CMakeFiles/kv.dir/memtable/memtable.cpp.o CMakeFiles/kv.dir/wal/log_record.cpp.o CMakeFiles/kv.dir/wal/wal_writer.cpp.o CMakeFiles/kv.dir/wal/wal_reader.cpp.o CMakeFiles/kv.dir/engine/recovery.cpp.o
+/usr/bin/ranlib libkv.a

@@ -1,0 +1,32 @@
+{
+  "tests": 4,
+  "name": "AllTests",
+  "testsuites": [
+    {
+      "name": "RecoveryTest",
+      "tests": 4,
+      "testsuite": [
+        {
+          "name": "ReplayWALRestoresLatestState",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/engine\/recovery_test.cpp",
+          "line": 27
+        },
+        {
+          "name": "ReplayMissingFileFails",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/engine\/recovery_test.cpp",
+          "line": 56
+        },
+        {
+          "name": "NullMemTableIsRejected",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/engine\/recovery_test.cpp",
+          "line": 64
+        },
+        {
+          "name": "ReplayReturnsMaxSequence",
+          "file": "\/Users\/aiziqi\/Desktop\/KV_\/tests\/engine\/recovery_test.cpp",
+          "line": 71
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+/usr/bin/c++ -g -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/kv_wal_test.dir/wal/log_record_test.cpp.o CMakeFiles/kv_wal_test.dir/wal/wal_writer_test.cpp.o CMakeFiles/kv_wal_test.dir/wal/wal_reader_test.cpp.o -o kv_wal_test  ../src/libkv.a ../lib/libgtest_main.a ../lib/libgtest.a
