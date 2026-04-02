@@ -6,6 +6,8 @@ add_library(kv
   wal/wal_writer.cpp
   wal/wal_reader.cpp
   engine/recovery.cpp
+  engine/db.cpp
+  engine/db_impl.cpp
 )
 
 target_include_directories(kv

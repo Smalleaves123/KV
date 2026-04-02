@@ -42,6 +42,7 @@ target_include_directories(kv_wal_test
 )
 
 add_executable(kv_engine_test
+  engine/db_test.cpp
   engine/recovery_test.cpp
 )
 
