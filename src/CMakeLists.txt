@@ -5,6 +5,13 @@ add_library(kv
   wal/log_record.cpp
   wal/wal_writer.cpp
   wal/wal_reader.cpp
+  net/command.cpp
+  net/command_parser.cpp
+  net/protocol.cpp
+  net/codec.cpp
+  net/connection.cpp
+  net/server.cpp
+  net/session.cpp
   version/manifest.cpp
   engine/recovery.cpp
   engine/write_batch.cpp

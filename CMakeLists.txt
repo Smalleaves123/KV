@@ -18,6 +18,10 @@ endif()
 
 add_subdirectory(src)
 
+if(KV_BUILD_APPS)
+  add_subdirectory(apps)
+endif()
+
 if(KV_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
