@@ -5,7 +5,9 @@ add_library(kv
   wal/log_record.cpp
   wal/wal_writer.cpp
   wal/wal_reader.cpp
+  version/manifest.cpp
   engine/recovery.cpp
+  engine/write_batch.cpp
   engine/db.cpp
   engine/db_impl.cpp
 )

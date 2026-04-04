@@ -43,6 +43,7 @@ target_include_directories(kv_wal_test
 
 add_executable(kv_engine_test
   engine/db_test.cpp
+  engine/write_batch_test.cpp
   engine/recovery_test.cpp
 )
 
@@ -57,7 +58,23 @@ target_include_directories(kv_engine_test
     ${PROJECT_SOURCE_DIR}/include
 )
 
+add_executable(kv_version_test
+  version/manifest_test.cpp
+)
+
+target_link_libraries(kv_version_test
+  PRIVATE
+    kv
+    GTest::gtest_main
+)
+
+target_include_directories(kv_version_test
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+)
+
 include(GoogleTest)
 gtest_discover_tests(kv_memtable_test)
 gtest_discover_tests(kv_wal_test)
 gtest_discover_tests(kv_engine_test)
+gtest_discover_tests(kv_version_test)

@@ -92,6 +92,12 @@ Status MemTable::Get(const Slice& key, std::string* value) const {
   return Status::OK();
 }
 
+void MemTable::Clear() {
+  table_.Clear();
+  next_seq_ = 1;
+  memory_usage_ = 0;
+}
+
 std::string MemTable::DebugString() const {
   std::ostringstream oss;
 

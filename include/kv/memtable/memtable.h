@@ -84,6 +84,7 @@ class MemTable {
   }
 
   size_t ApproximateMemoryUsage() const noexcept { return memory_usage_; }
+  void Clear();
 
   Iterator NewIterator() const { return Iterator(table_.Begin()); }
 
