@@ -262,10 +262,24 @@ TEST_F(ServerIntegrationTest, EndToEndCommandFlow) {
   ASSERT_TRUE(ReadResp(fd, &resp));
   EXPECT_EQ(resp, "-ERRunknown command\r\n");
 
+  ASSERT_TRUE(SendLine(fd, "BEGIN"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_EQ(resp, "+OK\r\n");
+
+  ASSERT_TRUE(SendLine(fd, "SET tx 1"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_EQ(resp, "+OK\r\n");
+
+  ASSERT_TRUE(SendLine(fd, "EXEC"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_EQ(resp, "+OK\r\n");
+
   const ServerStats stats = server_.GetStats();
   EXPECT_GE(stats.total_connections, 1U);
   EXPECT_GE(stats.active_connections, 1U);
-  EXPECT_GE(stats.total_requests, 5U);
+  EXPECT_GE(stats.total_requests, 8U);
+  EXPECT_GE(stats.txn_begin, 1U);
+  EXPECT_GE(stats.txn_commit, 1U);
 
   (void)::close(fd);
 }

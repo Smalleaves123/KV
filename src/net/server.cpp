@@ -23,6 +23,10 @@ Server::Server()
       total_connections_(0),
       active_connections_(0),
       total_requests_(0),
+      txn_begin_(0),
+      txn_commit_(0),
+      txn_abort_(0),
+      txn_conflict_(0),
       accept_thread_(),
       workers_mu_(),
       workers_() {}
@@ -91,6 +95,10 @@ ServerStats Server::GetStats() const noexcept {
   stats.total_connections = total_connections_.load();
   stats.active_connections = active_connections_.load();
   stats.total_requests = total_requests_.load();
+  stats.txn_begin = txn_begin_.load();
+  stats.txn_commit = txn_commit_.load();
+  stats.txn_abort = txn_abort_.load();
+  stats.txn_conflict = txn_conflict_.load();
   return stats;
 }
 
@@ -174,6 +182,24 @@ void Server::HandleClient(int client_fd, DB* db) {
     total_requests_.fetch_add(1);
 
     const std::string resp = session.HandleLine(line);
+    switch (session.LastTxnEvent()) {
+      case TxnEvent::kBegin:
+        txn_begin_.fetch_add(1);
+        break;
+      case TxnEvent::kCommit:
+        txn_commit_.fetch_add(1);
+        break;
+      case TxnEvent::kAbort:
+        txn_abort_.fetch_add(1);
+        break;
+      case TxnEvent::kConflict:
+        txn_conflict_.fetch_add(1);
+        break;
+      case TxnEvent::kNone:
+      default:
+        break;
+    }
+
     s = conn.WriteAll(resp);
     if (!s.ok()) {
       break;

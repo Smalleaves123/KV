@@ -17,6 +17,9 @@ add_library(kv
   engine/write_batch.cpp
   engine/db.cpp
   engine/db_impl.cpp
+  cache/cache.cpp
+  cache/lru_cache.cpp
+  cache/lfu_cache.cpp
 )
 
 target_include_directories(kv

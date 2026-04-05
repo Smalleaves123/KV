@@ -18,6 +18,10 @@ struct ServerStats {
   uint64_t total_connections = 0;
   uint64_t active_connections = 0;
   uint64_t total_requests = 0;
+  uint64_t txn_begin = 0;
+  uint64_t txn_commit = 0;
+  uint64_t txn_abort = 0;
+  uint64_t txn_conflict = 0;
 };
 
 class Server {
@@ -46,6 +50,10 @@ class Server {
   std::atomic<uint64_t> total_connections_;
   std::atomic<uint64_t> active_connections_;
   std::atomic<uint64_t> total_requests_;
+  std::atomic<uint64_t> txn_begin_;
+  std::atomic<uint64_t> txn_commit_;
+  std::atomic<uint64_t> txn_abort_;
+  std::atomic<uint64_t> txn_conflict_;
 
   std::thread accept_thread_;
   std::mutex workers_mu_;

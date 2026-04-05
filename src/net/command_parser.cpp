@@ -37,6 +37,9 @@ Command CommandParser::ParseLine(const std::string& line) {
   else if (head == "SET") cmd.type = CommandType::kSet;
   else if (head == "DEL") cmd.type = CommandType::kDel;
   else if (head == "MGET") cmd.type = CommandType::kMGet;
+  else if (head == "BEGIN") cmd.type = CommandType::kBegin;
+  else if (head == "EXEC") cmd.type = CommandType::kExec;
+  else if (head == "ABORT") cmd.type = CommandType::kAbort;
   else cmd.type = CommandType::kInvalid;
 
   return cmd;

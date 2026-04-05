@@ -107,5 +107,65 @@ TEST(SessionTest, HandleLineParsesAndExecutes) {
   EXPECT_EQ(session.HandleLine("PING"), "+PONG\r\n");
 }
 
+TEST(SessionTest, TransactionBeginExecFlow) {
+  auto db = OpenDBForTest("txn_flow");
+  Session session(db.get());
+
+  EXPECT_EQ(session.HandleLine("BEGIN"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("SET a 1"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("GET a"), "$1\r\n1\r\n");
+  EXPECT_EQ(session.HandleLine("EXEC"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("GET a"), "$1\r\n1\r\n");
+}
+
+TEST(SessionTest, TransactionAbortDropsWrites) {
+  auto db = OpenDBForTest("txn_abort");
+  Session session(db.get());
+
+  EXPECT_EQ(session.HandleLine("BEGIN"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("SET k v"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("ABORT"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("GET k"), "$-1\r\n");
+}
+
+TEST(SessionTest, TransactionProtocolErrors) {
+  auto db = OpenDBForTest("txn_errors");
+  Session session(db.get());
+
+  EXPECT_EQ(session.HandleLine("EXEC"), "-ERRno active transaction\r\n");
+  EXPECT_EQ(session.HandleLine("ABORT"), "-ERRno active transaction\r\n");
+  EXPECT_EQ(session.HandleLine("BEGIN"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("BEGIN"), "-ERRtransaction already active\r\n");
+  EXPECT_EQ(session.HandleLine("EXEC"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("EXEC"), "-ERRno active transaction\r\n");
+}
+
+TEST(SessionTest, TransactionConflictResetsSessionState) {
+  auto db = OpenDBForTest("txn_conflict");
+  Session s1(db.get());
+  Session s2(db.get());
+
+  EXPECT_EQ(s1.HandleLine("BEGIN"), "+OK\r\n");
+  EXPECT_EQ(s2.HandleLine("BEGIN"), "+OK\r\n");
+  EXPECT_EQ(s1.HandleLine("SET k v1"), "+OK\r\n");
+  EXPECT_EQ(s2.HandleLine("SET k v2"), "+OK\r\n");
+  EXPECT_EQ(s2.HandleLine("EXEC"), "+OK\r\n");
+
+  EXPECT_EQ(s1.HandleLine("EXEC"), "-ERRtransaction conflict\r\n");
+  EXPECT_EQ(s1.HandleLine("EXEC"), "-ERRno active transaction\r\n");
+}
+
+TEST(SessionTest, SessionDestructorRollsBackActiveTransaction) {
+  auto db = OpenDBForTest("txn_destructor_rollback");
+  {
+    Session session(db.get());
+    EXPECT_EQ(session.HandleLine("BEGIN"), "+OK\r\n");
+    EXPECT_EQ(session.HandleLine("SET ghost 1"), "+OK\r\n");
+  }
+
+  Session reader(db.get());
+  EXPECT_EQ(reader.HandleLine("GET ghost"), "$-1\r\n");
+}
+
 }  // namespace
 }  // namespace kv::net

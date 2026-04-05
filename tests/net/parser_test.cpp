@@ -36,5 +36,19 @@ TEST(CommandParserTest, UnknownCommandIsInvalid) {
   EXPECT_EQ(cmd.args[1], "b");
 }
 
+TEST(CommandParserTest, ParsesTransactionCommands) {
+  Command begin = CommandParser::ParseLine("BEGIN");
+  EXPECT_EQ(begin.type, CommandType::kBegin);
+  EXPECT_TRUE(begin.args.empty());
+
+  Command exec = CommandParser::ParseLine("EXEC");
+  EXPECT_EQ(exec.type, CommandType::kExec);
+  EXPECT_TRUE(exec.args.empty());
+
+  Command abort = CommandParser::ParseLine("ABORT");
+  EXPECT_EQ(abort.type, CommandType::kAbort);
+  EXPECT_TRUE(abort.args.empty());
+}
+
 }  // namespace
 }  // namespace kv::net

@@ -62,6 +62,11 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
       return Array(items);
     }
 
+    case CommandType::kBegin:
+    case CommandType::kExec:
+    case CommandType::kAbort:
+      return Error("transaction commands must be handled by session");
+
     case CommandType::kInvalid:
     default:
       return Error("unknown command");

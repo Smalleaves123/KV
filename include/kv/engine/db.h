@@ -1,11 +1,14 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 
+#include "kv/cache/cache.h"
 #include "kv/common/slice.h"
 #include "kv/common/status.h"
+#include "kv/engine/transaction.h"
 
 namespace kv {
 
@@ -33,6 +36,18 @@ struct DBOptions {
 
   // 如果为空，默认使用 db_path + "/MANIFEST"
   std::string manifest_path;
+
+  // 是否开启 SST 读缓存
+  bool cache_enabled = false;
+
+  // 缓存策略（LRU/LFU）
+  CachePolicy cache_policy = CachePolicy::kLRU;
+
+  // 缓存容量（条目数）
+  size_t cache_capacity = 1024;
+
+  // 默认 TTL（毫秒），0 表示不过期
+  int64_t cache_default_ttl_ms = 0;
 };
 
 struct ReadOptions {
@@ -63,6 +78,11 @@ class DB {
 
   virtual Status Write(const WriteOptions& options,
                        const WriteBatch& batch) = 0;
+
+  virtual Status BeginTransaction(const TxnOptions& options,
+                                  std::unique_ptr<Transaction>* txn) = 0;
+
+  virtual Status GetCacheStats(CacheStats* stats) const = 0;
 
   virtual const Snapshot* GetSnapshot() = 0;
   virtual Status ReleaseSnapshot(const Snapshot* snapshot) = 0;

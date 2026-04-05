@@ -10,6 +10,7 @@
 #include <mutex>
 #include <sstream>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -30,6 +31,146 @@ class SnapshotImpl final : public Snapshot {
 
  private:
   uint64_t seq_;
+};
+
+class OCCTransaction final : public Transaction {
+ public:
+  OCCTransaction(DBImpl* db, TxnOptions options, uint64_t start_seq)
+      : db_(db),
+        options_(options),
+        start_seq_(start_seq),
+        active_(true),
+        read_set_(),
+        writes_(),
+        write_index_() {}
+
+  ~OCCTransaction() override {
+    if (active_) {
+      (void)Rollback();
+    }
+  }
+
+  Status Get(const Slice& key, std::string* value) override {
+    if (!active_) {
+      return Status::InvalidArgument("transaction already finished");
+    }
+    if (db_ == nullptr) {
+      return Status::IOError("transaction db is null");
+    }
+    Status s = db_->TxnValidateKey(key);
+    if (!s.ok()) {
+      return s;
+    }
+    if (value == nullptr) {
+      return Status::InvalidArgument("value output pointer is null");
+    }
+
+    const std::string key_str = key.ToString();
+    auto it = write_index_.find(key_str);
+    if (it != write_index_.end()) {
+      const auto& op = writes_[it->second];
+      if (op.type == WriteBatch::ValueType::kDelete) {
+        return Status::NotFound("key deleted");
+      }
+      *value = op.value;
+      return Status::OK();
+    }
+
+    s = db_->TxnGetAtSequence(key, start_seq_, value);
+    read_set_.insert(key_str);
+    return s;
+  }
+
+  Status Put(const Slice& key, const Slice& value) override {
+    if (!active_) {
+      return Status::InvalidArgument("transaction already finished");
+    }
+    if (db_ == nullptr) {
+      return Status::IOError("transaction db is null");
+    }
+    Status s = db_->TxnValidateKey(key);
+    if (!s.ok()) {
+      return s;
+    }
+
+    WriteBatch::Operation op;
+    op.type = WriteBatch::ValueType::kPut;
+    op.key = key.ToString();
+    op.value = value.ToString();
+
+    auto [it, inserted] = write_index_.insert({op.key, writes_.size()});
+    if (inserted) {
+      writes_.push_back(std::move(op));
+    } else {
+      writes_[it->second] = std::move(op);
+    }
+    return Status::OK();
+  }
+
+  Status Delete(const Slice& key) override {
+    if (!active_) {
+      return Status::InvalidArgument("transaction already finished");
+    }
+    if (db_ == nullptr) {
+      return Status::IOError("transaction db is null");
+    }
+    Status s = db_->TxnValidateKey(key);
+    if (!s.ok()) {
+      return s;
+    }
+
+    WriteBatch::Operation op;
+    op.type = WriteBatch::ValueType::kDelete;
+    op.key = key.ToString();
+    op.value.clear();
+
+    auto [it, inserted] = write_index_.insert({op.key, writes_.size()});
+    if (inserted) {
+      writes_.push_back(std::move(op));
+    } else {
+      writes_[it->second] = std::move(op);
+    }
+    return Status::OK();
+  }
+
+  Status Commit() override {
+    if (!active_) {
+      return Status::InvalidArgument("transaction already finished");
+    }
+    if (db_ == nullptr) {
+      return Status::IOError("transaction db is null");
+    }
+
+    Status s = db_->TxnCommitOCC(options_, start_seq_, read_set_, writes_);
+    active_ = false;
+    db_->TxnUnregister(this);
+    return s;
+  }
+
+  Status Rollback() override {
+    if (!active_) {
+      return Status::InvalidArgument("transaction already finished");
+    }
+    if (db_ == nullptr) {
+      return Status::IOError("transaction db is null");
+    }
+
+    active_ = false;
+    read_set_.clear();
+    writes_.clear();
+    write_index_.clear();
+    db_->TxnUnregister(this);
+    return Status::OK();
+  }
+
+ private:
+  DBImpl* db_;
+  TxnOptions options_;
+  uint64_t start_seq_;
+  bool active_;
+  std::unordered_set<std::string> read_set_;
+  std::vector<WriteBatch::Operation> writes_;
+  std::unordered_map<std::string, size_t> write_index_;
 };
 
 Status RequireOpen(bool is_open) {
@@ -193,14 +334,18 @@ DBImpl::DBImpl(DBOptions options)
     : options_(std::move(options)),
       wal_path_(),
       sst_dir_(),
+      manifest_path_(),
       sst_files_(),
       memtable_(),
       wal_writer_(),
       next_seq_(1),
       next_file_number_(1),
       open_(false),
+      active_transactions_(),
+      latest_key_seq_(),
       active_snapshots_(),
-      owned_snapshots_() {}
+      owned_snapshots_(),
+      cache_() {}
 
 DBImpl::~DBImpl() {
   (void)Close();
@@ -216,6 +361,12 @@ Status DBImpl::Init() {
   wal_path_ = BuildWalPath(options_);
   sst_dir_ = BuildSSTDirPath(options_);
   manifest_path_ = BuildManifestPath(options_);
+  if (options_.cache_enabled) {
+    cache_ = CreateCache(
+        options_.cache_policy, options_.cache_capacity, options_.cache_default_ttl_ms);
+  } else {
+    cache_.reset();
+  }
 
   if (wal_path_.empty()) {
     return Status::InvalidArgument("wal path is empty");
@@ -271,6 +422,10 @@ Status DBImpl::Init() {
 
   const uint64_t global_max_seq = std::max(max_seq, max_sst_seq);
   next_seq_ = global_max_seq + 1;
+  s = RebuildLatestKeySeqIndex();
+  if (!s.ok()) {
+    return s;
+  }
   open_ = true;
   return Status::OK();
 }
@@ -413,6 +568,7 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
       return s;
     }
 
+    latest_key_seq_[op.key] = seq;
     ++next_seq_;
   }
 
@@ -424,6 +580,61 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   }
 
   return MaybeFlushMemTable();
+}
+
+Status DBImpl::BeginTransaction(const TxnOptions& options,
+                                std::unique_ptr<Transaction>* txn) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) {
+    return open_status;
+  }
+
+  if (txn == nullptr) {
+    return Status::InvalidArgument("transaction output pointer is null");
+  }
+
+  const uint64_t start_seq = next_seq_ == 0 ? 0 : next_seq_ - 1;
+  auto occ = std::make_unique<OCCTransaction>(this, options, start_seq);
+  RegisterTransaction(occ.get());
+  *txn = std::move(occ);
+  return Status::OK();
+}
+
+Status DBImpl::GetCacheStats(CacheStats* stats) const {
+  std::lock_guard<std::mutex> lk(mu_);
+  if (stats == nullptr) {
+    return Status::InvalidArgument("cache stats output is null");
+  }
+  if (cache_ == nullptr) {
+    *stats = CacheStats{};
+    return Status::OK();
+  }
+  *stats = cache_->Stats();
+  return Status::OK();
+}
+
+Status DBImpl::TxnGetAtSequence(const Slice& key,
+                                uint64_t read_seq,
+                                std::string* value) const {
+  std::lock_guard<std::mutex> lk(mu_);
+  return GetAtSequence(key, read_seq, value);
+}
+
+Status DBImpl::TxnValidateKey(const Slice& key) const {
+  return ValidateKey(key);
+}
+
+Status DBImpl::TxnCommitOCC(const TxnOptions& options,
+                            uint64_t start_seq,
+                            const std::unordered_set<std::string>& read_set,
+                            const std::vector<WriteBatch::Operation>& writes) {
+  return CommitOCCTransaction(options, start_seq, read_set, writes);
+}
+
+void DBImpl::TxnUnregister(Transaction* txn) {
+  UnregisterTransaction(txn);
 }
 
 const Snapshot* DBImpl::GetSnapshot() {
@@ -482,6 +693,7 @@ Status DBImpl::Close() {
     return s;
   }
 
+  active_transactions_.clear();
   active_snapshots_.clear();
   owned_snapshots_.clear();
   open_ = false;
@@ -519,7 +731,12 @@ Status DBImpl::ApplyPut(uint64_t seq,
     }
   }
 
-  return memtable_.Put(seq, key, value);
+  s = memtable_.Put(seq, key, value);
+  if (!s.ok()) {
+    return s;
+  }
+  latest_key_seq_[key.ToString()] = seq;
+  return Status::OK();
 }
 
 Status DBImpl::ApplyDelete(uint64_t seq,
@@ -537,7 +754,12 @@ Status DBImpl::ApplyDelete(uint64_t seq,
     }
   }
 
-  return memtable_.Delete(seq, key);
+  s = memtable_.Delete(seq, key);
+  if (!s.ok()) {
+    return s;
+  }
+  latest_key_seq_[key.ToString()] = seq;
+  return Status::OK();
 }
 
 Status DBImpl::MaybeFlushMemTable() {
@@ -661,8 +883,15 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
                                  uint64_t read_seq,
                                  std::string* value) const {
   const std::string target = key.ToString();
+  const bool allow_cache =
+      cache_ != nullptr && read_seq == std::numeric_limits<uint64_t>::max();
 
   for (auto it = sst_files_.rbegin(); it != sst_files_.rend(); ++it) {
+    const std::string cache_key = BuildSSTCacheKey(*it, target);
+    if (allow_cache && cache_->Get(cache_key, value)) {
+      return Status::OK();
+    }
+
     std::ifstream in(*it, std::ios::binary);
     if (!in.is_open()) {
       return Status::IOError("failed to open sst file: " + *it);
@@ -695,11 +924,153 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
       }
 
       *value = std::move(entry_value);
+      if (allow_cache) {
+        cache_->Put(cache_key, *value);
+      }
       return Status::OK();
     }
   }
 
   return Status::NotFound("key not found");
+}
+
+Status DBImpl::GetAtSequence(const Slice& key,
+                             uint64_t read_seq,
+                             std::string* value) const {
+  Status validate_status = ValidateKey(key);
+  if (!validate_status.ok()) {
+    return validate_status;
+  }
+  if (value == nullptr) {
+    return Status::InvalidArgument("value output pointer is null");
+  }
+
+  Status s = GetFromMemTableAt(key, read_seq, value);
+  if (s.ok()) {
+    return s;
+  }
+  if (!s.IsNotFound()) {
+    return s;
+  }
+  return GetFromSSTFilesAt(key, read_seq, value);
+}
+
+Status DBImpl::RebuildLatestKeySeqIndex() {
+  latest_key_seq_.clear();
+
+  for (const auto& file : sst_files_) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in.is_open()) {
+      return Status::IOError("failed to open sst file: " + file);
+    }
+
+    while (true) {
+      SSTRecordType type;
+      uint64_t seq = 0;
+      std::string key;
+      std::string value;
+      Status s = ReadSSTRecord(&in, &type, &seq, &key, &value);
+      if (s.IsNotFound()) {
+        break;
+      }
+      if (!s.ok()) {
+        return s;
+      }
+      auto it = latest_key_seq_.find(key);
+      if (it == latest_key_seq_.end() || seq > it->second) {
+        latest_key_seq_[key] = seq;
+      }
+    }
+  }
+
+  auto it = memtable_.NewIterator();
+  for (it.SeekToFirst(); it.Valid(); it.Next()) {
+    const auto& entry = it.entry();
+    auto found = latest_key_seq_.find(entry.key);
+    if (found == latest_key_seq_.end() || entry.seq > found->second) {
+      latest_key_seq_[entry.key] = entry.seq;
+    }
+  }
+
+  return Status::OK();
+}
+
+Status DBImpl::CommitOCCTransaction(
+    const TxnOptions& options,
+    uint64_t start_seq,
+    const std::unordered_set<std::string>& read_set,
+    const std::vector<WriteBatch::Operation>& writes) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) {
+    return open_status;
+  }
+
+  std::unordered_set<std::string> keys_to_validate = read_set;
+  for (const auto& op : writes) {
+    keys_to_validate.insert(op.key);
+  }
+
+  for (const auto& key : keys_to_validate) {
+    auto it = latest_key_seq_.find(key);
+    if (it != latest_key_seq_.end() && it->second > start_seq) {
+      return Status::AlreadyExists("transaction conflict");
+    }
+  }
+
+  for (const auto& op : writes) {
+    Status s = ValidateKey(op.key);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  for (const auto& op : writes) {
+    const uint64_t seq = next_seq_;
+    Status s;
+    if (op.type == WriteBatch::ValueType::kPut) {
+      s = wal_writer_.AppendPut(seq, op.key, op.value);
+      if (!s.ok()) {
+        return s;
+      }
+      s = memtable_.Put(seq, op.key, op.value);
+    } else {
+      s = wal_writer_.AppendDelete(seq, op.key);
+      if (!s.ok()) {
+        return s;
+      }
+      s = memtable_.Delete(seq, op.key);
+    }
+    if (!s.ok()) {
+      return s;
+    }
+
+    latest_key_seq_[op.key] = seq;
+    ++next_seq_;
+  }
+
+  if (ShouldSync(options)) {
+    Status s = wal_writer_.Sync();
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  return MaybeFlushMemTable();
+}
+
+void DBImpl::RegisterTransaction(Transaction* txn) {
+  if (txn != nullptr) {
+    active_transactions_.insert(txn);
+  }
+}
+
+void DBImpl::UnregisterTransaction(Transaction* txn) {
+  if (txn != nullptr) {
+    std::lock_guard<std::mutex> lk(mu_);
+    active_transactions_.erase(txn);
+  }
 }
 
 Status DBImpl::LoadSSTFilesFromManifest(uint64_t* max_seq) {
@@ -834,6 +1205,10 @@ bool DBImpl::ShouldSync(const WriteOptions& options) const noexcept {
   return options.sync || options_.sync_on_write;
 }
 
+bool DBImpl::ShouldSync(const TxnOptions& options) const noexcept {
+  return options.sync_on_commit || options_.sync_on_write;
+}
+
 Status DBImpl::ValidateKey(const Slice& key) const {
   if (key.empty()) {
     return Status::InvalidArgument("key is empty");
@@ -875,6 +1250,16 @@ std::string DBImpl::BuildSSTFileName(uint64_t file_number) {
   std::ostringstream oss;
   oss << std::setw(20) << std::setfill('0') << file_number << ".sst";
   return oss.str();
+}
+
+std::string DBImpl::BuildSSTCacheKey(const std::string& sst_file,
+                                     const std::string& user_key) {
+  std::string out;
+  out.reserve(sst_file.size() + 1 + user_key.size());
+  out.append(sst_file);
+  out.push_back('\n');
+  out.append(user_key);
+  return out;
 }
 
 }  // namespace kv

@@ -80,7 +80,12 @@ int main(int argc, char** argv) {
                 << " port=" << server.port()
                 << " active_connections=" << stats.active_connections
                 << " total_connections=" << stats.total_connections
-                << " total_requests=" << stats.total_requests << "\n";
+                << " total_requests=" << stats.total_requests
+                << " txn_begin=" << stats.txn_begin
+                << " txn_commit=" << stats.txn_commit
+                << " txn_abort=" << stats.txn_abort
+                << " txn_conflict=" << stats.txn_conflict
+                << "\n";
       last_report = now;
     }
   }

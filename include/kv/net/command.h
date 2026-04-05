@@ -14,6 +14,9 @@ enum class CommandType {
   kSet,
   kDel,
   kMGet,
+  kBegin,
+  kExec,
+  kAbort,
 };
 
 struct Command {
