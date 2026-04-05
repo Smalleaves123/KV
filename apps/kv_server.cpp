@@ -49,6 +49,33 @@ int main(int argc, char** argv) {
   kv::DBOptions options;
   options.db_path = db_path;
 
+  // Optional cache config via env vars (keeps defaults unchanged).
+  if (const char* v = std::getenv("KV_CACHE"); v != nullptr) {
+    const std::string s(v);
+    if (!s.empty() && s != "0" && s != "false" && s != "FALSE") {
+      options.cache_enabled = true;
+    }
+  }
+  if (const char* v = std::getenv("KV_CACHE_POLICY"); v != nullptr) {
+    const std::string s(v);
+    if (s == "lfu" || s == "LFU") options.cache_policy = kv::CachePolicy::kLFU;
+    if (s == "lru" || s == "LRU") options.cache_policy = kv::CachePolicy::kLRU;
+  }
+  if (const char* v = std::getenv("KV_CACHE_CAPACITY"); v != nullptr) {
+    char* end = nullptr;
+    const long long cap = std::strtoll(v, &end, 10);
+    if (end != v && *end == '\0' && cap >= 0) {
+      options.cache_capacity = static_cast<size_t>(cap);
+    }
+  }
+  if (const char* v = std::getenv("KV_CACHE_TTL_MS"); v != nullptr) {
+    char* end = nullptr;
+    const long long ttl = std::strtoll(v, &end, 10);
+    if (end != v && *end == '\0') {
+      options.cache_default_ttl_ms = static_cast<int64_t>(ttl);
+    }
+  }
+
   std::unique_ptr<kv::DB> db;
   kv::Status s = kv::DB::Open(options, &db);
   if (!s.ok()) {
@@ -84,8 +111,17 @@ int main(int argc, char** argv) {
                 << " txn_begin=" << stats.txn_begin
                 << " txn_commit=" << stats.txn_commit
                 << " txn_abort=" << stats.txn_abort
-                << " txn_conflict=" << stats.txn_conflict
-                << "\n";
+                << " txn_conflict=" << stats.txn_conflict;
+      if (options.cache_enabled) {
+        kv::CacheStats cache_stats;
+        if (db->GetCacheStats(&cache_stats).ok()) {
+          std::cout << " cache_hit=" << cache_stats.hit
+                    << " cache_miss=" << cache_stats.miss
+                    << " cache_evict=" << cache_stats.evict
+                    << " cache_expire=" << cache_stats.expire;
+        }
+      }
+      std::cout << "\n";
       last_report = now;
     }
   }
