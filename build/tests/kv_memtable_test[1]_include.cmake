@@ -1,5 +1,0 @@
-if(EXISTS "/Users/aiziqi/Desktop/KV_/build/tests/kv_memtable_test[1]_tests.cmake")
-  include("/Users/aiziqi/Desktop/KV_/build/tests/kv_memtable_test[1]_tests.cmake")
-else()
-  add_test(kv_memtable_test_NOT_BUILT kv_memtable_test_NOT_BUILT)
-endif()

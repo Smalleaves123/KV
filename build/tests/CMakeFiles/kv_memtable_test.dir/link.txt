@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/kv_memtable_test.dir/memtable/skiplist_test.cpp.o CMakeFiles/kv_memtable_test.dir/memtable/memtable_test.cpp.o -o kv_memtable_test  ../src/libkv.a ../lib/libgtest_main.a ../lib/libgtest.a
