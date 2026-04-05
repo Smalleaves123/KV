@@ -1,6 +1,14 @@
-*/build/
+build/
+
+
+
 *.o
 *.exe
 *.class
 *.txt
 *.cmake
+*.a
+*.obj
+*.log
+*.pid
+*.cpp.o
