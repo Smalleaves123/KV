@@ -14,6 +14,8 @@ enum class CommandType {
   kSet,
   kDel,
   kMGet,
+  kInfo,
+  kStats,
   kBegin,
   kExec,
   kAbort,

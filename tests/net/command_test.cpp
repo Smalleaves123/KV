@@ -97,6 +97,23 @@ TEST(CommandExecutorTest, InvalidCommand) {
   EXPECT_EQ(resp, "-ERRunknown command\r\n");
 }
 
+TEST(CommandExecutorTest, InfoAndStats) {
+  auto db = OpenDBForTest("info_stats");
+  CommandExecutor exec(db.get());
+
+  const std::string info = exec.Execute(Command{CommandType::kInfo, {}, "INFO"});
+  EXPECT_FALSE(info.empty());
+  EXPECT_NE(info.find("cache.hit="), std::string::npos);
+  EXPECT_NE(info.find("read.bloom_queries="), std::string::npos);
+  EXPECT_NE(info.find("compaction.trigger_attempts="), std::string::npos);
+
+  const std::string stats = exec.Execute(Command{CommandType::kStats, {}, "STATS"});
+  EXPECT_FALSE(stats.empty());
+  EXPECT_NE(stats.find("cache.miss="), std::string::npos);
+  EXPECT_NE(stats.find("read.sst_index_builds="), std::string::npos);
+  EXPECT_NE(stats.find("compaction.succeeded="), std::string::npos);
+}
+
 TEST(SessionTest, HandleLineParsesAndExecutes) {
   auto db = OpenDBForTest("session");
   Session session(db.get());
@@ -105,6 +122,19 @@ TEST(SessionTest, HandleLineParsesAndExecutes) {
   EXPECT_EQ(session.HandleLine("GET a"), "$1\r\n1\r\n");
   EXPECT_EQ(session.HandleLine("GET missing"), "$-1\r\n");
   EXPECT_EQ(session.HandleLine("PING"), "+PONG\r\n");
+}
+
+TEST(SessionTest, InfoAndStatsInAndOutTransaction) {
+  auto db = OpenDBForTest("session_info_stats");
+  Session session(db.get());
+
+  std::string resp = session.HandleLine("INFO");
+  EXPECT_NE(resp.find("cache.hit="), std::string::npos);
+
+  EXPECT_EQ(session.HandleLine("BEGIN"), "+OK\r\n");
+  resp = session.HandleLine("STATS");
+  EXPECT_NE(resp.find("read.bloom_queries="), std::string::npos);
+  EXPECT_EQ(session.HandleLine("ABORT"), "+OK\r\n");
 }
 
 TEST(SessionTest, TransactionBeginExecFlow) {

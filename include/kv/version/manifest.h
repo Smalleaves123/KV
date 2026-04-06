@@ -27,6 +27,7 @@ class Manifest {
   Status Close();
 
   Status AddFile(const ManifestFileMeta& file_meta);
+  Status RemoveFile(uint64_t file_number);
   Status Recover(std::vector<ManifestFileMeta>* files) const;
 
   bool IsOpen() const noexcept;

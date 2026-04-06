@@ -50,5 +50,15 @@ TEST(CommandParserTest, ParsesTransactionCommands) {
   EXPECT_TRUE(abort.args.empty());
 }
 
+TEST(CommandParserTest, ParsesInfoAndStatsCommands) {
+  Command info = CommandParser::ParseLine("INFO");
+  EXPECT_EQ(info.type, CommandType::kInfo);
+  EXPECT_TRUE(info.args.empty());
+
+  Command stats = CommandParser::ParseLine("stats");
+  EXPECT_EQ(stats.type, CommandType::kStats);
+  EXPECT_TRUE(stats.args.empty());
+}
+
 }  // namespace
 }  // namespace kv::net

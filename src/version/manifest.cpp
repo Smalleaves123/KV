@@ -3,6 +3,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 #include <system_error>
 
 namespace kv {
@@ -10,6 +11,7 @@ namespace {
 
 enum class ManifestTag : uint8_t {
   kAddFile = 1,
+  kRemoveFile = 2,
 };
 
 void AppendFixed32(std::string* out, uint32_t value) {
@@ -160,6 +162,32 @@ Status Manifest::AddFile(const ManifestFileMeta& file_meta) {
   return Status::OK();
 }
 
+Status Manifest::RemoveFile(uint64_t file_number) {
+  if (!is_open_ || !append_stream_.is_open()) {
+    return Status::IOError("manifest is not open");
+  }
+  if (file_number == 0) {
+    return Status::InvalidArgument("manifest file number must be greater than 0");
+  }
+
+  std::string record;
+  record.reserve(1 + 8);
+  record.push_back(static_cast<char>(ManifestTag::kRemoveFile));
+  AppendFixed64(&record, file_number);
+
+  append_stream_.write(record.data(), static_cast<std::streamsize>(record.size()));
+  if (!append_stream_) {
+    return Status::IOError("failed to append manifest remove-file record");
+  }
+
+  append_stream_.flush();
+  if (!append_stream_) {
+    return Status::IOError("failed to flush manifest remove-file record");
+  }
+
+  return Status::OK();
+}
+
 Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
   if (files == nullptr) {
     return Status::InvalidArgument("manifest recover output is null");
@@ -175,6 +203,10 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
     return Status::IOError("failed to open manifest for recovery: " + file_path_);
   }
 
+  std::vector<uint64_t> order;
+  std::unordered_map<uint64_t, ManifestFileMeta> latest;
+  std::unordered_map<uint64_t, size_t> order_index;
+
   while (true) {
     char tag_raw = 0;
     in.read(&tag_raw, 1);
@@ -186,31 +218,55 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
       return Status::Corruption("truncated manifest tag");
     }
 
-    if (static_cast<uint8_t>(tag_raw) != static_cast<uint8_t>(ManifestTag::kAddFile)) {
-      return Status::Corruption("unknown manifest tag");
+    const ManifestTag tag = static_cast<ManifestTag>(static_cast<uint8_t>(tag_raw));
+    if (tag == ManifestTag::kAddFile) {
+      std::array<char, 20> header{};
+      in.read(header.data(), static_cast<std::streamsize>(header.size()));
+      if (in.gcount() != static_cast<std::streamsize>(header.size())) {
+        return Status::Corruption("truncated manifest add-file header");
+      }
+
+      ManifestFileMeta meta;
+      meta.file_number = DecodeFixed64(header.data());
+      meta.max_seq = DecodeFixed64(header.data() + 8);
+      const uint32_t path_len = DecodeFixed32(header.data() + 16);
+      if (path_len == 0) {
+        return Status::Corruption("manifest add-file path is empty");
+      }
+
+      meta.file_path.assign(path_len, '\0');
+      in.read(meta.file_path.data(), static_cast<std::streamsize>(path_len));
+      if (in.gcount() != static_cast<std::streamsize>(path_len)) {
+        return Status::Corruption("truncated manifest add-file path");
+      }
+
+      if (order_index.find(meta.file_number) == order_index.end()) {
+        order_index.emplace(meta.file_number, order.size());
+        order.push_back(meta.file_number);
+      }
+      latest[meta.file_number] = std::move(meta);
+      continue;
     }
 
-    std::array<char, 20> header{};
-    in.read(header.data(), static_cast<std::streamsize>(header.size()));
-    if (in.gcount() != static_cast<std::streamsize>(header.size())) {
-      return Status::Corruption("truncated manifest add-file header");
+    if (tag == ManifestTag::kRemoveFile) {
+      std::array<char, 8> payload{};
+      in.read(payload.data(), static_cast<std::streamsize>(payload.size()));
+      if (in.gcount() != static_cast<std::streamsize>(payload.size())) {
+        return Status::Corruption("truncated manifest remove-file payload");
+      }
+      const uint64_t file_number = DecodeFixed64(payload.data());
+      latest.erase(file_number);
+      continue;
     }
 
-    ManifestFileMeta meta;
-    meta.file_number = DecodeFixed64(header.data());
-    meta.max_seq = DecodeFixed64(header.data() + 8);
-    const uint32_t path_len = DecodeFixed32(header.data() + 16);
-    if (path_len == 0) {
-      return Status::Corruption("manifest add-file path is empty");
-    }
+    return Status::Corruption("unknown manifest tag");
+  }
 
-    meta.file_path.assign(path_len, '\0');
-    in.read(meta.file_path.data(), static_cast<std::streamsize>(path_len));
-    if (in.gcount() != static_cast<std::streamsize>(path_len)) {
-      return Status::Corruption("truncated manifest add-file path");
+  for (uint64_t file_number : order) {
+    auto it = latest.find(file_number);
+    if (it != latest.end()) {
+      files->push_back(it->second);
     }
-
-    files->push_back(std::move(meta));
   }
 
   return Status::OK();

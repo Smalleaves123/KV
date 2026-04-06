@@ -88,5 +88,36 @@ TEST(ManifestTest, RejectInvalidAddFileInput) {
   EXPECT_TRUE(s.IsInvalidArgument());
 }
 
+TEST(ManifestTest, RecoverAppliesRemoveFileRecords) {
+  const std::string path = MakeManifestPath("recover_remove_file");
+  RemovePathIfExists(path);
+
+  Manifest manifest;
+  ASSERT_TRUE(manifest.Open(path, true).ok());
+
+  ManifestFileMeta f1;
+  f1.file_number = 1;
+  f1.file_path = "test_tmp/db/sst/00000000000000000001.sst";
+  f1.max_seq = 100;
+
+  ManifestFileMeta f2;
+  f2.file_number = 2;
+  f2.file_path = "test_tmp/db/sst/00000000000000000002.sst";
+  f2.max_seq = 120;
+
+  ASSERT_TRUE(manifest.AddFile(f1).ok());
+  ASSERT_TRUE(manifest.AddFile(f2).ok());
+  ASSERT_TRUE(manifest.RemoveFile(f1.file_number).ok());
+  ASSERT_TRUE(manifest.Close().ok());
+
+  ASSERT_TRUE(manifest.Open(path, false).ok());
+  std::vector<ManifestFileMeta> files;
+  ASSERT_TRUE(manifest.Recover(&files).ok());
+  ASSERT_EQ(files.size(), 1U);
+  EXPECT_EQ(files[0].file_number, f2.file_number);
+  EXPECT_EQ(files[0].file_path, f2.file_path);
+  EXPECT_EQ(files[0].max_seq, f2.max_seq);
+}
+
 }  // namespace
 }  // namespace kv

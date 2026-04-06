@@ -44,6 +44,7 @@ target_include_directories(kv_wal_test
 add_executable(kv_engine_test
   engine/db_test.cpp
   engine/cache_integration_test.cpp
+  engine/compaction_test.cpp
   engine/write_batch_test.cpp
   engine/recovery_test.cpp
   engine/transaction_test.cpp
@@ -62,6 +63,9 @@ target_include_directories(kv_engine_test
 
 add_executable(kv_version_test
   version/manifest_test.cpp
+  version/compaction_test.cpp
+  version/version_test.cpp
+  version/version_test.cpp
 )
 
 target_link_libraries(kv_version_test
@@ -96,6 +100,7 @@ target_include_directories(kv_net_test
 )
 
 add_executable(kv_cache_test
+  cache/bloom_filter_test.cpp
   cache/lru_cache_test.cpp
   cache/lfu_cache_test.cpp
   cache/ttl_manager_test.cpp

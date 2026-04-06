@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -15,6 +16,8 @@
 #include <vector>
 
 #include "kv/engine/recovery.h"
+#include "kv/table/bloom_filter.h"
+#include "kv/table/table_index.h"
 
 namespace kv {
 namespace {
@@ -328,6 +331,12 @@ bool ParseSSTFileNumber(const std::filesystem::path& path, uint64_t* number) {
   return true;
 }
 
+struct CompactionEntry {
+  uint64_t seq = 0;
+  RecordType type = RecordType::kValue;
+  std::string value;
+};
+
 }  // namespace
 
 DBImpl::DBImpl(DBOptions options)
@@ -602,6 +611,41 @@ Status DBImpl::BeginTransaction(const TxnOptions& options,
   return Status::OK();
 }
 
+Status DBImpl::Compact() {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) {
+    return open_status;
+  }
+  if (!active_snapshots_.empty()) {
+    return Status::AlreadyExists("cannot compact with active snapshots");
+  }
+
+  if (!memtable_.Empty()) {
+    std::string sst_file;
+    Status s = FlushMemTableToSST(&sst_file);
+    if (!s.ok()) {
+      return s;
+    }
+    sst_files_.push_back(std::move(sst_file));
+    memtable_.Clear();
+  }
+
+  if (sst_files_.size() < options_.compaction_min_input_files) {
+    return Status::NotFound("not enough sst files for compaction");
+  }
+
+  ++compaction_stats_.trigger_attempts;
+  Status s = CompactSSTFilesLocked();
+  if (s.ok()) {
+    ++compaction_stats_.succeeded;
+  } else {
+    ++compaction_stats_.failed;
+  }
+  return s;
+}
+
 Status DBImpl::GetCacheStats(CacheStats* stats) const {
   std::lock_guard<std::mutex> lk(mu_);
   if (stats == nullptr) {
@@ -612,6 +656,24 @@ Status DBImpl::GetCacheStats(CacheStats* stats) const {
     return Status::OK();
   }
   *stats = cache_->Stats();
+  return Status::OK();
+}
+
+Status DBImpl::GetReadPathStats(ReadPathStats* stats) const {
+  std::lock_guard<std::mutex> lk(mu_);
+  if (stats == nullptr) {
+    return Status::InvalidArgument("read path stats output is null");
+  }
+  *stats = read_path_stats_;
+  return Status::OK();
+}
+
+Status DBImpl::GetCompactionStats(CompactionStats* stats) const {
+  std::lock_guard<std::mutex> lk(mu_);
+  if (stats == nullptr) {
+    return Status::InvalidArgument("compaction stats output is null");
+  }
+  *stats = compaction_stats_;
   return Status::OK();
 }
 
@@ -779,6 +841,28 @@ Status DBImpl::MaybeFlushMemTable() {
 
   sst_files_.push_back(std::move(sst_file));
   memtable_.Clear();
+
+  if (!options_.auto_compaction_enabled) {
+    return Status::OK();
+  }
+
+  if (sst_files_.size() < options_.compaction_min_input_files) {
+    ++compaction_stats_.skipped_due_threshold;
+    return Status::OK();
+  }
+  if (!active_snapshots_.empty()) {
+    ++compaction_stats_.skipped_due_snapshot;
+    return Status::OK();
+  }
+
+  ++compaction_stats_.trigger_attempts;
+  Status compact_status = CompactSSTFilesLocked();
+  if (compact_status.ok()) {
+    ++compaction_stats_.succeeded;
+    return Status::OK();
+  }
+
+  ++compaction_stats_.failed;
   return Status::OK();
 }
 
@@ -892,10 +976,48 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
       return Status::OK();
     }
 
+    SSTCacheEntry* cache_entry = nullptr;
+    auto found = sst_cache_.find(*it);
+    if (found == sst_cache_.end()) {
+      SSTCacheEntry entry;
+      Status s = BuildSSTIndexAndBloom(*it, &entry);
+      if (!s.ok()) {
+        return s;
+      }
+      auto [ins_it, _] = sst_cache_.emplace(*it, std::move(entry));
+      cache_entry = &ins_it->second;
+      ++read_path_stats_.sst_index_builds;
+    } else {
+      cache_entry = &found->second;
+      ++read_path_stats_.sst_index_hits;
+    }
+
+    ++read_path_stats_.bloom_queries;
+    if (cache_entry != nullptr && !cache_entry->bloom.MayContain(target)) {
+      ++read_path_stats_.bloom_negatives;
+      continue;
+    }
+
+    const auto& entries = cache_entry->index.entries;
+    size_t left = 0;
+    size_t right = entries.size();
+    while (left < right) {
+      const size_t mid = left + (right - left) / 2;
+      if (entries[mid].key < target) {
+        left = mid + 1;
+      } else {
+        right = mid;
+      }
+    }
+    if (left >= entries.size() || entries[left].key != target) {
+      continue;
+    }
+
     std::ifstream in(*it, std::ios::binary);
     if (!in.is_open()) {
       return Status::IOError("failed to open sst file: " + *it);
     }
+    in.seekg(static_cast<std::streamoff>(entries[left].offset), std::ios::beg);
 
     while (true) {
       SSTRecordType type;
@@ -1260,6 +1382,164 @@ std::string DBImpl::BuildSSTCacheKey(const std::string& sst_file,
   out.push_back('\n');
   out.append(user_key);
   return out;
+}
+
+Status DBImpl::BuildSSTIndexAndBloom(const std::string& file,
+                                     SSTCacheEntry* out) const {
+  if (out == nullptr) {
+    return Status::InvalidArgument("sst cache output is null");
+  }
+
+  std::ifstream in(file, std::ios::binary);
+  if (!in.is_open()) {
+    return Status::IOError("failed to open sst file: " + file);
+  }
+
+  out->index.entries.clear();
+  out->bloom = BloomFilter(8192);
+
+  while (true) {
+    std::streampos pos = in.tellg();
+    if (pos < 0) {
+      return Status::IOError("invalid sst stream position");
+    }
+
+    SSTRecordType type;
+    uint64_t seq = 0;
+    std::string key;
+    std::string value;
+    Status s = ReadSSTRecord(&in, &type, &seq, &key, &value);
+    if (s.IsNotFound()) {
+      break;
+    }
+    if (!s.ok()) {
+      return s;
+    }
+
+    out->index.entries.push_back({key, static_cast<uint64_t>(pos)});
+    out->bloom.Add(key);
+  }
+
+  return Status::OK();
+}
+
+Status DBImpl::CompactSSTFilesLocked() {
+  if (sst_files_.size() <= 1) {
+    return Status::OK();
+  }
+  const std::vector<std::string> old_files = sst_files_;
+
+  std::map<std::string, CompactionEntry> latest;
+  uint64_t compact_max_seq = 0;
+
+  for (const auto& file : sst_files_) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in.is_open()) {
+      return Status::IOError("failed to open sst file: " + file);
+    }
+
+    while (true) {
+      SSTRecordType type;
+      uint64_t seq = 0;
+      std::string key;
+      std::string value;
+      Status s = ReadSSTRecord(&in, &type, &seq, &key, &value);
+      if (s.IsNotFound()) {
+        break;
+      }
+      if (!s.ok()) {
+        return s;
+      }
+
+      compact_max_seq = std::max(compact_max_seq, seq);
+      auto it = latest.find(key);
+      if (it == latest.end() || seq > it->second.seq) {
+        CompactionEntry entry;
+        entry.seq = seq;
+        entry.type =
+            (type == SSTRecordType::kDelete) ? RecordType::kDeletion : RecordType::kValue;
+        entry.value = std::move(value);
+        latest[key] = std::move(entry);
+      }
+    }
+  }
+
+  if (latest.empty()) {
+    return Status::OK();
+  }
+
+  std::error_code ec;
+  std::filesystem::create_directories(sst_dir_, ec);
+  if (ec) {
+    return Status::IOError("failed to create sst dir: " + sst_dir_);
+  }
+
+  const std::string sst_path = sst_dir_ + "/" + BuildSSTFileName(next_file_number_);
+  const uint64_t file_number = next_file_number_;
+
+  std::ofstream out(sst_path, std::ios::binary | std::ios::trunc);
+  if (!out.is_open()) {
+    return Status::IOError("failed to open sst file: " + sst_path);
+  }
+
+  size_t bytes_written = 0;
+  for (const auto& [key, entry] : latest) {
+    MemTableEntry mem_entry;
+    mem_entry.key = key;
+    mem_entry.value = entry.value;
+    mem_entry.seq = entry.seq;
+    mem_entry.type = entry.type;
+
+    Status s = WriteSSTRecord(&out, mem_entry, &bytes_written);
+    if (!s.ok()) {
+      out.close();
+      return s;
+    }
+  }
+
+  out.flush();
+  if (!out) {
+    out.close();
+    return Status::IOError("failed to flush sst file: " + sst_path);
+  }
+  out.close();
+  if (!out) {
+    return Status::IOError("failed to close sst file: " + sst_path);
+  }
+
+  if (manifest_.IsOpen()) {
+    ManifestFileMeta meta;
+    meta.file_number = file_number;
+    meta.file_path = sst_path;
+    meta.max_seq = compact_max_seq;
+    Status s = manifest_.AddFile(meta);
+    if (!s.ok()) {
+      return s;
+    }
+
+    for (const auto& old_file : old_files) {
+      uint64_t old_number = 0;
+      if (!ParseSSTFileNumber(std::filesystem::path(old_file), &old_number)) {
+        return Status::Corruption("failed to parse old sst file number: " + old_file);
+      }
+      s = manifest_.RemoveFile(old_number);
+      if (!s.ok()) {
+        return s;
+      }
+    }
+  }
+
+  sst_files_.clear();
+  sst_files_.push_back(sst_path);
+  ++next_file_number_;
+
+  for (const auto& old_file : old_files) {
+    std::error_code remove_ec;
+    (void)std::filesystem::remove(old_file, remove_ec);
+  }
+
+  sst_cache_.clear();
+  return RebuildLatestKeySeqIndex();
 }
 
 }  // namespace kv

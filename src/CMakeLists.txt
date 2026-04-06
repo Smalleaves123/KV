@@ -13,6 +13,11 @@ add_library(kv
   net/server.cpp
   net/session.cpp
   version/manifest.cpp
+  version/file_meta.cpp
+  version/version.cpp
+  version/version_set.cpp
+  version/compaction.cpp
+  version/version_set.cpp
   engine/recovery.cpp
   engine/write_batch.cpp
   engine/db.cpp
@@ -20,6 +25,7 @@ add_library(kv
   cache/cache.cpp
   cache/lru_cache.cpp
   cache/lfu_cache.cpp
+  table/bloom_filter.cpp
 )
 
 target_include_directories(kv

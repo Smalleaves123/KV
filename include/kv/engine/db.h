@@ -48,6 +48,12 @@ struct DBOptions {
 
   // 默认 TTL（毫秒），0 表示不过期
   int64_t cache_default_ttl_ms = 0;
+
+  // 手动/后台 compaction 最少输入 SST 文件数
+  size_t compaction_min_input_files = 2;
+
+  // 是否在 flush 后自动尝试 compaction
+  bool auto_compaction_enabled = true;
 };
 
 struct ReadOptions {
@@ -57,6 +63,21 @@ struct ReadOptions {
 
 struct WriteOptions {
   bool sync = false;
+};
+
+struct ReadPathStats {
+  uint64_t sst_index_builds = 0;
+  uint64_t sst_index_hits = 0;
+  uint64_t bloom_queries = 0;
+  uint64_t bloom_negatives = 0;
+};
+
+struct CompactionStats {
+  uint64_t trigger_attempts = 0;
+  uint64_t skipped_due_snapshot = 0;
+  uint64_t skipped_due_threshold = 0;
+  uint64_t succeeded = 0;
+  uint64_t failed = 0;
 };
 
 class DB {
@@ -81,8 +102,11 @@ class DB {
 
   virtual Status BeginTransaction(const TxnOptions& options,
                                   std::unique_ptr<Transaction>* txn) = 0;
+  virtual Status Compact() = 0;
 
   virtual Status GetCacheStats(CacheStats* stats) const = 0;
+  virtual Status GetReadPathStats(ReadPathStats* stats) const = 0;
+  virtual Status GetCompactionStats(CompactionStats* stats) const = 0;
 
   virtual const Snapshot* GetSnapshot() = 0;
   virtual Status ReleaseSnapshot(const Snapshot* snapshot) = 0;

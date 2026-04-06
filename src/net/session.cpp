@@ -39,6 +39,8 @@ std::string Session::HandleLine(const std::string& line) {
     case CommandType::kSet:
     case CommandType::kDel:
     case CommandType::kMGet:
+    case CommandType::kInfo:
+    case CommandType::kStats:
       if (active_txn_ != nullptr) {
         return HandleDataCommandInTxn(cmd);
       }
@@ -181,6 +183,13 @@ std::string Session::HandleDataCommandInTxn(const Command& cmd) {
       }
       return Array(items);
     }
+
+    case CommandType::kInfo:
+    case CommandType::kStats:
+      if (!cmd.args.empty()) {
+        return Error("wrong number of arguments for 'INFO/STATS'");
+      }
+      return executor_.Execute(cmd);
 
     default:
       return Error("unsupported command in transaction");

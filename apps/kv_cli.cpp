@@ -134,9 +134,13 @@ void PrintHelp() {
       << "  del <key>\n"
       << "  mget <k1> <k2> ...\n"
       << "  ping\n"
+      << "  info\n"
+      << "  stats\n"
       << "  snap create <name>\n"
       << "  snap get <name> <key>\n"
       << "  snap release <name>\n"
+      << "  cache\n"
+      << "  txn begin|exec|abort\n"
       << "  help\n"
       << "  quit\n";
 }
@@ -235,6 +239,55 @@ int main(int argc, char** argv) {
       std::cout << "unknown snap command\n";
       continue;
     }
+    if (cmd == "stats") {
+      kv::CacheStats st;
+      s = db->GetCacheStats(&st);
+      if (!s.ok()) {
+        std::cout << "error: " << s.ToString() << "\n";
+      } else {
+        std::cout << "cache_hit=" << st.hit
+                  << " cache_miss=" << st.miss
+                  << " cache_evict=" << st.evict
+                  << " cache_expire=" << st.expire << "\n";
+      }
+      continue;
+    }
+
+    if (cmd == "cache") {
+      kv::CacheStats st;
+      s = db->GetCacheStats(&st);
+      if (!s.ok()) {
+        std::cout << "error: " << s.ToString() << "\n";
+      } else {
+        std::cout << "cache_hit=" << st.hit
+                  << " cache_miss=" << st.miss
+                  << " cache_evict=" << st.evict
+                  << " cache_expire=" << st.expire << "\n";
+      }
+      continue;
+    }
+
+    if (cmd == "txn") {
+      if (args.size() != 2) {
+        std::cout << "usage: txn begin|exec|abort\n";
+        continue;
+      }
+      if (args[1] == "begin") {
+        std::cout << HumanizeResp(session.HandleLine("BEGIN")) << "\n";
+        continue;
+      }
+      if (args[1] == "exec") {
+        std::cout << HumanizeResp(session.HandleLine("EXEC")) << "\n";
+        continue;
+      }
+      if (args[1] == "abort") {
+        std::cout << HumanizeResp(session.HandleLine("ABORT")) << "\n";
+        continue;
+      }
+      std::cout << "usage: txn begin|exec|abort\n";
+      continue;
+    }
+
 
     const std::string encoded = session.HandleLine(line);
     std::cout << HumanizeResp(encoded) << "\n";

@@ -1,6 +1,7 @@
 // src/net/command.cpp
 #include "kv/net/command.h"
 
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,49 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
       }
 
       return Array(items);
+    }
+
+    case CommandType::kInfo:
+    case CommandType::kStats: {
+      if (!cmd.args.empty()) {
+        return Error("wrong number of arguments for 'INFO/STATS'");
+      }
+
+      CacheStats cache_stats;
+      Status s = db_->GetCacheStats(&cache_stats);
+      if (!s.ok()) {
+        return Error(s.ToString());
+      }
+
+      ReadPathStats read_path_stats;
+      s = db_->GetReadPathStats(&read_path_stats);
+      if (!s.ok()) {
+        return Error(s.ToString());
+      }
+
+      CompactionStats compaction_stats;
+      s = db_->GetCompactionStats(&compaction_stats);
+      if (!s.ok()) {
+        return Error(s.ToString());
+      }
+
+      std::ostringstream oss;
+      oss << "cache.hit=" << cache_stats.hit << "\n"
+          << "cache.miss=" << cache_stats.miss << "\n"
+          << "cache.evict=" << cache_stats.evict << "\n"
+          << "cache.expire=" << cache_stats.expire << "\n"
+          << "read.sst_index_builds=" << read_path_stats.sst_index_builds << "\n"
+          << "read.sst_index_hits=" << read_path_stats.sst_index_hits << "\n"
+          << "read.bloom_queries=" << read_path_stats.bloom_queries << "\n"
+          << "read.bloom_negatives=" << read_path_stats.bloom_negatives << "\n"
+          << "compaction.trigger_attempts=" << compaction_stats.trigger_attempts << "\n"
+          << "compaction.skipped_due_snapshot="
+          << compaction_stats.skipped_due_snapshot << "\n"
+          << "compaction.skipped_due_threshold="
+          << compaction_stats.skipped_due_threshold << "\n"
+          << "compaction.succeeded=" << compaction_stats.succeeded << "\n"
+          << "compaction.failed=" << compaction_stats.failed;
+      return BulkString(oss.str());
     }
 
     case CommandType::kBegin:

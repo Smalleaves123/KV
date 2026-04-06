@@ -13,6 +13,8 @@
 #include "kv/engine/snapshot.h"
 #include "kv/engine/write_batch.h"
 #include "kv/memtable/memtable.h"
+#include "kv/table/bloom_filter.h"
+#include "kv/table/table_index.h"
 #include "kv/version/manifest.h"
 #include "kv/wal/wal_writer.h"
 
@@ -42,7 +44,10 @@ class DBImpl final : public DB {
   Status Write(const WriteOptions& options, const WriteBatch& batch) override;
   Status BeginTransaction(const TxnOptions& options,
                           std::unique_ptr<Transaction>* txn) override;
+  Status Compact() override;
   Status GetCacheStats(CacheStats* stats) const override;
+  Status GetReadPathStats(ReadPathStats* stats) const override;
+  Status GetCompactionStats(CompactionStats* stats) const override;
   const Snapshot* GetSnapshot() override;
   Status ReleaseSnapshot(const Snapshot* snapshot) override;
   Status TxnGetAtSequence(const Slice& key,
@@ -103,6 +108,13 @@ class DBImpl final : public DB {
   static std::string BuildSSTFileName(uint64_t file_number);
   static std::string BuildSSTCacheKey(const std::string& sst_file,
                                       const std::string& user_key);
+  struct SSTCacheEntry {
+    TableIndex index;
+    BloomFilter bloom;
+  };
+  Status BuildSSTIndexAndBloom(const std::string& file,
+                               SSTCacheEntry* out) const;
+  Status CompactSSTFilesLocked();
 
   DBOptions options_;
   std::string wal_path_;
@@ -121,6 +133,9 @@ class DBImpl final : public DB {
   std::unordered_set<const Snapshot*> active_snapshots_;
   std::vector<std::unique_ptr<Snapshot>> owned_snapshots_;
   mutable std::unique_ptr<Cache> cache_;
+  mutable std::unordered_map<std::string, SSTCacheEntry> sst_cache_;
+  mutable ReadPathStats read_path_stats_;
+  mutable CompactionStats compaction_stats_;
 
 };
 
