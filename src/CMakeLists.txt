@@ -5,6 +5,8 @@ add_library(kv
   wal/log_record.cpp
   wal/wal_writer.cpp
   wal/wal_reader.cpp
+  wal/wal_manager.cpp
+  wal/log_recovery.cpp
   net/command.cpp
   net/command_parser.cpp
   net/protocol.cpp
