@@ -103,6 +103,7 @@ add_executable(kv_cache_test
   cache/bloom_filter_test.cpp
   cache/lru_cache_test.cpp
   cache/lfu_cache_test.cpp
+  cache/shard_lru_cache_test.cpp
   cache/ttl_manager_test.cpp
 )
 
@@ -117,6 +118,37 @@ target_include_directories(kv_cache_test
     ${PROJECT_SOURCE_DIR}/include
 )
 
+add_executable(kv_cluster_test
+  cluster/cluster_manager_test.cpp
+)
+
+target_link_libraries(kv_cluster_test
+  PRIVATE
+    kv
+    GTest::gtest_main
+)
+
+target_include_directories(kv_cluster_test
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+)
+
+add_executable(kv_txn_test
+  txn/lock_manager_test.cpp
+  txn/txn_test.cpp
+)
+
+target_link_libraries(kv_txn_test
+  PRIVATE
+    kv
+    GTest::gtest_main
+)
+
+target_include_directories(kv_txn_test
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+)
+
 include(GoogleTest)
 gtest_discover_tests(kv_memtable_test)
 gtest_discover_tests(kv_wal_test)
@@ -124,3 +156,5 @@ gtest_discover_tests(kv_engine_test)
 gtest_discover_tests(kv_version_test)
 gtest_discover_tests(kv_net_test)
 gtest_discover_tests(kv_cache_test)
+gtest_discover_tests(kv_cluster_test)
+gtest_discover_tests(kv_txn_test)

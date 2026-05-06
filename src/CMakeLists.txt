@@ -27,7 +27,18 @@ add_library(kv
   cache/cache.cpp
   cache/lru_cache.cpp
   cache/lfu_cache.cpp
+  cache/shard_lru_cache.cpp
+  cluster/node.cpp
+  cluster/hash_ring.cpp
+  cluster/router.cpp
+  cluster/cluster_manager.cpp
+  txn/lock_manager.cpp
+  txn/txn.cpp
+  txn/txn_manager.cpp
+  txn/write_batch_with_index.cpp
   table/bloom_filter.cpp
+  raft/raft_log.cpp
+  raft/raft_node.cpp
 )
 
 target_include_directories(kv

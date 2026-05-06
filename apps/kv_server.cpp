@@ -60,6 +60,9 @@ int main(int argc, char** argv) {
     const std::string s(v);
     if (s == "lfu" || s == "LFU") options.cache_policy = kv::CachePolicy::kLFU;
     if (s == "lru" || s == "LRU") options.cache_policy = kv::CachePolicy::kLRU;
+    if (s == "shard_lru" || s == "SHARD_LRU" || s == "slru" || s == "SLRU") {
+      options.cache_policy = kv::CachePolicy::kShardLRU;
+    }
   }
   if (const char* v = std::getenv("KV_CACHE_CAPACITY"); v != nullptr) {
     char* end = nullptr;

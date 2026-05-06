@@ -10,6 +10,7 @@ namespace kv {
 enum class CachePolicy {
   kLRU = 0,
   kLFU = 1,
+  kShardLRU = 2,
 };
 
 struct CacheStats {

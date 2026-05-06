@@ -40,7 +40,7 @@ struct DBOptions {
   // 是否开启 SST 读缓存
   bool cache_enabled = false;
 
-  // 缓存策略（LRU/LFU）
+  // 缓存策略（LRU/LFU/ShardLRU）
   CachePolicy cache_policy = CachePolicy::kLRU;
 
   // 缓存容量（条目数）
