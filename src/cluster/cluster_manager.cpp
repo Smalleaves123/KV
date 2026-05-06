@@ -42,4 +42,4 @@ void ClusterManager::Clear() {
 	ring_->Clear();
 }
 
-}  // namespace kv
+}
