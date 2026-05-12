@@ -1,4 +1,5 @@
 #include "kv/txn/txn_manager.h"
+#include "kv/txn/txn.h"
 
 #include <gtest/gtest.h>
 

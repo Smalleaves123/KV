@@ -37,5 +37,13 @@ bool BloomFilter::MayContain(const std::string& key) const {
   return true;
 }
 
+BloomFilter BloomFilter::FromRaw(size_t bits, const std::vector<uint8_t>& raw) {
+  BloomFilter bf(bits);
+  if (raw.size() <= bf.data_.size()) {
+    std::copy(raw.begin(), raw.end(), bf.data_.begin());
+  }
+  return bf;
+}
+
 }  // namespace kv
 

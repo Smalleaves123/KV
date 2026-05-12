@@ -19,7 +19,6 @@ add_library(kv
   version/version.cpp
   version/version_set.cpp
   version/compaction.cpp
-  version/version_set.cpp
   engine/recovery.cpp
   engine/write_batch.cpp
   engine/db.cpp
@@ -28,6 +27,7 @@ add_library(kv
   cache/lru_cache.cpp
   cache/lfu_cache.cpp
   cache/shard_lru_cache.cpp
+  cache/ttl_manager.cpp
   cluster/node.cpp
   cluster/hash_ring.cpp
   cluster/router.cpp
@@ -36,9 +36,21 @@ add_library(kv
   txn/txn.cpp
   txn/txn_manager.cpp
   txn/write_batch_with_index.cpp
+  sstable/block_builder.cpp
+  sstable/block.cpp
+  sstable/block_iterator.cpp
+  sstable/footer.cpp
+  sstable/filter_block.cpp
+  sstable/table_builder.cpp
+  sstable/table_reader.cpp
+  sstable/table_cache.cpp
   table/bloom_filter.cpp
   raft/raft_log.cpp
   raft/raft_node.cpp
+  concurrency/thread_pool.cpp
+  data_types/counter.cpp
+  data_types/hash.cpp
+  data_types/list.cpp
 )
 
 target_include_directories(kv

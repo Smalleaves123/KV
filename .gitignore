@@ -13,3 +13,4 @@ test_tmp/
 *.log
 *.pid
 *.cpp.o
+.DS_Store

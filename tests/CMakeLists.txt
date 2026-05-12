@@ -65,7 +65,6 @@ add_executable(kv_version_test
   version/manifest_test.cpp
   version/compaction_test.cpp
   version/version_test.cpp
-  version/version_test.cpp
 )
 
 target_link_libraries(kv_version_test
@@ -149,6 +148,39 @@ target_include_directories(kv_txn_test
     ${PROJECT_SOURCE_DIR}/include
 )
 
+add_executable(kv_raft_test
+  raft/raft_log_test.cpp
+  raft/raft_node_test.cpp
+)
+
+target_link_libraries(kv_raft_test
+  PRIVATE
+    kv
+    GTest::gtest_main
+)
+
+target_include_directories(kv_raft_test
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+)
+
+add_executable(kv_data_types_test
+  data_types/counter_test.cpp
+  data_types/hash_test.cpp
+  data_types/list_test.cpp
+)
+
+target_link_libraries(kv_data_types_test
+  PRIVATE
+    kv
+    GTest::gtest_main
+)
+
+target_include_directories(kv_data_types_test
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+)
+
 include(GoogleTest)
 gtest_discover_tests(kv_memtable_test)
 gtest_discover_tests(kv_wal_test)
@@ -158,3 +190,5 @@ gtest_discover_tests(kv_net_test)
 gtest_discover_tests(kv_cache_test)
 gtest_discover_tests(kv_cluster_test)
 gtest_discover_tests(kv_txn_test)
+gtest_discover_tests(kv_raft_test)
+gtest_discover_tests(kv_data_types_test)

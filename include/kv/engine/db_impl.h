@@ -13,8 +13,7 @@
 #include "kv/engine/snapshot.h"
 #include "kv/engine/write_batch.h"
 #include "kv/memtable/memtable.h"
-#include "kv/table/bloom_filter.h"
-#include "kv/table/table_index.h"
+#include "kv/sstable/table_cache.h"
 #include "kv/version/manifest.h"
 #include "kv/wal/wal_writer.h"
 
@@ -108,12 +107,6 @@ class DBImpl final : public DB {
   static std::string BuildSSTFileName(uint64_t file_number);
   static std::string BuildSSTCacheKey(const std::string& sst_file,
                                       const std::string& user_key);
-  struct SSTCacheEntry {
-    TableIndex index;
-    BloomFilter bloom;
-  };
-  Status BuildSSTIndexAndBloom(const std::string& file,
-                               SSTCacheEntry* out) const;
   Status CompactSSTFilesLocked();
 
   DBOptions options_;
@@ -133,7 +126,7 @@ class DBImpl final : public DB {
   std::unordered_set<const Snapshot*> active_snapshots_;
   std::vector<std::unique_ptr<Snapshot>> owned_snapshots_;
   mutable std::unique_ptr<Cache> cache_;
-  mutable std::unordered_map<std::string, SSTCacheEntry> sst_cache_;
+  mutable std::unique_ptr<TableCache> table_cache_;
   mutable ReadPathStats read_path_stats_;
   mutable CompactionStats compaction_stats_;
 

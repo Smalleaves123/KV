@@ -16,16 +16,14 @@
 #include <vector>
 
 #include "kv/engine/recovery.h"
+#include "kv/sstable/table_builder.h"
+#include "kv/sstable/table_cache.h"
+#include "kv/sstable/table_reader.h"
 #include "kv/table/bloom_filter.h"
 #include "kv/table/table_index.h"
 
 namespace kv {
 namespace {
-
-enum class SSTRecordType : uint8_t {
-  kValue = 0,
-  kDelete = 1,
-};
 
 class SnapshotImpl final : public Snapshot {
  public:
@@ -183,157 +181,9 @@ Status RequireOpen(bool is_open) {
   return Status::OK();
 }
 
-void AppendFixed32(std::string* out, uint32_t value) {
-  out->push_back(static_cast<char>(value & 0xFF));
-  out->push_back(static_cast<char>((value >> 8) & 0xFF));
-  out->push_back(static_cast<char>((value >> 16) & 0xFF));
-  out->push_back(static_cast<char>((value >> 24) & 0xFF));
-}
-
-void AppendFixed64(std::string* out, uint64_t value) {
-  for (int i = 0; i < 8; ++i) {
-    out->push_back(static_cast<char>((value >> (8 * i)) & 0xFF));
-  }
-}
-
-uint32_t DecodeFixed32(const char* p) {
-  return static_cast<uint32_t>(static_cast<unsigned char>(p[0])) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[1])) << 8) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[2])) << 16) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[3])) << 24);
-}
-
-uint64_t DecodeFixed64(const char* p) {
-  uint64_t value = 0;
-  for (int i = 0; i < 8; ++i) {
-    value |= (static_cast<uint64_t>(static_cast<unsigned char>(p[i])) << (8 * i));
-  }
-  return value;
-}
-
-Status WriteSSTRecord(std::ofstream* out,
-                      const MemTableEntry& entry,
-                      size_t* bytes_written) {
-  if (out == nullptr || bytes_written == nullptr) {
-    return Status::InvalidArgument("invalid sst record output");
-  }
-
-  const SSTRecordType type =
-      entry.type == RecordType::kDeletion ? SSTRecordType::kDelete
-                                          : SSTRecordType::kValue;
-
-  std::string buffer;
-  buffer.reserve(1 + 8 + 4 + 4 + entry.key.size() + entry.value.size());
-  buffer.push_back(static_cast<char>(type));
-  AppendFixed64(&buffer, entry.seq);
-  AppendFixed32(&buffer, static_cast<uint32_t>(entry.key.size()));
-  AppendFixed32(&buffer, static_cast<uint32_t>(entry.value.size()));
-  buffer.append(entry.key);
-  buffer.append(entry.value);
-
-  out->write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-  if (!*out) {
-    return Status::IOError("failed to write sst record");
-  }
-
-  *bytes_written += buffer.size();
-  return Status::OK();
-}
-
-Status ReadSSTRecord(std::ifstream* in,
-                     SSTRecordType* type,
-                     uint64_t* seq,
-                     std::string* key,
-                     std::string* value) {
-  if (in == nullptr || type == nullptr || seq == nullptr || key == nullptr ||
-      value == nullptr) {
-    return Status::InvalidArgument("invalid sst record input");
-  }
-
-  char type_raw = 0;
-  in->read(&type_raw, 1);
-  if (in->gcount() == 0) {
-    in->clear();
-    return Status::NotFound("end of sst");
-  }
-  if (in->gcount() != 1) {
-    in->clear();
-    return Status::Corruption("truncated sst record type");
-  }
-
-  switch (static_cast<uint8_t>(type_raw)) {
-    case 0:
-      *type = SSTRecordType::kValue;
-      break;
-    case 1:
-      *type = SSTRecordType::kDelete;
-      break;
-    default:
-      return Status::Corruption("unknown sst record type");
-  }
-
-  char header_buf[16];
-  in->read(header_buf, 16);
-  if (in->gcount() != 16) {
-    in->clear();
-    return Status::Corruption("truncated sst record header");
-  }
-
-  *seq = DecodeFixed64(header_buf);
-  const uint32_t key_size = DecodeFixed32(header_buf + 8);
-  const uint32_t value_size = DecodeFixed32(header_buf + 12);
-
-  key->assign(key_size, '\0');
-  value->assign(value_size, '\0');
-
-  if (key_size > 0) {
-    in->read(key->data(), static_cast<std::streamsize>(key_size));
-    if (in->gcount() != static_cast<std::streamsize>(key_size)) {
-      in->clear();
-      return Status::Corruption("truncated sst key");
-    }
-  }
-
-  if (value_size > 0) {
-    in->read(value->data(), static_cast<std::streamsize>(value_size));
-    if (in->gcount() != static_cast<std::streamsize>(value_size)) {
-      in->clear();
-      return Status::Corruption("truncated sst value");
-    }
-  }
-
-  return Status::OK();
-}
-
-bool ParseSSTFileNumber(const std::filesystem::path& path, uint64_t* number) {
-  if (number == nullptr) {
-    return false;
-  }
-
-  if (path.extension() != ".sst") {
-    return false;
-  }
-
-  const std::string stem = path.stem().string();
-  if (stem.empty()) {
-    return false;
-  }
-
-  uint64_t value = 0;
-  for (char c : stem) {
-    if (c < '0' || c > '9') {
-      return false;
-    }
-    value = value * 10 + static_cast<uint64_t>(c - '0');
-  }
-
-  *number = value;
-  return true;
-}
-
 struct CompactionEntry {
   uint64_t seq = 0;
-  RecordType type = RecordType::kValue;
+  uint8_t type = 0;  // 0 = value, 1 = deletion
   std::string value;
 };
 
@@ -354,7 +204,8 @@ DBImpl::DBImpl(DBOptions options)
       latest_key_seq_(),
       active_snapshots_(),
       owned_snapshots_(),
-      cache_() {}
+      cache_(),
+      table_cache_(std::make_unique<TableCache>(64)) {}
 
 DBImpl::~DBImpl() {
   (void)Close();
@@ -372,7 +223,8 @@ Status DBImpl::Init() {
   manifest_path_ = BuildManifestPath(options_);
   if (options_.cache_enabled) {
     cache_ = CreateCache(
-        options_.cache_policy, options_.cache_capacity, options_.cache_default_ttl_ms);
+        options_.cache_policy, options_.cache_capacity,
+        options_.cache_default_ttl_ms);
   } else {
     cache_.reset();
   }
@@ -755,6 +607,7 @@ Status DBImpl::Close() {
     return s;
   }
 
+  table_cache_->Clear();
   active_transactions_.clear();
   active_snapshots_.clear();
   owned_snapshots_.clear();
@@ -881,41 +734,32 @@ Status DBImpl::FlushMemTableToSST(std::string* out_file) {
     return Status::IOError("failed to create sst dir: " + sst_dir_);
   }
 
-  const std::string sst_path = sst_dir_ + "/" + BuildSSTFileName(next_file_number_);
+  const std::string sst_path =
+      sst_dir_ + "/" + BuildSSTFileName(next_file_number_);
   const uint64_t file_number = next_file_number_;
 
-  std::ofstream out(sst_path, std::ios::binary | std::ios::trunc);
-  if (!out.is_open()) {
-    return Status::IOError("failed to open sst file: " + sst_path);
-  }
+  TableBuilder builder(sst_path, options_.memtable_write_buffer_size);
 
   auto it = memtable_.NewIterator();
-  size_t bytes_written = 0;
   uint64_t max_flushed_seq = 0;
 
   for (it.SeekToFirst(); it.Valid(); it.Next()) {
     const auto& entry = it.entry();
     max_flushed_seq = std::max(max_flushed_seq, entry.seq);
 
-    Status s = WriteSSTRecord(&out, entry, &bytes_written);
+    uint8_t type = (entry.type == RecordType::kDeletion) ? 1 : 0;
+    Status s = builder.Add(entry.key, entry.seq, type, entry.value);
     if (!s.ok()) {
-      out.close();
       return s;
     }
   }
 
-  out.flush();
-  if (!out) {
-    out.close();
-    return Status::IOError("failed to flush sst file: " + sst_path);
+  Status s = builder.Finish();
+  if (!s.ok()) {
+    return s;
   }
 
-  out.close();
-  if (!out) {
-    return Status::IOError("failed to close sst file: " + sst_path);
-  }
-
-  if (bytes_written == 0) {
+  if (builder.FileSize() == 0) {
     std::filesystem::remove(sst_path, ec);
     return Status::NotFound("no visible entries to flush");
   }
@@ -925,7 +769,7 @@ Status DBImpl::FlushMemTableToSST(std::string* out_file) {
     meta.file_number = file_number;
     meta.file_path = sst_path;
     meta.max_seq = max_flushed_seq;
-    Status s = manifest_.AddFile(meta);
+    s = manifest_.AddFile(meta);
     if (!s.ok()) {
       return s;
     }
@@ -970,87 +814,41 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
   const bool allow_cache =
       cache_ != nullptr && read_seq == std::numeric_limits<uint64_t>::max();
 
-  for (auto it = sst_files_.rbegin(); it != sst_files_.rend(); ++it) {
-    const std::string cache_key = BuildSSTCacheKey(*it, target);
-    if (allow_cache && cache_->Get(cache_key, value)) {
+  // Check in-memory key-value cache first
+  if (allow_cache) {
+    const std::string cache_key = BuildSSTCacheKey(
+        "", target);  // cache key uses file+key, use empty file for global
+    if (cache_->Get(target, value)) {
       return Status::OK();
     }
+  }
 
-    SSTCacheEntry* cache_entry = nullptr;
-    auto found = sst_cache_.find(*it);
-    if (found == sst_cache_.end()) {
-      SSTCacheEntry entry;
-      Status s = BuildSSTIndexAndBloom(*it, &entry);
-      if (!s.ok()) {
-        return s;
-      }
-      auto [ins_it, _] = sst_cache_.emplace(*it, std::move(entry));
-      cache_entry = &ins_it->second;
-      ++read_path_stats_.sst_index_builds;
-    } else {
-      cache_entry = &found->second;
-      ++read_path_stats_.sst_index_hits;
+  // Walk SST files from newest to oldest
+  for (auto it = sst_files_.rbegin(); it != sst_files_.rend(); ++it) {
+    const std::string& file = *it;
+
+    std::shared_ptr<const TableReader> reader;
+    Status s = table_cache_->Get(file, &reader);
+    if (!s.ok()) {
+      return s;
     }
 
-    ++read_path_stats_.bloom_queries;
-    if (cache_entry != nullptr && !cache_entry->bloom.MayContain(target)) {
-      ++read_path_stats_.bloom_negatives;
-      continue;
-    }
-
-    const auto& entries = cache_entry->index.entries;
-    size_t left = 0;
-    size_t right = entries.size();
-    while (left < right) {
-      const size_t mid = left + (right - left) / 2;
-      if (entries[mid].key < target) {
-        left = mid + 1;
-      } else {
-        right = mid;
-      }
-    }
-    if (left >= entries.size() || entries[left].key != target) {
-      continue;
-    }
-
-    std::ifstream in(*it, std::ios::binary);
-    if (!in.is_open()) {
-      return Status::IOError("failed to open sst file: " + *it);
-    }
-    in.seekg(static_cast<std::streamoff>(entries[left].offset), std::ios::beg);
-
-    while (true) {
-      SSTRecordType type;
-      uint64_t seq = 0;
-      std::string entry_key;
-      std::string entry_value;
-
-      Status s = ReadSSTRecord(&in, &type, &seq, &entry_key, &entry_value);
-      if (s.IsNotFound()) {
-        break;
-      }
-      if (!s.ok()) {
-        return s;
-      }
-
-      if (entry_key != target) {
-        continue;
-      }
-
-      if (seq > read_seq) {
-        continue;
-      }
-
-      if (type == SSTRecordType::kDelete) {
+    uint8_t entry_type = 0;
+    s = reader->Get(target, read_seq, &entry_type, value);
+    if (s.ok()) {
+      if (entry_type == 1) {
+        // deletion tombstone
         return Status::NotFound("key deleted");
       }
-
-      *value = std::move(entry_value);
       if (allow_cache) {
-        cache_->Put(cache_key, *value);
+        cache_->Put(target, *value);
       }
       return Status::OK();
     }
+    if (s.IsNotFound()) {
+      continue;
+    }
+    return s;
   }
 
   return Status::NotFound("key not found");
@@ -1081,26 +879,34 @@ Status DBImpl::RebuildLatestKeySeqIndex() {
   latest_key_seq_.clear();
 
   for (const auto& file : sst_files_) {
-    std::ifstream in(file, std::ios::binary);
-    if (!in.is_open()) {
-      return Status::IOError("failed to open sst file: " + file);
-    }
-
-    while (true) {
-      SSTRecordType type;
-      uint64_t seq = 0;
-      std::string key;
-      std::string value;
-      Status s = ReadSSTRecord(&in, &type, &seq, &key, &value);
-      if (s.IsNotFound()) {
-        break;
-      }
+    std::shared_ptr<const TableReader> reader;
+    Status s = table_cache_->Get(file, &reader);
+    if (!s.ok()) {
+      // Try to open directly if cache fails
+      std::unique_ptr<TableReader> direct_reader;
+      s = TableReader::Open(file, &direct_reader);
       if (!s.ok()) {
         return s;
       }
-      auto it = latest_key_seq_.find(key);
-      if (it == latest_key_seq_.end() || seq > it->second) {
-        latest_key_seq_[key] = seq;
+      // Scan the file to build sequence index
+      TableIterator iter(*direct_reader);
+      for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
+        const std::string k = iter.key();
+        const uint64_t seq = iter.seq();
+        auto it = latest_key_seq_.find(k);
+        if (it == latest_key_seq_.end() || seq > it->second) {
+          latest_key_seq_[k] = seq;
+        }
+      }
+    } else {
+      TableIterator iter(*reader);
+      for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
+        const std::string k = iter.key();
+        const uint64_t seq = iter.seq();
+        auto it = latest_key_seq_.find(k);
+        if (it == latest_key_seq_.end() || seq > it->second) {
+          latest_key_seq_[k] = seq;
+        }
       }
     }
   }
@@ -1262,12 +1068,30 @@ Status DBImpl::LoadSSTFilesFromDir(uint64_t* max_seq) {
       continue;
     }
 
-    uint64_t number = 0;
-    if (!ParseSSTFileNumber(entry.path(), &number)) {
+    const std::filesystem::path& path = entry.path();
+    if (path.extension() != ".sst") {
       continue;
     }
 
-    files.push_back({number, entry.path().string()});
+    const std::string stem = path.stem().string();
+    if (stem.empty()) {
+      continue;
+    }
+
+    uint64_t number = 0;
+    bool valid = true;
+    for (char c : stem) {
+      if (c < '0' || c > '9') {
+        valid = false;
+        break;
+      }
+      number = number * 10 + static_cast<uint64_t>(c - '0');
+    }
+    if (!valid) {
+      continue;
+    }
+
+    files.push_back({number, path.string()});
   }
 
   std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) {
@@ -1278,25 +1102,13 @@ Status DBImpl::LoadSSTFilesFromDir(uint64_t* max_seq) {
     (void)number;
     sst_files_.push_back(file);
 
-    std::ifstream in(file, std::ios::binary);
-    if (!in.is_open()) {
-      return Status::IOError("failed to open sst file: " + file);
+    // Get max_seq from the file via TableReader
+    std::unique_ptr<TableReader> reader;
+    Status s = TableReader::Open(file, &reader);
+    if (!s.ok()) {
+      return s;
     }
-
-    while (true) {
-      SSTRecordType type;
-      uint64_t seq = 0;
-      std::string key;
-      std::string value;
-      Status s = ReadSSTRecord(&in, &type, &seq, &key, &value);
-      if (s.IsNotFound()) {
-        break;
-      }
-      if (!s.ok()) {
-        return s;
-      }
-      *max_seq = std::max(*max_seq, seq);
-    }
+    *max_seq = std::max(*max_seq, reader->MaxSequence());
   }
 
   if (!files.empty()) {
@@ -1384,45 +1196,6 @@ std::string DBImpl::BuildSSTCacheKey(const std::string& sst_file,
   return out;
 }
 
-Status DBImpl::BuildSSTIndexAndBloom(const std::string& file,
-                                     SSTCacheEntry* out) const {
-  if (out == nullptr) {
-    return Status::InvalidArgument("sst cache output is null");
-  }
-
-  std::ifstream in(file, std::ios::binary);
-  if (!in.is_open()) {
-    return Status::IOError("failed to open sst file: " + file);
-  }
-
-  out->index.entries.clear();
-  out->bloom = BloomFilter(8192);
-
-  while (true) {
-    std::streampos pos = in.tellg();
-    if (pos < 0) {
-      return Status::IOError("invalid sst stream position");
-    }
-
-    SSTRecordType type;
-    uint64_t seq = 0;
-    std::string key;
-    std::string value;
-    Status s = ReadSSTRecord(&in, &type, &seq, &key, &value);
-    if (s.IsNotFound()) {
-      break;
-    }
-    if (!s.ok()) {
-      return s;
-    }
-
-    out->index.entries.push_back({key, static_cast<uint64_t>(pos)});
-    out->bloom.Add(key);
-  }
-
-  return Status::OK();
-}
-
 Status DBImpl::CompactSSTFilesLocked() {
   if (sst_files_.size() <= 1) {
     return Status::OK();
@@ -1433,33 +1206,26 @@ Status DBImpl::CompactSSTFilesLocked() {
   uint64_t compact_max_seq = 0;
 
   for (const auto& file : sst_files_) {
-    std::ifstream in(file, std::ios::binary);
-    if (!in.is_open()) {
-      return Status::IOError("failed to open sst file: " + file);
+    std::shared_ptr<const TableReader> reader;
+    Status s = table_cache_->Get(file, &reader);
+    if (!s.ok()) {
+      return s;
     }
 
-    while (true) {
-      SSTRecordType type;
-      uint64_t seq = 0;
-      std::string key;
-      std::string value;
-      Status s = ReadSSTRecord(&in, &type, &seq, &key, &value);
-      if (s.IsNotFound()) {
-        break;
-      }
-      if (!s.ok()) {
-        return s;
-      }
+    TableIterator iter(*reader);
+    for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
+      const std::string k = iter.key();
+      const uint64_t seq = iter.seq();
+      const uint8_t type = iter.type();
 
       compact_max_seq = std::max(compact_max_seq, seq);
-      auto it = latest.find(key);
+      auto it = latest.find(k);
       if (it == latest.end() || seq > it->second.seq) {
         CompactionEntry entry;
         entry.seq = seq;
-        entry.type =
-            (type == SSTRecordType::kDelete) ? RecordType::kDeletion : RecordType::kValue;
-        entry.value = std::move(value);
-        latest[key] = std::move(entry);
+        entry.type = type;
+        entry.value = iter.value();
+        latest[k] = std::move(entry);
       }
     }
   }
@@ -1474,37 +1240,21 @@ Status DBImpl::CompactSSTFilesLocked() {
     return Status::IOError("failed to create sst dir: " + sst_dir_);
   }
 
-  const std::string sst_path = sst_dir_ + "/" + BuildSSTFileName(next_file_number_);
+  const std::string sst_path =
+      sst_dir_ + "/" + BuildSSTFileName(next_file_number_);
   const uint64_t file_number = next_file_number_;
 
-  std::ofstream out(sst_path, std::ios::binary | std::ios::trunc);
-  if (!out.is_open()) {
-    return Status::IOError("failed to open sst file: " + sst_path);
-  }
-
-  size_t bytes_written = 0;
+  TableBuilder builder(sst_path);
   for (const auto& [key, entry] : latest) {
-    MemTableEntry mem_entry;
-    mem_entry.key = key;
-    mem_entry.value = entry.value;
-    mem_entry.seq = entry.seq;
-    mem_entry.type = entry.type;
-
-    Status s = WriteSSTRecord(&out, mem_entry, &bytes_written);
+    Status s = builder.Add(key, entry.seq, entry.type, entry.value);
     if (!s.ok()) {
-      out.close();
       return s;
     }
   }
 
-  out.flush();
-  if (!out) {
-    out.close();
-    return Status::IOError("failed to flush sst file: " + sst_path);
-  }
-  out.close();
-  if (!out) {
-    return Status::IOError("failed to close sst file: " + sst_path);
+  Status s = builder.Finish();
+  if (!s.ok()) {
+    return s;
   }
 
   if (manifest_.IsOpen()) {
@@ -1512,15 +1262,25 @@ Status DBImpl::CompactSSTFilesLocked() {
     meta.file_number = file_number;
     meta.file_path = sst_path;
     meta.max_seq = compact_max_seq;
-    Status s = manifest_.AddFile(meta);
+    s = manifest_.AddFile(meta);
     if (!s.ok()) {
       return s;
     }
 
     for (const auto& old_file : old_files) {
+      // Parse file number from path
+      const std::filesystem::path path(old_file);
+      if (path.extension() != ".sst") {
+        return Status::Corruption("unexpected sst extension: " + old_file);
+      }
+      const std::string stem = path.stem().string();
       uint64_t old_number = 0;
-      if (!ParseSSTFileNumber(std::filesystem::path(old_file), &old_number)) {
-        return Status::Corruption("failed to parse old sst file number: " + old_file);
+      for (char c : stem) {
+        if (c < '0' || c > '9') {
+          return Status::Corruption(
+              "failed to parse old sst file number: " + old_file);
+        }
+        old_number = old_number * 10 + static_cast<uint64_t>(c - '0');
       }
       s = manifest_.RemoveFile(old_number);
       if (!s.ok()) {
@@ -1529,16 +1289,21 @@ Status DBImpl::CompactSSTFilesLocked() {
     }
   }
 
+  // Evict old files from cache
+  for (const auto& old_file : old_files) {
+    table_cache_->Evict(old_file);
+  }
+
   sst_files_.clear();
   sst_files_.push_back(sst_path);
   ++next_file_number_;
 
+  // Delete old files
   for (const auto& old_file : old_files) {
     std::error_code remove_ec;
     (void)std::filesystem::remove(old_file, remove_ec);
   }
 
-  sst_cache_.clear();
   return RebuildLatestKeySeqIndex();
 }
 

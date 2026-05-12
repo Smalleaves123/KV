@@ -14,10 +14,10 @@ LFUCache::LFUCache(size_t capacity, int64_t default_ttl_ms)
       stats_() {}
 
 bool LFUCache::IsExpired(const Entry& entry) const {
-  if (!entry.has_expire) {
+if (!entry.has_expire) {
     return false;
-  }
-  return std::chrono::steady_clock::now() >= entry.expire_at;
+}
+return std::chrono::steady_clock::now() >= entry.expire_at;
 }
 
 void LFUCache::Touch(std::unordered_map<std::string, Entry>::iterator it) {
