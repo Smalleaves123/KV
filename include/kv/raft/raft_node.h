@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <vector>
 #include <functional>
+#include <cstdint>
 
 #include "kv/raft/raft_state.h"
 #include "kv/raft/raft_rpc.h"
@@ -52,11 +53,14 @@ class RaftNode {
   // 状态查看
   uint64_t node_id() const { return id_; }
   uint64_t current_term() const { return term_; }
+  uint64_t voted_for() const { return voted_for_; }
   RaftRole role() const { return role_; }
   uint64_t leader_id() const { return leader_id_; }
+  uint64_t commit_index() const { return raft_log_->commit_index(); }
+  void AdvanceApplied(uint64_t index) { raft_log_->AppliedTo(index); }
 
-  // 接收上层应用的日志写入请求
-  void Propose(const std::string& data);
+  // 接收上层应用的日志写入请求，返回新日志索引；非 leader 时返回 0。
+  uint64_t Propose(const std::string& data);
 
   // 网络层发包回调设置
   void set_send_request_vote_fn(SendRequestVoteMsgFn fn) { send_rv_ = fn; }

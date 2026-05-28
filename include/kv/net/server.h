@@ -2,11 +2,11 @@
 
 #include <atomic>
 #include <cstdint>
-#include <mutex>
+#include <memory>
 #include <thread>
-#include <vector>
 
 #include "kv/common/status.h"
+#include "kv/concurrency/thread_pool.h"
 
 namespace kv {
 class DB;
@@ -42,7 +42,14 @@ class Server {
  private:
   Status SetupListenSocket(uint16_t port);
   void AcceptLoop(DB* db);
-  void HandleClient(int client_fd, DB* db);
+  static void HandleClient(int client_fd, DB* db,
+                           std::atomic<bool>* running,
+                           std::atomic<uint64_t>* total_requests,
+                           std::atomic<uint64_t>* txn_begin,
+                           std::atomic<uint64_t>* txn_commit,
+                           std::atomic<uint64_t>* txn_abort,
+                           std::atomic<uint64_t>* txn_conflict,
+                           std::atomic<uint64_t>* active_connections);
 
   int listen_fd_;
   uint16_t port_;
@@ -56,8 +63,7 @@ class Server {
   std::atomic<uint64_t> txn_conflict_;
 
   std::thread accept_thread_;
-  std::mutex workers_mu_;
-  std::vector<std::thread> workers_;
+  std::unique_ptr<ThreadPool> pool_;
 };
 
 }  // namespace kv::net

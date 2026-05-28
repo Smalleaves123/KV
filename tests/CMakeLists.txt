@@ -151,6 +151,7 @@ target_include_directories(kv_txn_test
 add_executable(kv_raft_test
   raft/raft_log_test.cpp
   raft/raft_node_test.cpp
+  raft/raft_server_integration_test.cpp
 )
 
 target_link_libraries(kv_raft_test

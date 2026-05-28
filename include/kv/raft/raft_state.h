@@ -26,6 +26,7 @@ struct HardState {
   uint64_t term{0};
   uint64_t vote_for{0};
   uint64_t commit_index{0};
+  uint64_t applied_index{0};
 };
 
 } // namespace raft

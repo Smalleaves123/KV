@@ -112,6 +112,10 @@ class DB {
   virtual Status ReleaseSnapshot(const Snapshot* snapshot) = 0;
 
   virtual Status Close() = 0;
+
+  // Direct apply (bypasses WAL) — used by Raft for applying committed entries.
+  virtual Status ApplyPut(const std::string& key, const std::string& value) = 0;
+  virtual Status ApplyDelete(const std::string& key) = 0;
 };
 
 }  // namespace kv

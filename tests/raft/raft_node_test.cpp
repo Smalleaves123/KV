@@ -127,11 +127,7 @@ TEST(RaftNodeTest, SingleNodeProposeIncreasesLog) {
 
   // Propose 一条日志
   node.Propose("hello");
-
-  // 单节点应该能直接 commit (通过 heartbeat)
-  for (int i = 0; i < 5; ++i) {
-    node.Tick();
-  }
+  EXPECT_EQ(node.commit_index(), 1u);
 }
 
 // ===== 选举测试 =====
@@ -594,6 +590,44 @@ TEST(RaftNodeTest, RequestVoteWithBetterLogWins) {
   auto reply = node.HandleRequestVote(args);
   // 节点 2 日志更新 (LastIndex=2, term=1)，应该拒绝
   EXPECT_FALSE(reply.vote_granted);
+}
+
+TEST(RaftNodeTest, AppendEntriesReplyAdvancesCommitOnlyToAcknowledgedIndex) {
+  auto storage = std::make_shared<MemStorage>();
+
+  RaftOptions opts;
+  opts.node_id = 1;
+  opts.peers = {1, 2, 3};
+  opts.storage = storage;
+  opts.election_tick = 5;
+  opts.heartbeat_tick = 1;
+
+  RaftNode node(opts);
+  for (int i = 0; i < 30; ++i) {
+    node.Tick();
+    if (node.role() == RaftRole::kCandidate) {
+      break;
+    }
+  }
+  ASSERT_EQ(node.role(), RaftRole::kCandidate);
+
+  RequestVoteReply vote;
+  vote.term = node.current_term();
+  vote.vote_granted = true;
+  node.HandleRequestVoteReply(2, vote);
+  ASSERT_EQ(node.role(), RaftRole::kLeader);
+
+  ASSERT_EQ(node.Propose("v1"), 1u);
+  ASSERT_EQ(node.Propose("v2"), 2u);
+  ASSERT_EQ(node.Propose("v3"), 3u);
+
+  AppendEntriesReply ack;
+  ack.term = node.current_term();
+  ack.success = true;
+  ack.match_index = 1;
+  node.HandleAppendEntriesReply(2, ack);
+
+  EXPECT_EQ(node.commit_index(), 1u);
 }
 
 }  // namespace

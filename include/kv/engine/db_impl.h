@@ -61,6 +61,9 @@ class DBImpl final : public DB {
 
   Status Close() override;
 
+  Status ApplyPut(const std::string& key, const std::string& value) override;
+  Status ApplyDelete(const std::string& key) override;
+
   bool is_open() const noexcept;
   uint64_t LatestSequence() const noexcept;
   const std::string& wal_path() const noexcept;

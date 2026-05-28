@@ -144,10 +144,10 @@ void RaftNode::SendAppendEntries(uint64_t to) {
   }
 }
 
-void RaftNode::Propose(const std::string& data) {
+uint64_t RaftNode::Propose(const std::string& data) {
   if (role_ != RaftRole::kLeader) {
     // 应该将请求重定向给Leader
-    return;
+    return 0;
   }
   
   LogEntry entry;
@@ -157,8 +157,13 @@ void RaftNode::Propose(const std::string& data) {
   
   std::vector<LogEntry> entries{entry};
   raft_log_->Append(entries);
+
+  if (peers_.size() == 1) {
+    raft_log_->CommitTo(entry.index);
+  }
   
   BcastAppendEntries();
+  return entry.index;
 }
 
 RequestVoteReply RaftNode::HandleRequestVote(const RequestVoteArgs& args) {
@@ -210,6 +215,7 @@ AppendEntriesReply RaftNode::HandleAppendEntries(const AppendEntriesArgs& args) 
   // 匹配前一个日志条目
   if (!raft_log_->MatchLog(args.prev_log_index, args.prev_log_term)) {
     reply.success = false;
+    reply.match_index = 0;
     return reply;
   }
 
@@ -225,6 +231,7 @@ AppendEntriesReply RaftNode::HandleAppendEntries(const AppendEntriesArgs& args) 
   }
 
   reply.success = true;
+  reply.match_index = args.prev_log_index + args.entries.size();
   return reply;
 }
 
@@ -265,12 +272,9 @@ void RaftNode::HandleAppendEntriesReply(uint64_t from, const AppendEntriesReply&
   if (progresses_.find(from) == progresses_.end()) return;
 
   if (reply.success) {
-    // 假设更新成功，我们从发出去的最大条目更新match和next
-    // 目前没有将最后一个发送的index带在Reply里，用目前已知最大进行粗略逼近
-    // 真实情况我们在请求前应该缓存最后一条请求的index，现在简单处理为：如果收到成功，更新到最大
-    uint64_t my_last_index = raft_log_->LastIndex();
-    progresses_[from].match = my_last_index;
-    progresses_[from].next = my_last_index + 1;
+    progresses_[from].match =
+        std::max(progresses_[from].match, reply.match_index);
+    progresses_[from].next = progresses_[from].match + 1;
 
     // 检查是否可以向前推进commit_index
     // leader 只能提交当前任期的记录

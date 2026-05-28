@@ -47,6 +47,9 @@ add_library(kv
   table/bloom_filter.cpp
   raft/raft_log.cpp
   raft/raft_node.cpp
+  raft/raft_rpc_codec.cpp
+  raft/raft_storage_impl.cpp
+  raft/raft_server.cpp
   concurrency/thread_pool.cpp
   data_types/counter.cpp
   data_types/hash.cpp

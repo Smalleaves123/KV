@@ -31,6 +31,7 @@ struct AppendEntriesArgs {
 struct AppendEntriesReply {
   uint64_t term{0};          // 当前任期号，对于领导人去更新自己的任期号
   bool success{false};       // 如果跟随者包含匹配上 prevLogIndex 和 prevLogTerm 的日志时为真
+  uint64_t match_index{0};   // follower 已确认复制到的最大日志索引
   // 快速恢复用的额外字段 (可选)
   uint64_t conflict_index{0};
   uint64_t conflict_term{0};

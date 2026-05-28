@@ -300,5 +300,30 @@ TEST_F(ServerIntegrationTest, StopThenRejectNewConnection) {
   EXPECT_LT(fd, 0);
 }
 
+TEST_F(ServerIntegrationTest, CanRestartAfterStop) {
+  if (!started_) {
+    GTEST_SKIP() << "server failed to start in test environment: "
+                 << last_status_.ToString();
+  }
+
+  Status s = server_.Stop();
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  ASSERT_FALSE(server_.IsRunning());
+
+  s = server_.Start(port_, db_.get());
+  ASSERT_TRUE(s.ok()) << s.ToString();
+  ASSERT_TRUE(server_.IsRunning());
+
+  const int fd = ConnectWithRetry(port_);
+  ASSERT_GE(fd, 0);
+
+  std::string resp;
+  ASSERT_TRUE(SendLine(fd, "PING"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_EQ(resp, "+PONG\r\n");
+
+  (void)::close(fd);
+}
+
 }  // namespace
 }  // namespace kv::net

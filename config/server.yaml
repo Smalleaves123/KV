@@ -1,0 +1,36 @@
+# KV Server Configuration
+#
+# Environment variables (take precedence):
+#   KV_RAFT=1                     Enable Raft consensus
+#   KV_RAFT_NODE_ID=1             This node's ID
+#   KV_RAFT_PORT=9528             Raft RPC port
+#   KV_RAFT_DATA_DIR=data/raft    Raft data directory
+#   KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728
+#   KV_CACHE=1                    Enable cache
+#   KV_CACHE_CAPACITY=1024        Cache capacity
+#   KV_CACHE_TTL_MS=0             Default TTL (0=no expiry)
+
+server:
+  port: 9527
+  db_path: data/db
+
+raft:
+  enabled: false
+  node_id: 1
+  raft_port: 9528
+  data_dir: data/raft
+  peers:
+    - id: 1
+      host: 127.0.0.1
+      raft_port: 9528
+    - id: 2
+      host: 127.0.0.1
+      raft_port: 9628
+    - id: 3
+      host: 127.0.0.1
+      raft_port: 9728
+
+cache:
+  enabled: false
+  capacity: 1024
+  ttl_ms: 0

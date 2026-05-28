@@ -28,8 +28,7 @@ Server::Server()
       txn_abort_(0),
       txn_conflict_(0),
       accept_thread_(),
-      workers_mu_(),
-      workers_() {}
+      pool_(std::make_unique<ThreadPool>(0)) {}
 
 Server::~Server() {
   (void)Stop();
@@ -51,6 +50,7 @@ Status Server::Start(uint16_t port, DB* db) {
     return s;
   }
 
+  pool_ = std::make_unique<ThreadPool>(0);
   running_.store(true);
   accept_thread_ = std::thread(&Server::AcceptLoop, this, db);
   return Status::OK();
@@ -69,14 +69,8 @@ Status Server::Stop() {
     accept_thread_.join();
   }
 
-  {
-    std::lock_guard<std::mutex> lock(workers_mu_);
-    for (auto& t : workers_) {
-      if (t.joinable()) {
-        t.join();
-      }
-    }
-    workers_.clear();
+  if (pool_ != nullptr) {
+    pool_->WaitAndStop();
   }
 
   return Status::OK();
@@ -152,12 +146,27 @@ void Server::AcceptLoop(DB* db) {
     total_connections_.fetch_add(1);
     active_connections_.fetch_add(1);
 
-    std::lock_guard<std::mutex> lock(workers_mu_);
-    workers_.emplace_back(&Server::HandleClient, this, client_fd, db);
+    pool_->Execute([client_fd, db, this]() {
+      HandleClient(client_fd, db,
+                   &running_,
+                   &total_requests_,
+                   &txn_begin_,
+                   &txn_commit_,
+                   &txn_abort_,
+                   &txn_conflict_,
+                   &active_connections_);
+    });
   }
 }
 
-void Server::HandleClient(int client_fd, DB* db) {
+void Server::HandleClient(int client_fd, DB* db,
+                          std::atomic<bool>* running,
+                          std::atomic<uint64_t>* total_requests,
+                          std::atomic<uint64_t>* txn_begin,
+                          std::atomic<uint64_t>* txn_commit,
+                          std::atomic<uint64_t>* txn_abort,
+                          std::atomic<uint64_t>* txn_conflict,
+                          std::atomic<uint64_t>* active_connections) {
   Connection conn(client_fd);
   Session session(db);
 
@@ -166,7 +175,7 @@ void Server::HandleClient(int client_fd, DB* db) {
   timeout.tv_usec = 200 * 1000;
   (void)::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
-  while (running_.load()) {
+  while (running->load()) {
     std::string line;
     Status s = conn.ReadLine(&line);
     if (!s.ok()) {
@@ -179,21 +188,21 @@ void Server::HandleClient(int client_fd, DB* db) {
       break;
     }
 
-    total_requests_.fetch_add(1);
+    total_requests->fetch_add(1);
 
     const std::string resp = session.HandleLine(line);
     switch (session.LastTxnEvent()) {
       case TxnEvent::kBegin:
-        txn_begin_.fetch_add(1);
+        txn_begin->fetch_add(1);
         break;
       case TxnEvent::kCommit:
-        txn_commit_.fetch_add(1);
+        txn_commit->fetch_add(1);
         break;
       case TxnEvent::kAbort:
-        txn_abort_.fetch_add(1);
+        txn_abort->fetch_add(1);
         break;
       case TxnEvent::kConflict:
-        txn_conflict_.fetch_add(1);
+        txn_conflict->fetch_add(1);
         break;
       case TxnEvent::kNone:
       default:
@@ -207,7 +216,7 @@ void Server::HandleClient(int client_fd, DB* db) {
   }
 
   (void)conn.Close();
-  active_connections_.fetch_sub(1);
+  active_connections->fetch_sub(1);
 }
 
 }  // namespace kv::net

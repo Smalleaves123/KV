@@ -322,6 +322,36 @@ Status DBImpl::Put(const WriteOptions& options,
   return Status::OK();
 }
 
+Status DBImpl::ApplyPut(const std::string& key, const std::string& value) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) return open_status;
+
+  const uint64_t seq = next_seq_;
+  Status s = ValidateKey(Slice(key));
+  if (!s.ok()) return s;
+  s = ApplyPut(seq, WriteOptions{}, Slice(key), Slice(value));
+  if (!s.ok()) return s;
+  ++next_seq_;
+  return MaybeFlushMemTable();
+}
+
+Status DBImpl::ApplyDelete(const std::string& key) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) return open_status;
+
+  const uint64_t seq = next_seq_;
+  Status s = ValidateKey(Slice(key));
+  if (!s.ok()) return s;
+  s = ApplyDelete(seq, WriteOptions{}, Slice(key));
+  if (!s.ok()) return s;
+  ++next_seq_;
+  return MaybeFlushMemTable();
+}
+
 Status DBImpl::Get(const ReadOptions& options,
                    const Slice& key,
                    std::string* value) {
