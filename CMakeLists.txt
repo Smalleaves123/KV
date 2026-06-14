@@ -10,6 +10,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(KV_BUILD_TESTS "Build tests" ON)
 option(KV_BUILD_EXAMPLES "Build examples" OFF)
 option(KV_BUILD_APPS "Build apps" OFF)
+option(KV_BUILD_BENCHMARKS "Build benchmark binaries" OFF)
 option(KV_ENABLE_SANITIZERS "Enable sanitizer instrumentation" OFF)
 set(KV_SANITIZERS "address,undefined" CACHE STRING
     "Comma-separated sanitizer list used when KV_ENABLE_SANITIZERS=ON")
@@ -32,6 +33,10 @@ add_subdirectory(src)
 
 if(KV_BUILD_APPS)
   add_subdirectory(apps)
+endif()
+
+if(KV_BUILD_BENCHMARKS)
+  add_subdirectory(bench)
 endif()
 
 if(KV_BUILD_TESTS)

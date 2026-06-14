@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <vector>
 
 #include <sys/socket.h>
 #include <unistd.h>
@@ -67,6 +68,22 @@ TEST_F(ConnectionTest, ReadLinePeerClosedReturnsNotFound) {
   std::string line;
   Status s = conn.ReadLine(&line);
   EXPECT_TRUE(s.IsNotFound()) << s.ToString();
+}
+
+TEST_F(ConnectionTest, ReadRequestDecodesRespArray) {
+  Connection conn(fds_[0]);
+  fds_[0] = -1;
+
+  const std::string req = "*2\r\n$3\r\nGET\r\n$1\r\nk\r\n";
+  ASSERT_EQ(::write(fds_[1], req.data(), req.size()),
+            static_cast<ssize_t>(req.size()));
+
+  std::vector<std::string> tokens;
+  Status s = conn.ReadRequest(&tokens);
+  EXPECT_TRUE(s.ok()) << s.ToString();
+  ASSERT_EQ(tokens.size(), 2U);
+  EXPECT_EQ(tokens[0], "GET");
+  EXPECT_EQ(tokens[1], "k");
 }
 
 }  // namespace

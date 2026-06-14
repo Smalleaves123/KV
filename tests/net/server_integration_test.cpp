@@ -178,6 +178,18 @@ bool SendLine(int fd, const std::string& cmd) {
   return true;
 }
 
+bool SendRaw(int fd, const std::string& req) {
+  size_t sent = 0;
+  while (sent < req.size()) {
+    const ssize_t n = ::send(fd, req.data() + sent, req.size() - sent, 0);
+    if (n <= 0) {
+      return false;
+    }
+    sent += static_cast<size_t>(n);
+  }
+  return true;
+}
+
 class ServerIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -323,6 +335,27 @@ TEST_F(ServerIntegrationTest, StartWithZeroUsesEphemeralPort) {
 
   EXPECT_GT(server_.port(), 0);
   EXPECT_EQ(server_.port(), port_);
+}
+
+TEST_F(ServerIntegrationTest, RespArrayRequestSupportsValuesWithSpaces) {
+  if (!started_) {
+    GTEST_SKIP() << "server failed to start in test environment: "
+                 << last_status_.ToString();
+  }
+
+  const int fd = ConnectWithRetry(port_);
+  ASSERT_GE(fd, 0);
+
+  std::string resp;
+  ASSERT_TRUE(SendRaw(fd, "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$11\r\nhello world\r\n"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_EQ(resp, "+OK\r\n");
+
+  ASSERT_TRUE(SendRaw(fd, "*2\r\n$3\r\nGET\r\n$1\r\nk\r\n"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_EQ(resp, "$11\r\nhello world\r\n");
+
+  (void)::close(fd);
 }
 
 }  // namespace

@@ -27,8 +27,13 @@ struct AppConfigFile {
   bool raft_enabled = false;
   kv::RaftConfig raft;
   bool cache_enabled = false;
+  kv::CachePolicy cache_policy = kv::CachePolicy::kLRU;
   size_t cache_capacity = 1024;
   int64_t cache_ttl_ms = 0;
+  bool sync_on_write = false;
+  size_t memtable_write_buffer_size = 4 * 1024 * 1024;
+  size_t compaction_min_input_files = 2;
+  bool auto_compaction_enabled = true;
 };
 
 void OnSignal(int) {
@@ -85,6 +90,24 @@ bool ParseSizeValue(const std::string& s, size_t* value) {
   return true;
 }
 
+bool ParseCachePolicyValue(const std::string& s, kv::CachePolicy* policy) {
+  if (policy == nullptr) return false;
+  if (s == "lru" || s == "LRU") {
+    *policy = kv::CachePolicy::kLRU;
+    return true;
+  }
+  if (s == "lfu" || s == "LFU") {
+    *policy = kv::CachePolicy::kLFU;
+    return true;
+  }
+  if (s == "shard_lru" || s == "SHARD_LRU" || s == "slru" ||
+      s == "SLRU") {
+    *policy = kv::CachePolicy::kShardLRU;
+    return true;
+  }
+  return false;
+}
+
 bool ParseInt64Value(const std::string& s, int64_t* value) {
   if (value == nullptr) return false;
   char* end = nullptr;
@@ -110,7 +133,7 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
   }
 
   AppConfigFile cfg;
-  enum class Section { kNone, kServer, kRaft, kCache, kRaftPeers };
+  enum class Section { kNone, kServer, kStorage, kRaft, kCache, kRaftPeers };
   Section section = Section::kNone;
   kv::RaftConfig::Peer current_peer;
   uint64_t current_peer_id = 0;
@@ -138,6 +161,8 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
       flush_peer();
       if (cleaned == "server:") {
         section = Section::kServer;
+      } else if (cleaned == "storage:") {
+        section = Section::kStorage;
       } else if (cleaned == "raft:") {
         section = Section::kRaft;
       } else if (cleaned == "cache:") {
@@ -209,6 +234,19 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
       continue;
     }
 
+    if (section == Section::kStorage) {
+      if (key == "sync_on_write") {
+        ParseBoolValue(value, &cfg.sync_on_write);
+      } else if (key == "memtable_write_buffer_size") {
+        ParseSizeValue(value, &cfg.memtable_write_buffer_size);
+      } else if (key == "compaction_min_input_files") {
+        ParseSizeValue(value, &cfg.compaction_min_input_files);
+      } else if (key == "auto_compaction_enabled") {
+        ParseBoolValue(value, &cfg.auto_compaction_enabled);
+      }
+      continue;
+    }
+
     if (section == Section::kRaft) {
       if (key == "enabled") {
         ParseBoolValue(value, &cfg.raft_enabled);
@@ -228,6 +266,8 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
     if (section == Section::kCache) {
       if (key == "enabled") {
         ParseBoolValue(value, &cfg.cache_enabled);
+      } else if (key == "policy") {
+        ParseCachePolicyValue(value, &cfg.cache_policy);
       } else if (key == "capacity") {
         ParseSizeValue(value, &cfg.cache_capacity);
       } else if (key == "ttl_ms") {
@@ -440,7 +480,12 @@ int main(int argc, char** argv) {
   // ---- Open DB ----
   kv::DBOptions options;
   options.db_path = db_path;
+  options.sync_on_write = file_config.sync_on_write;
+  options.memtable_write_buffer_size = file_config.memtable_write_buffer_size;
+  options.compaction_min_input_files = file_config.compaction_min_input_files;
+  options.auto_compaction_enabled = file_config.auto_compaction_enabled;
   options.cache_enabled = file_config.cache_enabled;
+  options.cache_policy = file_config.cache_policy;
   options.cache_capacity = file_config.cache_capacity;
   options.cache_default_ttl_ms = file_config.cache_ttl_ms;
 
@@ -452,12 +497,7 @@ int main(int argc, char** argv) {
     }
   }
   if (const char* v = std::getenv("KV_CACHE_POLICY"); v != nullptr) {
-    const std::string s(v);
-    if (s == "lfu" || s == "LFU") options.cache_policy = kv::CachePolicy::kLFU;
-    if (s == "lru" || s == "LRU") options.cache_policy = kv::CachePolicy::kLRU;
-    if (s == "shard_lru" || s == "SHARD_LRU" || s == "slru" || s == "SLRU") {
-      options.cache_policy = kv::CachePolicy::kShardLRU;
-    }
+    (void)ParseCachePolicyValue(v, &options.cache_policy);
   }
   if (const char* v = std::getenv("KV_CACHE_CAPACITY"); v != nullptr) {
     char* end = nullptr;
@@ -472,6 +512,28 @@ int main(int argc, char** argv) {
     if (end != v && *end == '\0') {
       options.cache_default_ttl_ms = static_cast<int64_t>(ttl);
     }
+  }
+  if (const char* v = std::getenv("KV_SYNC_ON_WRITE"); v != nullptr) {
+    bool parsed = false;
+    if (ParseBoolValue(v, &parsed)) options.sync_on_write = parsed;
+  }
+  if (const char* v = std::getenv("KV_MEMTABLE_WRITE_BUFFER_SIZE");
+      v != nullptr) {
+    size_t parsed = 0;
+    if (ParseSizeValue(v, &parsed)) {
+      options.memtable_write_buffer_size = parsed;
+    }
+  }
+  if (const char* v = std::getenv("KV_COMPACTION_MIN_INPUT_FILES");
+      v != nullptr) {
+    size_t parsed = 0;
+    if (ParseSizeValue(v, &parsed)) {
+      options.compaction_min_input_files = parsed;
+    }
+  }
+  if (const char* v = std::getenv("KV_AUTO_COMPACTION"); v != nullptr) {
+    bool parsed = true;
+    if (ParseBoolValue(v, &parsed)) options.auto_compaction_enabled = parsed;
   }
 
   std::unique_ptr<kv::DB> db;

@@ -1,47 +1,61 @@
 # Benchmarking
 
-Benchmark support is currently scaffolded but not fully wired. The `bench/`
-directory contains placeholder files, and `scripts/run_bench.sh` is currently
-empty.
-
-This document describes the intended benchmark plan and gives manual commands
-that are useful today.
+Benchmark support currently includes a small DB benchmark binary and a helper
+script. It is intentionally simple and has no third-party benchmark framework
+dependency.
 
 ## Current State
 
 Available:
 
-- unit and integration tests;
-- `kv_admin stats` for cache/read/compaction counters;
-- server health logs every five seconds;
-- CMake build profiles;
-- sanitizer builds.
-
-Not yet available:
-
-- a built benchmark target;
-- standardized benchmark output;
-- reproducible workload generator script.
+- `kv_db_bench` benchmark target;
+- `scripts/run_bench.sh`;
+- JSON or text output;
+- workloads for write, read, mixed, and negative-read scenarios;
+- cache/read-path/compaction counters in benchmark output.
 
 ## Manual Smoke Benchmark
 
-For now, use the CLI or TCP server for small manual checks:
+Run the default mixed workload:
 
 ```bash
-./scripts/build.sh
-./build/apps/kv_server --config=config/server.yaml
+./scripts/run_bench.sh
 ```
 
-In another terminal:
+Run specific workloads:
 
 ```bash
-printf "SET a 1\nGET a\nPING\n" | nc 127.0.0.1 9527
+WORKLOAD=write OPS=50000 ./scripts/run_bench.sh
+WORKLOAD=read OPS=50000 CACHE_FLAG=--cache ./scripts/run_bench.sh
+WORKLOAD=negative-read OPS=50000 ./scripts/run_bench.sh
 ```
 
-Inspect DB stats:
+Direct binary usage:
 
 ```bash
-./build/apps/kv_admin stats data/db
+cmake --preset bench
+cmake --build --preset bench
+./build-bench/bench/kv_db_bench --workload mixed --ops 10000 --cache
+```
+
+## Workloads
+
+- `write`: repeated point writes.
+- `read`: seeds the DB, then performs point reads.
+- `mixed`: seeds the DB, then mixes reads and writes.
+- `negative-read`: seeds the DB, then reads missing keys to exercise Bloom
+  filter negatives.
+
+Script environment variables:
+
+```bash
+BUILD_DIR=build-bench
+WORKLOAD=mixed
+OPS=10000
+VALUE_SIZE=100
+READ_PERCENT=80
+DB_PATH=test_tmp/bench/db
+CACHE_FLAG=--cache
 ```
 
 ## Recommended Future Benchmark Targets
@@ -123,12 +137,12 @@ BUILD_DIR=build-asan ENABLE_SANITIZERS=ON ./scripts/build.sh
 ctest --test-dir build-asan --output-on-failure
 ```
 
-## Roadmap
+## Remaining Benchmark Work
 
 The benchmark system should eventually add:
 
-1. real CMake benchmark targets;
-2. `scripts/run_bench.sh`;
-3. reproducible temporary DB setup and cleanup;
-4. JSON output;
-5. comparison support against previous runs.
+1. latency histograms;
+2. WAL and SST byte counters;
+3. compaction timing;
+4. comparison support against previous runs;
+5. network/server benchmarks.

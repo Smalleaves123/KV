@@ -13,8 +13,8 @@ engine into a more complete storage-system project.
 
 ### Build And Tooling
 
-- Add CI for configure, build, and test.
-- Add sanitizer jobs for ASan/UBSan and optionally TSan.
+- Extend CI coverage across more operating systems and compilers.
+- Add optional TSan CI once runtime is stable.
 - Add clang-format and clang-tidy configurations with real rules.
 - Package a developer preset with `CMakePresets.json`.
 
@@ -104,8 +104,7 @@ Existing helper data types include counter, hash, and list. Useful additions:
 ## Benchmarking
 
 - Wire real benchmark binaries.
-- Add `scripts/run_bench.sh`.
-- Produce JSON benchmark reports.
+- Add latency histograms and persisted benchmark reports.
 - Track read/write/compaction/cache metrics per workload.
 
 ## Release Readiness

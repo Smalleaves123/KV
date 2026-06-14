@@ -57,11 +57,39 @@ sst_dir       = db_path + "/sst"
 manifest_path = db_path + "/MANIFEST"
 ```
 
+## Storage Section
+
+```yaml
+storage:
+  sync_on_write: false
+  memtable_write_buffer_size: 4194304
+  compaction_min_input_files: 2
+  auto_compaction_enabled: true
+```
+
+Fields:
+
+- `sync_on_write`: sync WAL writes by default.
+- `memtable_write_buffer_size`: flush threshold in bytes.
+- `compaction_min_input_files`: minimum SST file count before compaction.
+- `auto_compaction_enabled`: try compaction after flush when the threshold is
+  met.
+
+Environment overrides:
+
+```bash
+KV_SYNC_ON_WRITE=0
+KV_MEMTABLE_WRITE_BUFFER_SIZE=4194304
+KV_COMPACTION_MIN_INPUT_FILES=2
+KV_AUTO_COMPACTION=1
+```
+
 ## Cache Section
 
 ```yaml
 cache:
   enabled: false
+  policy: lru
   capacity: 1024
   ttl_ms: 0
 ```
@@ -69,6 +97,7 @@ cache:
 Fields:
 
 - `enabled`: enables the latest-read value cache.
+- `policy`: `lru`, `lfu`, `shard_lru`, or `slru`.
 - `capacity`: maximum number of value-cache entries.
 - `ttl_ms`: default cache TTL in milliseconds. `0` means no expiry.
 
@@ -168,7 +197,7 @@ For `kv_server`:
 
 1. hard-coded defaults;
 2. config file;
-3. environment variables for cache/Raft/config path;
+3. environment variables for cache/storage/Raft/config path;
 4. positional port and DB path arguments.
 
 ## Limitations
@@ -177,4 +206,5 @@ For `kv_server`:
 - Unknown fields are ignored.
 - Invalid fields may fall back to defaults unless the parser detects a hard
   error in peer entries.
-- Some `DBOptions` fields are not exposed directly in `server.yaml` yet.
+- Custom WAL, SST, and manifest paths are not exposed directly in
+  `server.yaml` yet.

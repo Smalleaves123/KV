@@ -27,6 +27,15 @@ TxnEvent Session::LastTxnEvent() const noexcept {
 
 std::string Session::HandleLine(const std::string& line) {
   const Command cmd = CommandParser::ParseLine(line);
+  return HandleCommand(cmd);
+}
+
+std::string Session::HandleTokens(const std::vector<std::string>& tokens) {
+  const Command cmd = CommandParser::ParseTokens(tokens);
+  return HandleCommand(cmd);
+}
+
+std::string Session::HandleCommand(const Command& cmd) {
   SetLastTxnEvent(TxnEvent::kNone);
 
   switch (cmd.type) {

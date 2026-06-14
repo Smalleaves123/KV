@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace kv::net {
 
@@ -12,6 +13,12 @@ class LineCodec {
 
   // Encode a line for wire transport by appending CRLF.
   static std::string EncodeLine(const std::string& line);
+};
+
+class RequestCodec {
+ public:
+  static bool TryDecode(std::string* buffer, std::vector<std::string>* tokens,
+                        std::string* error);
 };
 
 }  // namespace kv::net

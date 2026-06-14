@@ -14,6 +14,12 @@ server:
   port: 9527
   db_path: data/db
 
+storage:
+  sync_on_write: false
+  memtable_write_buffer_size: 4194304
+  compaction_min_input_files: 2
+  auto_compaction_enabled: true
+
 raft:
   enabled: false
   node_id: 1
@@ -32,5 +38,6 @@ raft:
 
 cache:
   enabled: false
+  policy: lru
   capacity: 1024
   ttl_ms: 0

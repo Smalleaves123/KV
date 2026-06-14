@@ -17,6 +17,14 @@ build/apps/kv_cli
 build/apps/kv_admin
 ```
 
+CMake presets are also available:
+
+```bash
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+```
+
 ## kv_server
 
 `kv_server` opens a DB and listens for TCP commands.
@@ -198,6 +206,27 @@ v
 ```
 
 The exact display depends on how your terminal shows CRLF.
+
+RESP array requests support values with spaces:
+
+```bash
+printf '*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$11\r\nhello world\r\n' | nc 127.0.0.1 9527
+```
+
+## Benchmark Tool
+
+Run the default benchmark:
+
+```bash
+./scripts/run_bench.sh
+```
+
+Examples:
+
+```bash
+WORKLOAD=write OPS=50000 ./scripts/run_bench.sh
+WORKLOAD=read OPS=50000 CACHE_FLAG=--cache ./scripts/run_bench.sh
+```
 
 ## Cleaning
 

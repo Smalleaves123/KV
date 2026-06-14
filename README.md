@@ -77,6 +77,17 @@ cmake -S . -B build -DKV_BUILD_TESTS=ON -DKV_BUILD_APPS=ON
 cmake --build build --parallel
 ```
 
+Preset usage:
+
+```bash
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+
+cmake --preset release
+cmake --build --preset release
+```
+
 `compile_commands.json` is generated in the build directory for clangd and
 static-analysis tools.
 
@@ -193,6 +204,13 @@ INFO
 STATS
 ```
 
+It also accepts RESP array requests with bulk-string arguments, which allows
+values containing spaces:
+
+```text
+*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$11\r\nhello world\r\n
+```
+
 See [Network Protocol](docs/network_protocol.md) for command details and
 response formats.
 
@@ -204,6 +222,9 @@ Important sections:
 
 - `server.port`: TCP client port.
 - `server.db_path`: DB directory.
+- `storage.sync_on_write`, `storage.memtable_write_buffer_size`,
+  `storage.compaction_min_input_files`,
+  `storage.auto_compaction_enabled`.
 - `cache.enabled`, `cache.capacity`, `cache.ttl_ms`.
 - `raft.enabled`, `raft.node_id`, `raft.raft_port`, `raft.data_dir`,
   `raft.peers`.
@@ -216,6 +237,10 @@ KV_CACHE=1
 KV_CACHE_POLICY=lru
 KV_CACHE_CAPACITY=4096
 KV_CACHE_TTL_MS=0
+KV_SYNC_ON_WRITE=0
+KV_MEMTABLE_WRITE_BUFFER_SIZE=4194304
+KV_COMPACTION_MIN_INPUT_FILES=2
+KV_AUTO_COMPACTION=1
 KV_RAFT=1
 KV_RAFT_NODE_ID=1
 KV_RAFT_PORT=9528
@@ -246,5 +271,6 @@ KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728
 - Raft support is experimental. Replicated writes are implemented, but
   production-grade membership changes, snapshots, and operational tooling are
   still future work.
-- Benchmark targets and scripts are scaffolded but not fully wired.
+- A basic DB benchmark binary is available, but broader benchmark coverage is
+  still planned.
 - The project is not yet packaged as an installable library.

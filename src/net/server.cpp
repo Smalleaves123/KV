@@ -12,6 +12,7 @@
 
 #include "kv/engine/db.h"
 #include "kv/net/connection.h"
+#include "kv/net/protocol.h"
 #include "kv/net/session.h"
 
 namespace kv::net {
@@ -182,11 +183,15 @@ void Server::HandleClient(int client_fd, DB* db,
   (void)::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
   while (running->load()) {
-    std::string line;
-    Status s = conn.ReadLine(&line);
+    std::vector<std::string> tokens;
+    Status s = conn.ReadRequest(&tokens);
     if (!s.ok()) {
       if (s.IsNotFound()) {
         break;
+      }
+      if (s.IsInvalidArgument()) {
+        (void)conn.WriteAll(kv::net::protocol::Error(s.ToString()));
+        continue;
       }
       if (s.IsIOError()) {
         continue;
@@ -196,7 +201,7 @@ void Server::HandleClient(int client_fd, DB* db,
 
     total_requests->fetch_add(1);
 
-    const std::string resp = session.HandleLine(line);
+    const std::string resp = session.HandleTokens(tokens);
     switch (session.LastTxnEvent()) {
       case TxnEvent::kBegin:
         txn_begin->fetch_add(1);

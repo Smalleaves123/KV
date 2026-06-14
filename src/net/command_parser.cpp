@@ -15,21 +15,28 @@ std::string CommandParser::ToUpper(std::string s) {
 }
 
 Command CommandParser::ParseLine(const std::string& line) {
-  Command cmd;
-  cmd.raw = line;
-
   std::istringstream iss(line);
-  std::string head;
-  if (!(iss >> head)) {
+  std::vector<std::string> tokens;
+  std::string token;
+  while (iss >> token) {
+    tokens.push_back(token);
+  }
+  Command cmd = ParseTokens(tokens);
+  cmd.raw = line;
+  return cmd;
+}
+
+Command CommandParser::ParseTokens(const std::vector<std::string>& tokens) {
+  Command cmd;
+  if (tokens.empty()) {
     cmd.type = CommandType::kInvalid;
     return cmd;
   }
 
-  head = ToUpper(head);
-
-  std::string token;
-  while (iss >> token) {
-    cmd.args.push_back(token);
+  std::string head = ToUpper(tokens[0]);
+  cmd.raw = tokens[0];
+  for (size_t i = 1; i < tokens.size(); ++i) {
+    cmd.args.push_back(tokens[i]);
   }
 
   if (head == "PING") cmd.type = CommandType::kPing;

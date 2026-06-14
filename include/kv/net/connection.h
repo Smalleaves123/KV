@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "kv/common/status.h"
 
@@ -21,6 +22,7 @@ class Connection {
   int fd() const noexcept;
 
   Status ReadLine(std::string* line);
+  Status ReadRequest(std::vector<std::string>* tokens);
   Status WriteAll(const std::string& data);
   Status Close();
 

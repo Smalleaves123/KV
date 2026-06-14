@@ -1,9 +1,8 @@
 # Network Protocol
 
-`kv_server` exposes a simple line-oriented command protocol over TCP. Commands
-are parsed by splitting whitespace. Responses are encoded with RESP-like frames
-so simple Redis-style clients can inspect them, but the command parser is not a
-full RESP parser.
+`kv_server` exposes a TCP command protocol. It accepts simple line-oriented
+commands and RESP array requests with bulk-string arguments. Responses are
+encoded with RESP-like frames.
 
 ## Starting The Server
 
@@ -19,7 +18,7 @@ or:
 
 ## Request Format
 
-Each command is one line:
+The simplest request format is one command per line:
 
 ```text
 COMMAND arg1 arg2 ...
@@ -27,7 +26,26 @@ COMMAND arg1 arg2 ...
 
 The server accepts `\n` line endings. Command names are case-insensitive.
 
-Because parsing is whitespace-based, keys and values cannot contain spaces.
+Line commands are whitespace-tokenized, so keys and values cannot contain
+spaces in this mode.
+
+## RESP Array Request Format
+
+RESP array requests are also accepted:
+
+```text
+*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$11\r\nhello world\r\n
+```
+
+This is parsed as:
+
+```text
+SET "k" "hello world"
+```
+
+Only arrays of bulk strings are supported. This is enough for binary-safe keys
+and values in the current command set, but it is not a full Redis protocol
+implementation.
 
 ## Response Format
 
@@ -169,8 +187,8 @@ Non-leader nodes return an error containing the known leader id.
 
 ## Current Limitations
 
-- No full RESP request parser.
+- RESP request support is limited to arrays of bulk strings.
 - No authentication or TLS.
-- Values with whitespace are not supported by the command parser.
+- Values with whitespace require RESP array requests.
 - No pipelining contract is documented beyond sequential line handling.
 - Error frames currently use `-ERR` followed directly by the message.
