@@ -18,31 +18,6 @@ uint64_t DecodeFixed64(const char* p) {
   return v;
 }
 
-uint32_t DecodeVarint32(const char* p, const char* limit, const char** next) {
-  if (p >= limit) {
-    *next = nullptr;
-    return 0;
-  }
-  uint32_t result = 0;
-  size_t shift = 0;
-  while (shift <= 28) {
-    if (p >= limit) {
-      *next = nullptr;
-      return 0;
-    }
-    uint8_t b = static_cast<uint8_t>(*p);
-    ++p;
-    result |= (static_cast<uint32_t>(b & 0x7F)) << shift;
-    if ((b & 0x80) == 0) {
-      *next = p;
-      return result;
-    }
-    shift += 7;
-  }
-  *next = nullptr;
-  return 0;
-}
-
 }  // namespace
 
 // ==================== TableReader ====================
