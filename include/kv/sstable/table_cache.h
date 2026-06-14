@@ -13,6 +13,13 @@ namespace kv {
 
 class TableReader;
 
+struct TableCacheStats {
+  uint64_t hit = 0;
+  uint64_t miss = 0;
+  uint64_t evict = 0;
+  uint64_t entries = 0;
+};
+
 // LRU cache of open TableReader instances, keyed by file path.
 // Avoids re-opening and re-parsing SST index blocks on every read.
 class TableCache {
@@ -34,6 +41,7 @@ class TableCache {
   void Clear();
 
   size_t Size() const noexcept;
+  TableCacheStats Stats() const noexcept;
 
  private:
   void EnforceCapacity();
@@ -46,6 +54,9 @@ class TableCache {
   size_t max_open_files_;
   std::list<Entry> lru_;
   std::unordered_map<std::string, decltype(lru_.begin())> map_;
+  uint64_t hits_;
+  uint64_t misses_;
+  uint64_t evictions_;
 };
 
 }  // namespace kv

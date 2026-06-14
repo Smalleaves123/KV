@@ -547,6 +547,13 @@ Status DBImpl::GetReadPathStats(ReadPathStats* stats) const {
     return Status::InvalidArgument("read path stats output is null");
   }
   *stats = read_path_stats_;
+  if (table_cache_ != nullptr) {
+    const TableCacheStats table_stats = table_cache_->Stats();
+    stats->table_cache_hits = table_stats.hit;
+    stats->table_cache_misses = table_stats.miss;
+    stats->table_cache_evictions = table_stats.evict;
+    stats->table_cache_entries = table_stats.entries;
+  }
   return Status::OK();
 }
 
@@ -864,7 +871,10 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
     }
 
     uint8_t entry_type = 0;
-    s = reader->Get(target, read_seq, &entry_type, value);
+    TableReadStatsDelta stats_delta;
+    s = reader->Get(target, read_seq, &entry_type, value, &stats_delta);
+    read_path_stats_.bloom_queries += stats_delta.bloom_queries;
+    read_path_stats_.bloom_negatives += stats_delta.bloom_negatives;
     if (s.ok()) {
       if (entry_type == 1) {
         // deletion tombstone

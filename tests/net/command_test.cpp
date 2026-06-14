@@ -104,13 +104,14 @@ TEST(CommandExecutorTest, InfoAndStats) {
   const std::string info = exec.Execute(Command{CommandType::kInfo, {}, "INFO"});
   EXPECT_FALSE(info.empty());
   EXPECT_NE(info.find("cache.hit="), std::string::npos);
+  EXPECT_NE(info.find("read.table_cache_hits="), std::string::npos);
   EXPECT_NE(info.find("read.bloom_queries="), std::string::npos);
   EXPECT_NE(info.find("compaction.trigger_attempts="), std::string::npos);
 
   const std::string stats = exec.Execute(Command{CommandType::kStats, {}, "STATS"});
   EXPECT_FALSE(stats.empty());
   EXPECT_NE(stats.find("cache.miss="), std::string::npos);
-  EXPECT_NE(stats.find("read.sst_index_builds="), std::string::npos);
+  EXPECT_NE(stats.find("read.table_cache_misses="), std::string::npos);
   EXPECT_NE(stats.find("compaction.succeeded="), std::string::npos);
 }
 

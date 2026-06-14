@@ -14,6 +14,11 @@ namespace kv {
 
 class TableIterator;
 
+struct TableReadStatsDelta {
+  uint64_t bloom_queries = 0;
+  uint64_t bloom_negatives = 0;
+};
+
 // Reads a block-based SST file.
 // Supports point lookups (Get) via index binary search + bloom filter.
 class TableReader {
@@ -28,6 +33,8 @@ class TableReader {
   // read_seq. On success, *type (0=value, 1=deletion) and *value are set.
   Status Get(const std::string& target, uint64_t read_seq, uint8_t* type,
              std::string* value) const;
+  Status Get(const std::string& target, uint64_t read_seq, uint8_t* type,
+             std::string* value, TableReadStatsDelta* stats) const;
 
   // Maximum sequence number in this file.
   uint64_t MaxSequence() const noexcept { return max_seq_; }

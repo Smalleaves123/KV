@@ -110,12 +110,24 @@ Status TableReader::Init() {
 
 Status TableReader::Get(const std::string& target, uint64_t read_seq,
                         uint8_t* type, std::string* value) const {
+  return Get(target, read_seq, type, value, nullptr);
+}
+
+Status TableReader::Get(const std::string& target, uint64_t read_seq,
+                        uint8_t* type, std::string* value,
+                        TableReadStatsDelta* stats) const {
   if (type == nullptr || value == nullptr) {
     return Status::InvalidArgument("output pointer is null");
   }
 
   // Bloom filter check
+  if (stats != nullptr) {
+    ++stats->bloom_queries;
+  }
   if (!filter_.MayMatch(target)) {
+    if (stats != nullptr) {
+      ++stats->bloom_negatives;
+    }
     return Status::NotFound("bloom filter rejected");
   }
 

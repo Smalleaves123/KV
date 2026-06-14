@@ -7,7 +7,10 @@ namespace kv {
 TableCache::TableCache(size_t max_open_files)
     : max_open_files_(max_open_files == 0 ? 1 : max_open_files),
       lru_(),
-      map_() {}
+      map_(),
+      hits_(0),
+      misses_(0),
+      evictions_(0) {}
 
 Status TableCache::Get(const std::string& file_path,
                        std::shared_ptr<const TableReader>* out) {
@@ -16,9 +19,11 @@ Status TableCache::Get(const std::string& file_path,
     // Move to front of LRU
     lru_.splice(lru_.begin(), lru_, it->second);
     *out = it->second->reader;
+    ++hits_;
     return Status::OK();
   }
 
+  ++misses_;
   std::unique_ptr<TableReader> reader;
   Status s = TableReader::Open(file_path, &reader);
   if (!s.ok()) {
@@ -54,11 +59,21 @@ size_t TableCache::Size() const noexcept {
   return map_.size();
 }
 
+TableCacheStats TableCache::Stats() const noexcept {
+  TableCacheStats stats;
+  stats.hit = hits_;
+  stats.miss = misses_;
+  stats.evict = evictions_;
+  stats.entries = map_.size();
+  return stats;
+}
+
 void TableCache::EnforceCapacity() {
   while (lru_.size() > max_open_files_) {
     const auto& last = lru_.back();
     map_.erase(last.file_path);
     lru_.pop_back();
+    ++evictions_;
   }
 }
 

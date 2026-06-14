@@ -38,9 +38,6 @@ Status Server::Start(uint16_t port, DB* db) {
   if (db == nullptr) {
     return Status::InvalidArgument("db is null");
   }
-  if (port == 0) {
-    return Status::InvalidArgument("port must be greater than 0");
-  }
   if (running_.load()) {
     return Status::AlreadyExists("server already running");
   }
@@ -122,8 +119,17 @@ Status Server::SetupListenSocket(uint16_t port) {
     return Status::IOError("listen failed: " + err);
   }
 
+  sockaddr_in bound_addr{};
+  socklen_t bound_len = sizeof(bound_addr);
+  if (::getsockname(fd, reinterpret_cast<sockaddr*>(&bound_addr),
+                    &bound_len) < 0) {
+    const std::string err = std::strerror(errno);
+    (void)::close(fd);
+    return Status::IOError("getsockname failed: " + err);
+  }
+
   listen_fd_ = fd;
-  port_ = port;
+  port_ = ntohs(bound_addr.sin_port);
   return Status::OK();
 }
 

@@ -66,8 +66,10 @@ struct WriteOptions {
 };
 
 struct ReadPathStats {
-  uint64_t sst_index_builds = 0;
-  uint64_t sst_index_hits = 0;
+  uint64_t table_cache_hits = 0;
+  uint64_t table_cache_misses = 0;
+  uint64_t table_cache_evictions = 0;
+  uint64_t table_cache_entries = 0;
   uint64_t bloom_queries = 0;
   uint64_t bloom_negatives = 0;
 };

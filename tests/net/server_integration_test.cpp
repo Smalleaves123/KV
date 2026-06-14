@@ -190,18 +190,14 @@ class ServerIntegrationTest : public ::testing::Test {
     ASSERT_TRUE(s.ok()) << s.ToString();
 
     started_ = false;
-    last_status_ = Status::IOError("unknown start error");
-    for (uint16_t p = 21000; p < 23000; ++p) {
-      s = server_.Start(p, db_.get());
-      if (s.ok()) {
-        port_ = p;
-        started_ = true;
-        break;
-      }
-      last_status_ = s;
+    last_status_ = server_.Start(0, db_.get());
+    if (last_status_.ok()) {
+      port_ = server_.port();
+      started_ = true;
     }
     if (started_) {
       ASSERT_TRUE(server_.IsRunning());
+      ASSERT_GT(port_, 0);
     } else {
       ASSERT_FALSE(server_.IsRunning());
     }
@@ -229,12 +225,8 @@ class ServerIntegrationTest : public ::testing::Test {
 
 TEST_F(ServerIntegrationTest, EndToEndCommandFlow) {
   if (!started_) {
-    EXPECT_TRUE(last_status_.IsIOError()) << last_status_.ToString();
-    const ServerStats stats = server_.GetStats();
-    EXPECT_EQ(stats.total_connections, 0U);
-    EXPECT_EQ(stats.active_connections, 0U);
-    EXPECT_EQ(stats.total_requests, 0U);
-    return;
+    GTEST_SKIP() << "server failed to start in test environment: "
+                 << last_status_.ToString();
   }
 
   const int fd = ConnectWithRetry(port_);
@@ -286,10 +278,8 @@ TEST_F(ServerIntegrationTest, EndToEndCommandFlow) {
 
 TEST_F(ServerIntegrationTest, StopThenRejectNewConnection) {
   if (!started_) {
-    Status s = server_.Stop();
-    EXPECT_TRUE(s.ok()) << s.ToString();
-    EXPECT_FALSE(server_.IsRunning());
-    return;
+    GTEST_SKIP() << "server failed to start in test environment: "
+                 << last_status_.ToString();
   }
 
   Status s = server_.Stop();
@@ -323,6 +313,16 @@ TEST_F(ServerIntegrationTest, CanRestartAfterStop) {
   EXPECT_EQ(resp, "+PONG\r\n");
 
   (void)::close(fd);
+}
+
+TEST_F(ServerIntegrationTest, StartWithZeroUsesEphemeralPort) {
+  if (!started_) {
+    GTEST_SKIP() << "server failed to start in test environment: "
+                 << last_status_.ToString();
+  }
+
+  EXPECT_GT(server_.port(), 0);
+  EXPECT_EQ(server_.port(), port_);
 }
 
 }  // namespace

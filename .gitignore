@@ -1,16 +1,25 @@
+# Build outputs
 build/
-test_tmp/
-
-
-
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
 *.o
-*.exe
-*.class
-*.txt
-*.cmake
-*.a
 *.obj
+*.a
+*.so
+*.dylib
+*.exe
+*.cpp.o
+
+# Runtime and test data
+test_tmp/
+data/db/
 *.log
 *.pid
-*.cpp.o
+
+# Editor and OS files
 .DS_Store
+.idea/
+.vscode/

@@ -104,6 +104,66 @@ TEST(CacheIntegrationTest, SnapshotReadDoesNotUseCache) {
   ASSERT_TRUE(db->ReleaseSnapshot(snap).ok());
 }
 
+TEST(CacheIntegrationTest, TableCacheStatsTrackSSTReaderReuse) {
+  DBOptions options = MakeDBOptionsWithCache("table_cache_stats");
+  options.cache_enabled = false;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+
+  ASSERT_TRUE(db->Put(WriteOptions{}, "k", "v").ok());
+
+  ReadPathStats before;
+  ASSERT_TRUE(db->GetReadPathStats(&before).ok());
+  EXPECT_EQ(before.table_cache_entries, 0U);
+
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "k", &value).ok());
+  EXPECT_EQ(value, "v");
+
+  ReadPathStats after_first_get;
+  ASSERT_TRUE(db->GetReadPathStats(&after_first_get).ok());
+  EXPECT_GE(after_first_get.table_cache_misses,
+            before.table_cache_misses + 1);
+  EXPECT_EQ(after_first_get.table_cache_entries, 1U);
+
+  ASSERT_TRUE(db->Get(ReadOptions{}, "k", &value).ok());
+  EXPECT_EQ(value, "v");
+
+  ReadPathStats after_second_get;
+  ASSERT_TRUE(db->GetReadPathStats(&after_second_get).ok());
+  EXPECT_GE(after_second_get.table_cache_hits,
+            after_first_get.table_cache_hits + 1);
+  EXPECT_EQ(after_second_get.table_cache_entries, 1U);
+}
+
+TEST(CacheIntegrationTest, BloomFilterStatsTrackRejectedSSTLookups) {
+  DBOptions options = MakeDBOptionsWithCache("bloom_stats");
+  options.cache_enabled = false;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+
+  ASSERT_TRUE(db->Put(WriteOptions{}, "present", "value").ok());
+
+  ReadPathStats before;
+  ASSERT_TRUE(db->GetReadPathStats(&before).ok());
+
+  std::string value;
+  Status s = db->Get(ReadOptions{}, "definitely_missing_key", &value);
+  EXPECT_TRUE(s.IsNotFound()) << s.ToString();
+
+  ReadPathStats after;
+  ASSERT_TRUE(db->GetReadPathStats(&after).ok());
+  EXPECT_GE(after.bloom_queries, before.bloom_queries + 1);
+  EXPECT_GE(after.bloom_negatives, before.bloom_negatives + 1);
+}
+
 }  // namespace
 }  // namespace kv
-

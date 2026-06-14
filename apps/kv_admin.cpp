@@ -169,10 +169,17 @@ void CmdStats(const std::string& db_path) {
   std::cout << "cache.miss           : " << cache_stats.miss << "\n";
   std::cout << "cache.evict          : " << cache_stats.evict << "\n";
   std::cout << "cache.expire         : " << cache_stats.expire << "\n";
-  std::cout << "read.sst_index_builds: " << read_stats.sst_index_builds << "\n";
-  std::cout << "read.sst_index_hits  : " << read_stats.sst_index_hits << "\n";
-  std::cout << "read.bloom_queries   : " << read_stats.bloom_queries << "\n";
-  std::cout << "read.bloom_negatives : " << read_stats.bloom_negatives << "\n";
+  std::cout << "read.table_cache_hits: " << read_stats.table_cache_hits << "\n";
+  std::cout << "read.table_cache_misses: " << read_stats.table_cache_misses
+            << "\n";
+  std::cout << "read.table_cache_evictions: "
+            << read_stats.table_cache_evictions << "\n";
+  std::cout << "read.table_cache_entries: " << read_stats.table_cache_entries
+            << "\n";
+  std::cout << "read.bloom_queries   : " << read_stats.bloom_queries
+            << "\n";
+  std::cout << "read.bloom_negatives : " << read_stats.bloom_negatives
+            << "\n";
   std::cout << "compact.trigger      : " << compaction_stats.trigger_attempts << "\n";
   std::cout << "compact.skip_snapshot: " << compaction_stats.skipped_due_snapshot
             << "\n";
