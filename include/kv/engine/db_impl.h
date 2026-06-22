@@ -88,6 +88,7 @@ class DBImpl final : public DB {
   Status GetAtSequence(const Slice& key,
                        uint64_t read_seq,
                        std::string* value) const;
+  void InvalidateCacheEntry(const std::string& key) const;
   Status LoadSSTFilesFromManifest(uint64_t* max_seq);
   Status LoadSSTFilesFromDir(uint64_t* max_seq);
   Status RebuildLatestKeySeqIndex();

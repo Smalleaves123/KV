@@ -70,6 +70,28 @@ TEST(CacheIntegrationTest, SSTReadBackFillsAndHitsCache) {
   EXPECT_GE(stats2.hit, stats1.hit + 1);
 }
 
+TEST(CacheIntegrationTest, WriteInvalidatesCachedValue) {
+  DBOptions options = MakeDBOptionsWithCache("cache_invalidation");
+  options.auto_compaction_enabled = false;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+
+  ASSERT_TRUE(db->Put(WriteOptions{}, "k", "v1").ok());
+
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "k", &value).ok());
+  EXPECT_EQ(value, "v1");
+
+  ASSERT_TRUE(db->Put(WriteOptions{}, "k", "v2").ok());
+
+  ASSERT_TRUE(db->Get(ReadOptions{}, "k", &value).ok());
+  EXPECT_EQ(value, "v2");
+}
+
 TEST(CacheIntegrationTest, SnapshotReadDoesNotUseCache) {
   DBOptions options = MakeDBOptionsWithCache("snapshot_no_cache");
   RemovePathIfExists(options.wal_path);

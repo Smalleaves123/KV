@@ -16,6 +16,8 @@
 #include <vector>
 
 #include "kv/engine/recovery.h"
+#include "kv/sstable/block.h"
+#include "kv/sstable/block_iterator.h"
 #include "kv/sstable/table_builder.h"
 #include "kv/sstable/table_cache.h"
 #include "kv/sstable/table_reader.h"
@@ -459,6 +461,7 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
       return s;
     }
 
+    InvalidateCacheEntry(op.key);
     latest_key_seq_[op.key] = seq;
     ++next_seq_;
   }
@@ -687,6 +690,7 @@ Status DBImpl::ApplyPut(uint64_t seq,
   if (!s.ok()) {
     return s;
   }
+  InvalidateCacheEntry(key.ToString());
   latest_key_seq_[key.ToString()] = seq;
   return Status::OK();
 }
@@ -710,6 +714,7 @@ Status DBImpl::ApplyDelete(uint64_t seq,
   if (!s.ok()) {
     return s;
   }
+  InvalidateCacheEntry(key.ToString());
   latest_key_seq_[key.ToString()] = seq;
   return Status::OK();
 }
@@ -853,16 +858,15 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
 
   // Check in-memory key-value cache first
   if (allow_cache) {
-    const std::string cache_key = BuildSSTCacheKey(
-        "", target);  // cache key uses file+key, use empty file for global
     if (cache_->Get(target, value)) {
       return Status::OK();
     }
   }
 
-  // Walk SST files from newest to oldest
-  for (auto it = sst_files_.rbegin(); it != sst_files_.rend(); ++it) {
-    const std::string& file = *it;
+  // Walk SST files from newest to oldest so duplicate keys split across blocks
+  // still resolve to the newest visible version.
+  for (size_t i = sst_files_.size(); i-- > 0;) {
+    const std::string& file = sst_files_[i];
 
     std::shared_ptr<const TableReader> reader;
     Status s = table_cache_->Get(file, &reader);
@@ -886,6 +890,9 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
       return Status::OK();
     }
     if (s.IsNotFound()) {
+      if (entry_type == 1) {
+        return s;
+      }
       continue;
     }
     return s;
@@ -1014,6 +1021,7 @@ Status DBImpl::CommitOCCTransaction(
       return s;
     }
 
+    InvalidateCacheEntry(op.key);
     latest_key_seq_[op.key] = seq;
     ++next_seq_;
   }
@@ -1190,6 +1198,12 @@ Status DBImpl::ValidateKey(const Slice& key) const {
   return Status::OK();
 }
 
+void DBImpl::InvalidateCacheEntry(const std::string& key) const {
+  if (cache_ != nullptr) {
+    cache_->Erase(key);
+  }
+}
+
 std::string DBImpl::BuildWalPath(const DBOptions& options) {
   if (!options.wal_path.empty()) {
     return options.wal_path;
@@ -1252,20 +1266,31 @@ Status DBImpl::CompactSSTFilesLocked() {
       return s;
     }
 
-    TableIterator iter(*reader);
-    for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
-      const std::string k = iter.key();
-      const uint64_t seq = iter.seq();
-      const uint8_t type = iter.type();
+    for (const auto& index_entry : reader->index()) {
+      std::string block_data;
+      s = reader->ReadBlock(index_entry.block_offset,
+                            index_entry.block_size,
+                            &block_data);
+      if (!s.ok()) {
+        return s;
+      }
 
-      compact_max_seq = std::max(compact_max_seq, seq);
-      auto it = latest.find(k);
-      if (it == latest.end() || seq > it->second.seq) {
-        CompactionEntry entry;
-        entry.seq = seq;
-        entry.type = type;
-        entry.value = iter.value();
-        latest[k] = std::move(entry);
+      Block block(block_data.data(), block_data.size());
+      BlockIterator iter(block);
+      for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
+        const std::string k = std::string(iter.key());
+        const uint64_t seq = iter.seq();
+        const uint8_t type = iter.type();
+
+        compact_max_seq = std::max(compact_max_seq, seq);
+        auto it = latest.find(k);
+        if (it == latest.end() || seq > it->second.seq) {
+          CompactionEntry entry;
+          entry.seq = seq;
+          entry.type = type;
+          entry.value = std::string(iter.value());
+          latest[k] = std::move(entry);
+        }
       }
     }
   }

@@ -147,34 +147,37 @@ Status TableReader::Get(const std::string& target, uint64_t read_seq,
     return Status::NotFound("key not found in index");
   }
 
-  // Read the candidate data block
-  std::string block_data(index_[lo].block_size, '\0');
-  file_.seekg(static_cast<std::streamoff>(index_[lo].block_offset));
-  file_.read(block_data.data(),
-             static_cast<std::streamsize>(index_[lo].block_size));
-  if (!file_) {
-    return Status::IOError("failed to read data block");
-  }
-
-  Block block(block_data.data(), block_data.size());
-  BlockIterator it(block);
-
-  // Seek to the target key within this block
-  it.Seek(target);
-
-  // Scan forward - multiple versions of the same key may exist
-  // (sorted by key then by seq descending)
-  while (it.Valid() && it.key() == target) {
-    if (it.seq() <= read_seq) {
-      *type = it.type();
-      if (it.type() == 0) {
-        *value = std::string(it.value());
-        return Status::OK();
-      }
-      // type == 1: deletion tombstone
-      return Status::NotFound("key deleted");
+  for (size_t i = lo; i < index_.size(); ++i) {
+    std::string block_data(index_[i].block_size, '\0');
+    file_.seekg(static_cast<std::streamoff>(index_[i].block_offset));
+    file_.read(block_data.data(),
+               static_cast<std::streamsize>(index_[i].block_size));
+    if (!file_) {
+      return Status::IOError("failed to read data block");
     }
-    it.Next();
+
+    Block block(block_data.data(), block_data.size());
+    BlockIterator it(block);
+
+    for (it.SeekToFirst(); it.Valid(); it.Next()) {
+      const std::string_view entry_key = it.key();
+      if (entry_key < target) {
+        continue;
+      }
+      if (entry_key > target) {
+        break;
+      }
+
+      if (it.seq() <= read_seq) {
+        *type = it.type();
+        if (it.type() == 0) {
+          *value = std::string(it.value());
+          return Status::OK();
+        }
+        // type == 1: deletion tombstone
+        return Status::NotFound("key deleted");
+      }
+    }
   }
 
   return Status::NotFound("key not found");

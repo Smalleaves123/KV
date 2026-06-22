@@ -34,13 +34,14 @@ class BlockIterator {
     uint32_t offset;
   };
 
-  Entry ParseEntryAt(uint32_t offset) const;
+  Entry ParseEntryAt(uint32_t offset, const std::string& prev_key) const;
   uint32_t RestartOffset(int index) const;
   void SeekToRestart(int index);
 
   const Block& block_;
   uint32_t current_;
   Entry current_entry_;
+  mutable std::string current_key_storage_;
   bool valid_;
 };
 

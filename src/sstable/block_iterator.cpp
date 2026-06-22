@@ -47,11 +47,12 @@ BlockIterator::BlockIterator(const Block& block)
     : block_(block),
       current_(0),
       current_entry_(),
+      current_key_storage_(),
       valid_(false) {}
 
 void BlockIterator::SeekToFirst() {
   SeekToRestart(0);
-  valid_ = true;
+  valid_ = current_entry_.offset > 0 || !current_entry_.key.empty();
 }
 
 void BlockIterator::SeekToLast() {
@@ -64,25 +65,14 @@ void BlockIterator::SeekToLast() {
   SeekToRestart(static_cast<int>(nr - 1));
 
   const uint32_t data_end = block_.restart_offset_;
-  while (current_ < data_end) {
-    Entry e = ParseEntryAt(current_);
-    if (e.offset == 0 && e.key.empty()) {
-      break;
+  while (current_entry_.offset < data_end) {
+    Next();
+    if (!Valid()) {
+      return;
     }
-    uint32_t next = e.offset;
-    if (next <= current_) break;
-
-    const char* p_next = block_.data_ + next;
-    if (p_next >= block_.data_ + data_end) {
-      current_entry_ = e;
-      break;
-    }
-
-    current_ = next;
   }
 
   if (current_ < data_end) {
-    current_entry_ = ParseEntryAt(current_);
     valid_ = current_entry_.offset > 0 || !current_entry_.key.empty();
   }
 }
@@ -123,44 +113,52 @@ void BlockIterator::Next() {
   if (!Valid()) return;
 
   const uint32_t data_end = block_.restart_offset_;
-  const char* p = block_.data_ + current_entry_.offset;
-  if (p >= block_.data_ + data_end) {
+  if (current_entry_.offset >= data_end) {
+    valid_ = false;
+    return;
+  }
+
+  Entry next = ParseEntryAt(current_entry_.offset, current_key_storage_);
+  if (next.offset <= current_) {
     valid_ = false;
     return;
   }
 
   current_ = current_entry_.offset;
-  if (current_ >= data_end) {
-    valid_ = false;
-    return;
-  }
-
-  current_entry_ = ParseEntryAt(current_);
+  current_entry_ = next;
   valid_ = true;
 }
 
 void BlockIterator::Prev() {
   if (!Valid()) return;
 
-  const uint32_t orig = current_;
-  uint32_t pos = current_;
+  const uint32_t target = current_;
+  SeekToFirst();
+  if (!Valid() || current_ == target) {
+    valid_ = false;
+    return;
+  }
 
-  for (int r = static_cast<int>(block_.NumRestarts()) - 1; r >= 0; --r) {
-    uint32_t restart_off = RestartOffset(r);
-    if (restart_off <= pos) {
-      SeekToRestart(r);
-      while (current_ < pos - 1) {
-        uint32_t saved = current_;
-        Entry e = ParseEntryAt(current_);
-        if (e.offset <= saved) break;
-        if (e.offset >= orig) break;
-        current_ = e.offset;
-        current_entry_ = ParseEntryAt(current_);
-        if (current_entry_.offset <= current_) break;
-      }
-      valid_ = true;
-      return;
-    }
+  Entry prev_entry = current_entry_;
+  uint32_t prev_offset = current_;
+  while (Valid() && current_ < target) {
+    prev_entry = current_entry_;
+    prev_offset = current_;
+    Next();
+  }
+
+  if (!Valid()) {
+    current_ = prev_offset;
+    current_entry_ = prev_entry;
+    valid_ = true;
+    return;
+  }
+
+  if (current_ == target) {
+    current_ = prev_offset;
+    current_entry_ = prev_entry;
+    valid_ = true;
+    return;
   }
 
   valid_ = false;
@@ -197,11 +195,12 @@ uint32_t BlockIterator::RestartOffset(int index) const {
 
 void BlockIterator::SeekToRestart(int index) {
   current_ = RestartOffset(index);
-  current_entry_ = ParseEntryAt(current_);
-  valid_ = true;
+  current_entry_ = ParseEntryAt(current_, std::string());
+  valid_ = current_entry_.offset > 0 || !current_entry_.key.empty();
 }
 
-BlockIterator::Entry BlockIterator::ParseEntryAt(uint32_t offset) const {
+BlockIterator::Entry BlockIterator::ParseEntryAt(uint32_t offset,
+                                                  const std::string& prev_key) const {
   Entry e{};
   e.offset = offset;
 
@@ -219,9 +218,13 @@ BlockIterator::Entry BlockIterator::ParseEntryAt(uint32_t offset) const {
 
   if (p + unshared + 8 + 1 > limit) return e;
 
+  if (shared > prev_key.size()) return e;
+
+  current_key_storage_.assign(prev_key.data(), shared);
   const char* key_start = p;
   p += unshared;
-  e.key = std::string_view(key_start, unshared);
+  current_key_storage_.append(key_start, unshared);
+  e.key = std::string_view(current_key_storage_);
 
   e.seq = DecodeFixed64(p);
   p += 8;
