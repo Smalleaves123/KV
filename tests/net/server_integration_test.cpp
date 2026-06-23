@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "gtest/gtest.h"
+#include "kv/cluster/cluster_manager.h"
 #include "kv/engine/db.h"
 
 namespace kv::net {
@@ -201,8 +202,12 @@ class ServerIntegrationTest : public ::testing::Test {
     Status s = DB::Open(options_, &db_);
     ASSERT_TRUE(s.ok()) << s.ToString();
 
+    cluster_ = std::make_unique<ClusterManager>(8);
+    ASSERT_TRUE(cluster_->AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+    ASSERT_TRUE(cluster_->AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, true}));
+
     started_ = false;
-    last_status_ = server_.Start(0, db_.get());
+    last_status_ = server_.Start(0, db_.get(), cluster_.get());
     if (last_status_.ok()) {
       port_ = server_.port();
       started_ = true;
@@ -221,6 +226,7 @@ class ServerIntegrationTest : public ::testing::Test {
       (void)db_->Close();
       db_.reset();
     }
+    cluster_.reset();
 
     RemovePathIfExists(options_.wal_path);
     RemovePathIfExists(options_.manifest_path);
@@ -229,6 +235,7 @@ class ServerIntegrationTest : public ::testing::Test {
 
   DBOptions options_;
   std::unique_ptr<DB> db_;
+  std::unique_ptr<ClusterManager> cluster_;
   Server server_;
   uint16_t port_ = 0;
   bool started_ = false;
@@ -354,6 +361,36 @@ TEST_F(ServerIntegrationTest, RespArrayRequestSupportsValuesWithSpaces) {
   ASSERT_TRUE(SendRaw(fd, "*2\r\n$3\r\nGET\r\n$1\r\nk\r\n"));
   ASSERT_TRUE(ReadResp(fd, &resp));
   EXPECT_EQ(resp, "$11\r\nhello world\r\n");
+
+  (void)::close(fd);
+}
+
+TEST_F(ServerIntegrationTest, ClusterCommandsWorkOverNetwork) {
+  if (!started_) {
+    GTEST_SKIP() << "server failed to start in test environment: "
+                 << last_status_.ToString();
+  }
+
+  const int fd = ConnectWithRetry(port_);
+  ASSERT_GE(fd, 0);
+
+  std::string resp;
+  ASSERT_TRUE(SendLine(fd, "CLUSTER ROUTE user:42"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_NE(resp.find("*1\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("id="), std::string::npos);
+
+  ASSERT_TRUE(SendLine(fd, "CLUSTER STATUS"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_NE(resp.find("cluster.node_count=2"), std::string::npos);
+
+  ASSERT_TRUE(SendLine(fd, "CLUSTER BATCH SET net_a 1 SET net_b 2"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_EQ(resp, "+OK\r\n");
+
+  ASSERT_TRUE(SendLine(fd, "GET net_a"));
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_EQ(resp, "$1\r\n1\r\n");
 
   (void)::close(fd);
 }

@@ -1,14 +1,18 @@
 // src/net/session.cpp
 #include "kv/net/session.h"
 
+#include <cctype>
 #include <vector>
 
 #include "kv/net/protocol.h"
 
 namespace kv::net {
 
-Session::Session(DB* db)
-    : db_(db), executor_(db), active_txn_(), last_txn_event_(TxnEvent::kNone) {}
+Session::Session(DB* db, ClusterManager* cluster_manager)
+    : db_(db),
+      executor_(db, cluster_manager),
+      active_txn_(),
+      last_txn_event_(TxnEvent::kNone) {}
 
 Session::~Session() {
   if (active_txn_ != nullptr) {
@@ -50,6 +54,7 @@ std::string Session::HandleCommand(const Command& cmd) {
     case CommandType::kMGet:
     case CommandType::kInfo:
     case CommandType::kStats:
+    case CommandType::kCluster:
       if (active_txn_ != nullptr) {
         return HandleDataCommandInTxn(cmd);
       }
@@ -199,6 +204,20 @@ std::string Session::HandleDataCommandInTxn(const Command& cmd) {
         return Error("wrong number of arguments for 'INFO/STATS'");
       }
       return executor_.Execute(cmd);
+
+    case CommandType::kCluster: {
+      if (cmd.args.empty()) {
+        return Error("wrong number of arguments for 'CLUSTER'");
+      }
+      std::string subcommand = cmd.args[0];
+      for (char& ch : subcommand) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+      }
+      if (subcommand == "BATCH") {
+        return Error("cluster batch is not supported in transaction");
+      }
+      return executor_.Execute(cmd);
+    }
 
     default:
       return Error("unsupported command in transaction");

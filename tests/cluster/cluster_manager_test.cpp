@@ -42,5 +42,33 @@ TEST(ClusterManagerTest, ReplicaRoutingReturnsUniqueNodes) {
   EXPECT_NE(replicas[0].id, replicas[1].id);
 }
 
+TEST(ClusterManagerTest, GetNodeAndStatusExposeClusterState) {
+  ClusterManager mgr(8);
+
+  EXPECT_TRUE(mgr.AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 2, true}));
+  EXPECT_TRUE(mgr.AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, false}));
+
+  NodeInfo node;
+  EXPECT_TRUE(mgr.GetNode("n1", &node));
+  EXPECT_EQ(node.id, "n1");
+  EXPECT_EQ(node.weight, 2U);
+
+  ClusterStatus status = mgr.GetStatus();
+  EXPECT_EQ(status.node_count, 2U);
+  EXPECT_EQ(status.active_node_count, 1U);
+  ASSERT_EQ(status.nodes.size(), 2U);
+}
+
+TEST(ClusterManagerTest, RouteKeysPreservesOrder) {
+  ClusterManager mgr(8);
+
+  EXPECT_TRUE(mgr.AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+  EXPECT_TRUE(mgr.AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, true}));
+
+  std::vector<NodeInfo> nodes;
+  EXPECT_TRUE(mgr.RouteKeys({"k1", "k2", "k3"}, &nodes));
+  ASSERT_EQ(nodes.size(), 3U);
+}
+
 }  // namespace
 }  // namespace kv

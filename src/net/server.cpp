@@ -10,6 +10,7 @@
 
 #include <chrono>
 
+#include "kv/cluster/cluster_manager.h"
 #include "kv/engine/db.h"
 #include "kv/net/connection.h"
 #include "kv/net/protocol.h"
@@ -35,7 +36,7 @@ Server::~Server() {
   (void)Stop();
 }
 
-Status Server::Start(uint16_t port, DB* db) {
+Status Server::Start(uint16_t port, DB* db, ClusterManager* cluster_manager) {
   if (db == nullptr) {
     return Status::InvalidArgument("db is null");
   }
@@ -50,7 +51,7 @@ Status Server::Start(uint16_t port, DB* db) {
 
   pool_ = std::make_unique<ThreadPool>(0);
   running_.store(true);
-  accept_thread_ = std::thread(&Server::AcceptLoop, this, db);
+  accept_thread_ = std::thread(&Server::AcceptLoop, this, db, cluster_manager);
   return Status::OK();
 }
 
@@ -134,7 +135,7 @@ Status Server::SetupListenSocket(uint16_t port) {
   return Status::OK();
 }
 
-void Server::AcceptLoop(DB* db) {
+void Server::AcceptLoop(DB* db, ClusterManager* cluster_manager) {
   while (running_.load()) {
     sockaddr_in peer{};
     socklen_t peer_len = sizeof(peer);
@@ -153,8 +154,8 @@ void Server::AcceptLoop(DB* db) {
     total_connections_.fetch_add(1);
     active_connections_.fetch_add(1);
 
-    pool_->Execute([client_fd, db, this]() {
-      HandleClient(client_fd, db,
+    pool_->Execute([client_fd, db, cluster_manager, this]() {
+      HandleClient(client_fd, db, cluster_manager,
                    &running_,
                    &total_requests_,
                    &txn_begin_,
@@ -166,7 +167,7 @@ void Server::AcceptLoop(DB* db) {
   }
 }
 
-void Server::HandleClient(int client_fd, DB* db,
+void Server::HandleClient(int client_fd, DB* db, ClusterManager* cluster_manager,
                           std::atomic<bool>* running,
                           std::atomic<uint64_t>* total_requests,
                           std::atomic<uint64_t>* txn_begin,
@@ -175,7 +176,7 @@ void Server::HandleClient(int client_fd, DB* db,
                           std::atomic<uint64_t>* txn_conflict,
                           std::atomic<uint64_t>* active_connections) {
   Connection conn(client_fd);
-  Session session(db);
+  Session session(db, cluster_manager);
 
   timeval timeout{};
   timeout.tv_sec = 0;

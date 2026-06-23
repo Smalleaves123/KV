@@ -46,6 +46,7 @@ Command CommandParser::ParseTokens(const std::vector<std::string>& tokens) {
   else if (head == "MGET") cmd.type = CommandType::kMGet;
   else if (head == "INFO") cmd.type = CommandType::kInfo;
   else if (head == "STATS") cmd.type = CommandType::kStats;
+  else if (head == "CLUSTER") cmd.type = CommandType::kCluster;
   else if (head == "BEGIN") cmd.type = CommandType::kBegin;
   else if (head == "EXEC") cmd.type = CommandType::kExec;
   else if (head == "ABORT") cmd.type = CommandType::kAbort;

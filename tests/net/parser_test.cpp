@@ -60,5 +60,14 @@ TEST(CommandParserTest, ParsesInfoAndStatsCommands) {
   EXPECT_TRUE(stats.args.empty());
 }
 
+TEST(CommandParserTest, ParsesClusterCommand) {
+  Command cmd = CommandParser::ParseLine("CLUSTER route user:1 2");
+  ASSERT_EQ(cmd.type, CommandType::kCluster);
+  ASSERT_EQ(cmd.args.size(), 3U);
+  EXPECT_EQ(cmd.args[0], "route");
+  EXPECT_EQ(cmd.args[1], "user:1");
+  EXPECT_EQ(cmd.args[2], "2");
+}
+
 }  // namespace
 }  // namespace kv::net

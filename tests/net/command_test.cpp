@@ -6,6 +6,7 @@
 #include <string>
 
 #include "gtest/gtest.h"
+#include "kv/cluster/cluster_manager.h"
 #include "kv/engine/db.h"
 #include "kv/net/session.h"
 
@@ -48,6 +49,12 @@ std::unique_ptr<DB> OpenDBForTest(const std::string& name) {
   Status s = DB::Open(options, &db);
   EXPECT_TRUE(s.ok()) << s.ToString();
   return db;
+}
+
+void PopulateClusterManager(ClusterManager* mgr) {
+  ASSERT_NE(mgr, nullptr);
+  EXPECT_TRUE(mgr->AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+  EXPECT_TRUE(mgr->AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, true}));
 }
 
 TEST(CommandExecutorTest, Ping) {
@@ -115,6 +122,47 @@ TEST(CommandExecutorTest, InfoAndStats) {
   EXPECT_NE(stats.find("compaction.succeeded="), std::string::npos);
 }
 
+TEST(CommandExecutorTest, ClusterRouteAndStatus) {
+  auto db = OpenDBForTest("cluster_route_status");
+  ClusterManager cluster(8);
+  PopulateClusterManager(&cluster);
+  CommandExecutor exec(db.get(), &cluster);
+
+  const std::string route =
+      exec.Execute(Command{CommandType::kCluster, {"ROUTE", "user:1001"}, "CLUSTER ROUTE user:1001"});
+  EXPECT_NE(route.find("*1\r\n"), std::string::npos);
+  EXPECT_NE(route.find("id="), std::string::npos);
+  EXPECT_NE(route.find("address="), std::string::npos);
+
+  const std::string status =
+      exec.Execute(Command{CommandType::kCluster, {"STATUS"}, "CLUSTER STATUS"});
+  EXPECT_NE(status.find("cluster.node_count=2"), std::string::npos);
+  EXPECT_NE(status.find("cluster.active_node_count=2"), std::string::npos);
+
+  const std::string node_status =
+      exec.Execute(Command{CommandType::kCluster, {"STATUS", "n1"}, "CLUSTER STATUS n1"});
+  EXPECT_NE(node_status.find("id=n1"), std::string::npos);
+}
+
+TEST(CommandExecutorTest, ClusterBatchWritesThroughDB) {
+  auto db = OpenDBForTest("cluster_batch");
+  ClusterManager cluster(8);
+  PopulateClusterManager(&cluster);
+  CommandExecutor exec(db.get(), &cluster);
+
+  const std::string resp = exec.Execute(
+      Command{CommandType::kCluster, {"BATCH", "SET", "a", "1", "SET", "b", "2", "DEL", "a"},
+              "CLUSTER BATCH SET a 1 SET b 2 DEL a"});
+  EXPECT_EQ(resp, "+OK\r\n");
+
+  std::string value;
+  Status s = db->Get(ReadOptions{}, "a", &value);
+  EXPECT_TRUE(s.IsNotFound());
+  s = db->Get(ReadOptions{}, "b", &value);
+  EXPECT_TRUE(s.ok());
+  EXPECT_EQ(value, "2");
+}
+
 TEST(SessionTest, HandleLineParsesAndExecutes) {
   auto db = OpenDBForTest("session");
   Session session(db.get());
@@ -123,6 +171,32 @@ TEST(SessionTest, HandleLineParsesAndExecutes) {
   EXPECT_EQ(session.HandleLine("GET a"), "$1\r\n1\r\n");
   EXPECT_EQ(session.HandleLine("GET missing"), "$-1\r\n");
   EXPECT_EQ(session.HandleLine("PING"), "+PONG\r\n");
+}
+
+TEST(SessionTest, ClusterCommandsRequireClusterManagerForClusterFeatures) {
+  auto db = OpenDBForTest("session_cluster");
+  Session session(db.get());
+
+  EXPECT_EQ(session.HandleLine("CLUSTER STATUS"), "-ERRcluster manager is null\r\n");
+  EXPECT_EQ(session.HandleLine("CLUSTER ROUTE user:1"), "-ERRcluster manager is null\r\n");
+}
+
+TEST(SessionTest, ClusterCommandsRouteAndBatch) {
+  auto db = OpenDBForTest("session_cluster_features");
+  ClusterManager cluster(8);
+  PopulateClusterManager(&cluster);
+  Session session(db.get(), &cluster);
+
+  const std::string route = session.HandleLine("CLUSTER ROUTE user:1");
+  EXPECT_NE(route.find("*1\r\n"), std::string::npos);
+  EXPECT_NE(route.find("id="), std::string::npos);
+
+  const std::string status = session.HandleLine("CLUSTER STATUS");
+  EXPECT_NE(status.find("cluster.node_count=2"), std::string::npos);
+
+  EXPECT_EQ(session.HandleLine("CLUSTER BATCH SET x 1 SET y 2"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("GET x"), "$1\r\n1\r\n");
+  EXPECT_EQ(session.HandleLine("GET y"), "$1\r\n2\r\n");
 }
 
 TEST(SessionTest, InfoAndStatsInAndOutTransaction) {

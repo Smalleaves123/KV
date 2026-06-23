@@ -51,6 +51,15 @@ bool HashRing::SetNodeAlive(const std::string& node_id, bool alive) {
 	return true;
 }
 
+std::optional<NodeInfo> HashRing::GetNode(const std::string& node_id) const {
+	std::lock_guard<std::mutex> lk(mu_);
+	auto it = nodes_.find(node_id);
+	if (it == nodes_.end()) {
+		return std::nullopt;
+	}
+	return it->second;
+}
+
 std::optional<NodeInfo> HashRing::Lookup(const std::string& key) const {
 	std::lock_guard<std::mutex> lk(mu_);
 	if (ring_.empty()) {

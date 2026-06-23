@@ -8,6 +8,10 @@
 #include "kv/net/command.h"
 #include "kv/net/command_parser.h"
 
+namespace kv {
+class ClusterManager;
+}
+
 namespace kv::net {
 
 enum class TxnEvent {
@@ -20,7 +24,7 @@ enum class TxnEvent {
 
 class Session {
  public:
-  explicit Session(DB* db);
+  explicit Session(DB* db, ClusterManager* cluster_manager = nullptr);
   ~Session();
 
   // 输入一行命令，返回编码后的响应

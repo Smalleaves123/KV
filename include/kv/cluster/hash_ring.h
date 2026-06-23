@@ -20,6 +20,7 @@ class HashRing {
 	bool AddNode(const NodeInfo& node);
 	bool RemoveNode(const std::string& node_id);
 	bool SetNodeAlive(const std::string& node_id, bool alive);
+	std::optional<NodeInfo> GetNode(const std::string& node_id) const;
 
 	std::optional<NodeInfo> Lookup(const std::string& key) const;
 	std::vector<NodeInfo> LookupN(const std::string& key, size_t n) const;

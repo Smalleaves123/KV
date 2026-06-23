@@ -10,6 +10,7 @@
 
 namespace kv {
 class DB;
+class ClusterManager;
 }
 
 namespace kv::net {
@@ -32,7 +33,7 @@ class Server {
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;
 
-  Status Start(uint16_t port, DB* db);
+  Status Start(uint16_t port, DB* db, ClusterManager* cluster_manager = nullptr);
   Status Stop();
 
   bool IsRunning() const noexcept;
@@ -41,8 +42,8 @@ class Server {
 
  private:
   Status SetupListenSocket(uint16_t port);
-  void AcceptLoop(DB* db);
-  static void HandleClient(int client_fd, DB* db,
+  void AcceptLoop(DB* db, ClusterManager* cluster_manager);
+  static void HandleClient(int client_fd, DB* db, ClusterManager* cluster_manager,
                            std::atomic<bool>* running,
                            std::atomic<uint64_t>* total_requests,
                            std::atomic<uint64_t>* txn_begin,
