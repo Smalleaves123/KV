@@ -202,6 +202,9 @@ EXEC
 ABORT
 INFO
 STATS
+CLUSTER ROUTE key [replica_count]
+CLUSTER STATUS [node_id]
+CLUSTER BATCH SET key value [SET key value ...] [DEL key ...]
 ```
 
 It also accepts RESP array requests with bulk-string arguments, which allows

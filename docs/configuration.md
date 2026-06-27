@@ -117,6 +117,53 @@ KV_CACHE_TTL_MS=0
 - `shard_lru`
 - `slru`
 
+## Cluster Section
+
+```yaml
+cluster:
+  local_node_id: local
+  nodes:
+    - id: local
+      host: 127.0.0.1
+      port: 9527
+      weight: 1
+      alive: true
+```
+
+Fields:
+
+- `local_node_id`: node id treated as the local process for routing
+  validation. If omitted, `kv_server` defaults it to `local`.
+- `nodes`: cluster member list used by the in-process cluster manager for
+  routing and status queries.
+- `id`: stable node identifier.
+- `host`: node host name or IP.
+- `port`: client port used by the node.
+- `weight`: relative routing weight.
+- `alive`: whether the node participates in routing.
+
+Environment override:
+
+```bash
+KV_CLUSTER_LOCAL_NODE_ID=local
+KV_CLUSTER_NODES=id:local,host:127.0.0.1,port:9527,weight:1,alive:true;id:peer2,host:127.0.0.1,port:9528,weight:1,alive:true
+```
+
+`KV_CLUSTER_LOCAL_NODE_ID` sets the local node id used by routing validation.
+
+`KV_CLUSTER_NODES` format:
+
+```text
+id:<id>,host:<host>,port:<port>,weight:<weight>,alive:<true|false>;...
+```
+
+Notes:
+
+- If no cluster nodes are configured, `kv_server` adds a local node for
+  routing and status reporting.
+- The current cluster command surface is node-routing oriented; it is not a
+  distributed control plane.
+
 ## Raft Section
 
 ```yaml

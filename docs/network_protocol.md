@@ -150,6 +150,35 @@ compaction.succeeded=0
 compaction.failed=0
 ```
 
+### CLUSTER
+
+Cluster commands are available when the server is started with a configured
+cluster manager.
+
+```text
+CLUSTER ROUTE key [replica_count]
+CLUSTER STATUS
+CLUSTER STATUS node_id
+CLUSTER BATCH SET key value [SET key value ...] [DEL key ...]
+```
+
+`CLUSTER ROUTE` returns the node selected for a key. If `replica_count` is
+provided, the command returns up to that many replica nodes in routing order.
+
+`CLUSTER STATUS` returns cluster-wide node counts and a per-node snapshot.
+`CLUSTER STATUS node_id` returns a single node entry.
+
+`CLUSTER BATCH` applies a batch of `SET` and `DEL` operations as one write
+batch after routing validation. Current behavior is intentionally conservative:
+
+- all keys in the batch must route to the same node;
+- that node must match the configured local node id when one is set;
+- cross-node batch execution is rejected with an error;
+- batch writes are still applied locally through `DB::Write`.
+
+This keeps the command deterministic while the cluster control plane remains
+lightweight.
+
 ## Transaction Sessions
 
 Transactions are connection-local. A `BEGIN` on one TCP connection does not
@@ -192,3 +221,5 @@ Non-leader nodes return an error containing the known leader id.
 - Values with whitespace require RESP array requests.
 - No pipelining contract is documented beyond sequential line handling.
 - Error frames currently use `-ERR` followed directly by the message.
+- Cluster commands rely on an in-process cluster manager and do not yet
+  perform distributed replication or cross-node batch fan-out.

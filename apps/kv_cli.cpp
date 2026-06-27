@@ -162,6 +162,7 @@ int main(int argc, char** argv) {
   kv::ClusterManager cluster_manager(8);
   (void)cluster_manager.AddNode(
       kv::NodeInfo{"local", "127.0.0.1", 1, 1, true});
+  cluster_manager.SetLocalNodeId("local");
   kv::net::Session session(db.get(), &cluster_manager);
 
   std::unordered_map<std::string, const kv::Snapshot*> snapshots;

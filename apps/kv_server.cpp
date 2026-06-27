@@ -27,6 +27,7 @@ struct AppConfigFile {
   std::string db_path = "data/db";
   bool raft_enabled = false;
   kv::RaftConfig raft;
+  std::string cluster_local_node_id = "local";
   std::vector<kv::NodeInfo> cluster_nodes;
   bool cache_enabled = false;
   kv::CachePolicy cache_policy = kv::CachePolicy::kLRU;
@@ -405,6 +406,13 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
       } else if (key == "ttl_ms") {
         ParseInt64Value(value, &cfg.cache_ttl_ms);
       }
+      continue;
+    }
+
+    if (section == Section::kCluster) {
+      if (key == "local_node_id") {
+        cfg.cluster_local_node_id = value;
+      }
     }
   }
 
@@ -622,9 +630,14 @@ int main(int argc, char** argv) {
   }
 
   std::vector<kv::NodeInfo> cluster_nodes = file_config.cluster_nodes;
+  std::string cluster_local_node_id = file_config.cluster_local_node_id;
   if (const char* v = std::getenv("KV_CLUSTER_NODES"); v != nullptr &&
       std::string(v).size() > 0) {
     cluster_nodes = ParseClusterNodes(v);
+  }
+  if (const char* v = std::getenv("KV_CLUSTER_LOCAL_NODE_ID"); v != nullptr &&
+      std::string(v).size() > 0) {
+    cluster_local_node_id = v;
   }
 
   if (raft_enabled) {
@@ -659,6 +672,9 @@ int main(int argc, char** argv) {
   if (cluster_manager->NodeCount() == 0) {
     (void)cluster_manager->AddNode(kv::NodeInfo{
         "local", "127.0.0.1", static_cast<uint16_t>(port), 1, true});
+  }
+  if (!cluster_local_node_id.empty()) {
+    cluster_manager->SetLocalNodeId(cluster_local_node_id);
   }
 
   // ---- Open DB ----

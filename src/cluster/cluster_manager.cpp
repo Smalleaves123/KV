@@ -1,5 +1,7 @@
 #include "kv/cluster/cluster_manager.h"
 
+#include <utility>
+
 namespace kv {
 
 ClusterManager::ClusterManager(size_t virtual_nodes_per_weight)
@@ -57,6 +59,14 @@ bool ClusterManager::RouteKeys(const std::vector<std::string>& keys,
 		nodes->push_back(node);
 	}
 	return true;
+}
+
+void ClusterManager::SetLocalNodeId(std::string node_id) {
+	local_node_id_ = std::move(node_id);
+}
+
+const std::string& ClusterManager::LocalNodeId() const noexcept {
+	return local_node_id_;
 }
 
 std::vector<NodeInfo> ClusterManager::Nodes() const {

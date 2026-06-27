@@ -56,11 +56,13 @@ void PopulateClusterManager(ClusterManager* mgr) {
   ASSERT_NE(mgr, nullptr);
   EXPECT_TRUE(mgr->AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
   EXPECT_TRUE(mgr->AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, true}));
+  mgr->SetLocalNodeId("n1");
 }
 
 void PopulateSingleNodeClusterManager(ClusterManager* mgr) {
   ASSERT_NE(mgr, nullptr);
   EXPECT_TRUE(mgr->AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+  mgr->SetLocalNodeId("n1");
 }
 
 std::pair<std::string, std::string> FindCrossNodeKeys(ClusterManager* cluster) {

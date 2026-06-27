@@ -204,6 +204,7 @@ class ServerIntegrationTest : public ::testing::Test {
 
     cluster_ = std::make_unique<ClusterManager>(8);
     ASSERT_TRUE(cluster_->AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+    cluster_->SetLocalNodeId("n1");
 
     started_ = false;
     last_status_ = server_.Start(0, db_.get(), cluster_.get());

@@ -30,6 +30,9 @@ class ClusterManager {
 	bool RouteKeys(const std::vector<std::string>& keys,
 								 std::vector<NodeInfo>* nodes) const;
 
+	void SetLocalNodeId(std::string node_id);
+	const std::string& LocalNodeId() const noexcept;
+
 	std::vector<NodeInfo> Nodes() const;
 	size_t NodeCount() const;
 	size_t ActiveNodeCount() const;
@@ -39,6 +42,7 @@ class ClusterManager {
  private:
 	std::shared_ptr<HashRing> ring_;
 	Router router_;
+	std::string local_node_id_;
 };
 
 }  // namespace kv

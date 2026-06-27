@@ -268,10 +268,12 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
           return Error("no route available");
         }
 
-        const std::string& target_node_id = routed_nodes.front().id;
-        for (const auto& node : routed_nodes) {
-          if (node.id != target_node_id) {
-            return Error("cross-node cluster batch is not supported yet");
+        const std::string& local_node_id = cluster_manager_->LocalNodeId();
+        if (!local_node_id.empty()) {
+          for (const auto& node : routed_nodes) {
+            if (node.id != local_node_id) {
+              return Error("cluster batch routes to a remote node");
+            }
           }
         }
 
