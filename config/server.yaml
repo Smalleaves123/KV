@@ -6,6 +6,7 @@
 #   KV_RAFT_PORT=9528             Raft RPC port
 #   KV_RAFT_DATA_DIR=data/raft    Raft data directory
 #   KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728
+#   KV_CLUSTER_NODES=id:local,host:127.0.0.1,port:9527;id:peer2,host:127.0.0.1,port:9528
 #   KV_CACHE=1                    Enable cache
 #   KV_CACHE_CAPACITY=1024        Cache capacity
 #   KV_CACHE_TTL_MS=0             Default TTL (0=no expiry)
@@ -41,3 +42,11 @@ cache:
   policy: lru
   capacity: 1024
   ttl_ms: 0
+
+cluster:
+  nodes:
+    - id: local
+      host: 127.0.0.1
+      port: 9527
+      weight: 1
+      alive: true

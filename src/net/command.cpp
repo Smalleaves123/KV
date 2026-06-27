@@ -263,7 +263,17 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
         if (!cluster_manager_->RouteKeys(keys, &routed_nodes)) {
           return Error("no route available");
         }
-        (void)routed_nodes;
+
+        if (routed_nodes.empty()) {
+          return Error("no route available");
+        }
+
+        const std::string& target_node_id = routed_nodes.front().id;
+        for (const auto& node : routed_nodes) {
+          if (node.id != target_node_id) {
+            return Error("cross-node cluster batch is not supported yet");
+          }
+        }
 
         Status s = db_->Write(WriteOptions{}, batch);
         if (!s.ok()) {

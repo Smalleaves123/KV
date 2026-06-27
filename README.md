@@ -228,6 +228,7 @@ Important sections:
 - `cache.enabled`, `cache.capacity`, `cache.ttl_ms`.
 - `raft.enabled`, `raft.node_id`, `raft.raft_port`, `raft.data_dir`,
   `raft.peers`.
+- `cluster.nodes` for cluster-aware routing and node status reporting.
 
 Environment variables override selected settings:
 

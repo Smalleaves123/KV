@@ -204,7 +204,6 @@ class ServerIntegrationTest : public ::testing::Test {
 
     cluster_ = std::make_unique<ClusterManager>(8);
     ASSERT_TRUE(cluster_->AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
-    ASSERT_TRUE(cluster_->AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, true}));
 
     started_ = false;
     last_status_ = server_.Start(0, db_.get(), cluster_.get());
@@ -382,7 +381,7 @@ TEST_F(ServerIntegrationTest, ClusterCommandsWorkOverNetwork) {
 
   ASSERT_TRUE(SendLine(fd, "CLUSTER STATUS"));
   ASSERT_TRUE(ReadResp(fd, &resp));
-  EXPECT_NE(resp.find("cluster.node_count=2"), std::string::npos);
+  EXPECT_NE(resp.find("cluster.node_count=1"), std::string::npos);
 
   ASSERT_TRUE(SendLine(fd, "CLUSTER BATCH SET net_a 1 SET net_b 2"));
   ASSERT_TRUE(ReadResp(fd, &resp));

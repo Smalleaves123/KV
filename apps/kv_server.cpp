@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "kv/engine/db.h"
+#include "kv/cluster/cluster_manager.h"
 #include "kv/net/server.h"
 #include "kv/raft/raft_rpc_codec.h"
 #include "kv/raft/raft_server.h"
@@ -26,6 +27,7 @@ struct AppConfigFile {
   std::string db_path = "data/db";
   bool raft_enabled = false;
   kv::RaftConfig raft;
+  std::vector<kv::NodeInfo> cluster_nodes;
   bool cache_enabled = false;
   kv::CachePolicy cache_policy = kv::CachePolicy::kLRU;
   size_t cache_capacity = 1024;
@@ -125,6 +127,57 @@ bool ParseIntValue(const std::string& s, int* value) {
   return true;
 }
 
+bool ParseUInt32Value(const std::string& s, uint32_t* value) {
+  if (value == nullptr) return false;
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(s.c_str(), &end, 10);
+  if (end == s.c_str() || *end != '\0') return false;
+  *value = static_cast<uint32_t>(parsed);
+  return true;
+}
+
+bool ParseNodeListEntry(const std::string& item, kv::NodeInfo* node) {
+  if (node == nullptr) return false;
+
+  std::istringstream iss(item);
+  std::string part;
+  std::vector<std::string> fields;
+  while (std::getline(iss, part, ',')) {
+    fields.push_back(Trim(part));
+  }
+
+  for (const auto& field : fields) {
+    const size_t colon = field.find(':');
+    if (colon == std::string::npos) {
+      continue;
+    }
+    const std::string key = Trim(field.substr(0, colon));
+    const std::string value = Trim(field.substr(colon + 1));
+    if (key == "id") {
+      node->id = value;
+    } else if (key == "host") {
+      node->host = value;
+    } else if (key == "port") {
+      int port = 0;
+      if (ParseIntValue(value, &port)) {
+        node->port = static_cast<uint16_t>(port);
+      }
+    } else if (key == "weight") {
+      uint32_t weight = 0;
+      if (ParseUInt32Value(value, &weight)) {
+        node->weight = weight;
+      }
+    } else if (key == "alive") {
+      bool alive = true;
+      if (ParseBoolValue(value, &alive)) {
+        node->alive = alive;
+      }
+    }
+  }
+
+  return node->IsValid();
+}
+
 std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
                                             std::string* error) {
   std::ifstream in(path);
@@ -133,11 +186,22 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
   }
 
   AppConfigFile cfg;
-  enum class Section { kNone, kServer, kStorage, kRaft, kCache, kRaftPeers };
+  enum class Section {
+    kNone,
+    kServer,
+    kStorage,
+    kRaft,
+    kCache,
+    kRaftPeers,
+    kCluster,
+    kClusterNodes,
+  };
   Section section = Section::kNone;
   kv::RaftConfig::Peer current_peer;
+  kv::NodeInfo current_node;
   uint64_t current_peer_id = 0;
   bool in_peer = false;
+  bool in_node = false;
 
   auto flush_peer = [&]() {
     if (in_peer && current_peer_id > 0 && current_peer.raft_port > 0 &&
@@ -147,6 +211,14 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
     current_peer = kv::RaftConfig::Peer{};
     current_peer_id = 0;
     in_peer = false;
+  };
+
+  auto flush_node = [&]() {
+    if (in_node && current_node.IsValid()) {
+      cfg.cluster_nodes.push_back(current_node);
+    }
+    current_node = kv::NodeInfo{};
+    in_node = false;
   };
 
   std::string line;
@@ -159,6 +231,7 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
 
     if (indent == 0) {
       flush_peer();
+      flush_node();
       if (cleaned == "server:") {
         section = Section::kServer;
       } else if (cleaned == "storage:") {
@@ -167,6 +240,8 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
         section = Section::kRaft;
       } else if (cleaned == "cache:") {
         section = Section::kCache;
+      } else if (cleaned == "cluster:") {
+        section = Section::kCluster;
       } else {
         section = Section::kNone;
       }
@@ -176,6 +251,12 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
     if (section == Section::kRaft && cleaned == "peers:") {
       flush_peer();
       section = Section::kRaftPeers;
+      continue;
+    }
+
+    if (section == Section::kCluster && cleaned == "nodes:") {
+      flush_node();
+      section = Section::kClusterNodes;
       continue;
     }
 
@@ -214,6 +295,57 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
           int port = 0;
           if (ParseIntValue(value, &port)) {
             current_peer.raft_port = static_cast<uint16_t>(port);
+          }
+        }
+        continue;
+      }
+    }
+
+    if (section == Section::kClusterNodes) {
+      if (indent == 4 && cleaned.rfind("- ", 0) == 0) {
+        flush_node();
+        in_node = true;
+        const std::string rest = Trim(cleaned.substr(2));
+        if (!rest.empty()) {
+          const size_t colon = rest.find(':');
+          if (colon == std::string::npos) {
+            if (error != nullptr) {
+              *error = "invalid cluster node entry at line " +
+                       std::to_string(lineno);
+            }
+            return std::nullopt;
+          }
+          const std::string key = Trim(rest.substr(0, colon));
+          const std::string value = Trim(rest.substr(colon + 1));
+          if (key == "id") {
+            current_node.id = value;
+          }
+        }
+        continue;
+      }
+      if (indent >= 6 && in_node) {
+        const size_t colon = cleaned.find(':');
+        if (colon == std::string::npos) continue;
+        const std::string key = Trim(cleaned.substr(0, colon));
+        const std::string value = Trim(cleaned.substr(colon + 1));
+        if (key == "id") {
+          current_node.id = value;
+        } else if (key == "host") {
+          current_node.host = value;
+        } else if (key == "port") {
+          int port = 0;
+          if (ParseIntValue(value, &port)) {
+            current_node.port = static_cast<uint16_t>(port);
+          }
+        } else if (key == "weight") {
+          uint32_t weight = 0;
+          if (ParseUInt32Value(value, &weight)) {
+            current_node.weight = weight;
+          }
+        } else if (key == "alive") {
+          bool alive = true;
+          if (ParseBoolValue(value, &alive)) {
+            current_node.alive = alive;
           }
         }
         continue;
@@ -277,6 +409,7 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
   }
 
   flush_peer();
+  flush_node();
   return cfg;
 }
 
@@ -300,6 +433,40 @@ std::unordered_map<uint64_t, kv::RaftConfig::Peer> ParsePeers(
     }
   }
   return peers;
+}
+
+std::vector<kv::NodeInfo> ParseClusterNodes(const std::string& s) {
+  std::vector<kv::NodeInfo> nodes;
+  std::istringstream iss(s);
+  std::string item;
+  while (std::getline(iss, item, ';')) {
+    kv::NodeInfo node;
+    if (ParseNodeListEntry(Trim(item), &node)) {
+      nodes.push_back(node);
+    }
+  }
+  return nodes;
+}
+
+void EnsureSelfNode(std::vector<kv::NodeInfo>* nodes, const std::string& self_id,
+                    const std::string& self_host, uint16_t self_port) {
+  if (nodes == nullptr || self_port == 0) {
+    return;
+  }
+
+  for (const auto& node : *nodes) {
+    if (node.port == self_port) {
+      return;
+    }
+  }
+
+  kv::NodeInfo self;
+  self.id = self_id;
+  self.host = self_host;
+  self.port = self_port;
+  self.weight = 1;
+  self.alive = true;
+  nodes->push_back(self);
 }
 
 // Wrapper DB that routes writes through Raft, reads directly from local DB.
@@ -454,6 +621,12 @@ int main(int argc, char** argv) {
     }
   }
 
+  std::vector<kv::NodeInfo> cluster_nodes = file_config.cluster_nodes;
+  if (const char* v = std::getenv("KV_CLUSTER_NODES"); v != nullptr &&
+      std::string(v).size() > 0) {
+    cluster_nodes = ParseClusterNodes(v);
+  }
+
   if (raft_enabled) {
     if (const char* v = std::getenv("KV_RAFT_NODE_ID"); v != nullptr) {
       raft_config->node_id = ParseNodeId(v);
@@ -475,6 +648,17 @@ int main(int argc, char** argv) {
     if (raft_config->raft_port == 0) {
       raft_config->raft_port = static_cast<uint16_t>(port + 1);
     }
+  }
+
+  auto cluster_manager = std::make_unique<kv::ClusterManager>(8);
+  EnsureSelfNode(&cluster_nodes, "local", "127.0.0.1",
+                 static_cast<uint16_t>(port));
+  for (const auto& node : cluster_nodes) {
+    (void)cluster_manager->AddNode(node);
+  }
+  if (cluster_manager->NodeCount() == 0) {
+    (void)cluster_manager->AddNode(kv::NodeInfo{
+        "local", "127.0.0.1", static_cast<uint16_t>(port), 1, true});
   }
 
   // ---- Open DB ----
@@ -565,7 +749,7 @@ int main(int argc, char** argv) {
   }
 
   kv::net::Server server;
-  s = server.Start(static_cast<uint16_t>(port), server_db);
+  s = server.Start(static_cast<uint16_t>(port), server_db, cluster_manager.get());
   if (!s.ok()) {
     std::cerr << "server start failed: " << s.ToString() << "\n";
     return 1;
@@ -612,6 +796,10 @@ int main(int argc, char** argv) {
                     << " cache_expire=" << cache_stats.expire;
         }
       }
+
+      const kv::ClusterStatus cluster_status = cluster_manager->GetStatus();
+      std::cout << " cluster_nodes=" << cluster_status.node_count
+                << " cluster_active_nodes=" << cluster_status.active_node_count;
       std::cout << "\n";
       last_report = now;
     }

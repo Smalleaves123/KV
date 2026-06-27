@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "kv/cluster/cluster_manager.h"
 #include "kv/engine/db.h"
 #include "kv/net/session.h"
 
@@ -136,6 +137,7 @@ void PrintHelp() {
       << "  ping\n"
       << "  info\n"
       << "  stats\n"
+      << "  cluster route|status|batch\n"
       << "  snap create <name>\n"
       << "  snap get <name> <key>\n"
       << "  snap release <name>\n"
@@ -156,7 +158,11 @@ int main(int argc, char** argv) {
     std::cerr << "open failed: " << s.ToString() << "\n";
     return 1;
   }
-  kv::net::Session session(db.get());
+
+  kv::ClusterManager cluster_manager(8);
+  (void)cluster_manager.AddNode(
+      kv::NodeInfo{"local", "127.0.0.1", 1, 1, true});
+  kv::net::Session session(db.get(), &cluster_manager);
 
   std::unordered_map<std::string, const kv::Snapshot*> snapshots;
 

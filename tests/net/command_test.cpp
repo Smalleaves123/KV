@@ -4,6 +4,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 
 #include "gtest/gtest.h"
 #include "kv/cluster/cluster_manager.h"
@@ -55,6 +56,33 @@ void PopulateClusterManager(ClusterManager* mgr) {
   ASSERT_NE(mgr, nullptr);
   EXPECT_TRUE(mgr->AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
   EXPECT_TRUE(mgr->AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, true}));
+}
+
+void PopulateSingleNodeClusterManager(ClusterManager* mgr) {
+  ASSERT_NE(mgr, nullptr);
+  EXPECT_TRUE(mgr->AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+}
+
+std::pair<std::string, std::string> FindCrossNodeKeys(ClusterManager* cluster) {
+  EXPECT_NE(cluster, nullptr);
+  std::string first_key;
+  NodeInfo first_node;
+  for (int i = 0; i < 2000; ++i) {
+    const std::string candidate = "key_" + std::to_string(i);
+    NodeInfo node;
+    if (!cluster->Route(candidate, &node)) {
+      continue;
+    }
+    if (first_key.empty()) {
+      first_key = candidate;
+      first_node = node;
+      continue;
+    }
+    if (node.id != first_node.id) {
+      return {first_key, candidate};
+    }
+  }
+  return {};
 }
 
 TEST(CommandExecutorTest, Ping) {
@@ -147,7 +175,7 @@ TEST(CommandExecutorTest, ClusterRouteAndStatus) {
 TEST(CommandExecutorTest, ClusterBatchWritesThroughDB) {
   auto db = OpenDBForTest("cluster_batch");
   ClusterManager cluster(8);
-  PopulateClusterManager(&cluster);
+  PopulateSingleNodeClusterManager(&cluster);
   CommandExecutor exec(db.get(), &cluster);
 
   const std::string resp = exec.Execute(
@@ -161,6 +189,23 @@ TEST(CommandExecutorTest, ClusterBatchWritesThroughDB) {
   s = db->Get(ReadOptions{}, "b", &value);
   EXPECT_TRUE(s.ok());
   EXPECT_EQ(value, "2");
+}
+
+TEST(CommandExecutorTest, ClusterBatchRejectsCrossNodeBatch) {
+  auto db = OpenDBForTest("cluster_batch_cross_node");
+  ClusterManager cluster(8);
+  PopulateClusterManager(&cluster);
+  CommandExecutor exec(db.get(), &cluster);
+
+  const auto keys = FindCrossNodeKeys(&cluster);
+  ASSERT_FALSE(keys.first.empty());
+  ASSERT_FALSE(keys.second.empty());
+
+  const std::string resp = exec.Execute(
+      Command{CommandType::kCluster,
+              {"BATCH", "SET", keys.first, "1", "SET", keys.second, "2"},
+              "CLUSTER BATCH"});
+  EXPECT_EQ(resp, "-ERRcross-node cluster batch is not supported yet\r\n");
 }
 
 TEST(SessionTest, HandleLineParsesAndExecutes) {
@@ -184,7 +229,7 @@ TEST(SessionTest, ClusterCommandsRequireClusterManagerForClusterFeatures) {
 TEST(SessionTest, ClusterCommandsRouteAndBatch) {
   auto db = OpenDBForTest("session_cluster_features");
   ClusterManager cluster(8);
-  PopulateClusterManager(&cluster);
+  PopulateSingleNodeClusterManager(&cluster);
   Session session(db.get(), &cluster);
 
   const std::string route = session.HandleLine("CLUSTER ROUTE user:1");
@@ -192,7 +237,7 @@ TEST(SessionTest, ClusterCommandsRouteAndBatch) {
   EXPECT_NE(route.find("id="), std::string::npos);
 
   const std::string status = session.HandleLine("CLUSTER STATUS");
-  EXPECT_NE(status.find("cluster.node_count=2"), std::string::npos);
+  EXPECT_NE(status.find("cluster.node_count=1"), std::string::npos);
 
   EXPECT_EQ(session.HandleLine("CLUSTER BATCH SET x 1 SET y 2"), "+OK\r\n");
   EXPECT_EQ(session.HandleLine("GET x"), "$1\r\n1\r\n");
