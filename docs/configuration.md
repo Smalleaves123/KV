@@ -161,6 +161,8 @@ Notes:
 
 - If no cluster nodes are configured, `kv_server` adds a local node for
   routing and status reporting.
+- `cluster_local_node_id` should match the node that is actually serving the
+  client connection; `CLUSTER BATCH` rejects requests when this id is missing.
 - The current cluster command surface is node-routing oriented; it is not a
   distributed control plane.
 
