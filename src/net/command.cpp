@@ -269,12 +269,19 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
         }
 
         const std::string& local_node_id = cluster_manager_->LocalNodeId();
-        if (!local_node_id.empty()) {
-          for (const auto& node : routed_nodes) {
-            if (node.id != local_node_id) {
-              return Error("cluster batch routes to a remote node");
-            }
+        if (local_node_id.empty()) {
+          return Error("cluster local node id is not configured");
+        }
+
+        const std::string& routed_node_id = routed_nodes.front().id;
+        for (const auto& node : routed_nodes) {
+          if (node.id != routed_node_id) {
+            return Error("cluster batch routes to multiple nodes");
           }
+        }
+
+        if (routed_node_id != local_node_id) {
+          return Error("cluster batch routes to a remote node");
         }
 
         Status s = db_->Write(WriteOptions{}, batch);

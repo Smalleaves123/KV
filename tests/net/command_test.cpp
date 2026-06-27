@@ -207,7 +207,18 @@ TEST(CommandExecutorTest, ClusterBatchRejectsCrossNodeBatch) {
       Command{CommandType::kCluster,
               {"BATCH", "SET", keys.first, "1", "SET", keys.second, "2"},
               "CLUSTER BATCH"});
-  EXPECT_EQ(resp, "-ERRcross-node cluster batch is not supported yet\r\n");
+  EXPECT_EQ(resp, "-ERRcluster batch routes to multiple nodes\r\n");
+}
+
+TEST(CommandExecutorTest, ClusterBatchRequiresLocalNodeId) {
+  auto db = OpenDBForTest("cluster_batch_requires_local_node_id");
+  ClusterManager cluster(8);
+  EXPECT_TRUE(cluster.AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+  CommandExecutor exec(db.get(), &cluster);
+
+  const std::string resp = exec.Execute(
+      Command{CommandType::kCluster, {"BATCH", "SET", "a", "1"}, "CLUSTER BATCH"});
+  EXPECT_EQ(resp, "-ERRcluster local node id is not configured\r\n");
 }
 
 TEST(SessionTest, HandleLineParsesAndExecutes) {

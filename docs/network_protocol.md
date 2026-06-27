@@ -172,7 +172,7 @@ provided, the command returns up to that many replica nodes in routing order.
 batch after routing validation. Current behavior is intentionally conservative:
 
 - all keys in the batch must route to the same node;
-- that node must match the configured local node id when one is set;
+- the configured local node id must be present and must match that node;
 - cross-node batch execution is rejected with an error;
 - batch writes are still applied locally through `DB::Write`.
 
