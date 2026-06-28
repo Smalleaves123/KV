@@ -159,6 +159,7 @@ cluster manager.
 CLUSTER ROUTE key [replica_count]
 CLUSTER STATUS
 CLUSTER STATUS node_id
+CLUSTER PLAN SET key value [SET key value ...] [DEL key ...]
 CLUSTER BATCH SET key value [SET key value ...] [DEL key ...]
 ```
 
@@ -167,6 +168,10 @@ provided, the command returns up to that many replica nodes in routing order.
 
 `CLUSTER STATUS` returns cluster-wide node counts and a per-node snapshot.
 `CLUSTER STATUS node_id` returns a single node entry.
+
+`CLUSTER PLAN` groups a batch of `SET` and `DEL` operations by routed node and
+returns a human-readable execution plan. It does not mutate data; callers can
+use it to split a larger batch into per-node work units.
 
 `CLUSTER BATCH` applies a batch of `SET` and `DEL` operations as one write
 batch after routing validation. Current behavior is intentionally conservative:

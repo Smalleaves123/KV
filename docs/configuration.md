@@ -163,6 +163,8 @@ Notes:
   routing and status reporting.
 - `cluster_local_node_id` should match the node that is actually serving the
   client connection; `CLUSTER BATCH` rejects requests when this id is missing.
+- `CLUSTER PLAN` is a client-side routing helper that groups batch operations
+  by node without executing them.
 - The current cluster command surface is node-routing oriented; it is not a
   distributed control plane.
 

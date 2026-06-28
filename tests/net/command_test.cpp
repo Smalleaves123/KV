@@ -221,6 +221,28 @@ TEST(CommandExecutorTest, ClusterBatchRequiresLocalNodeId) {
   EXPECT_EQ(resp, "-ERRcluster local node id is not configured\r\n");
 }
 
+TEST(CommandExecutorTest, ClusterPlanGroupsOperationsByNode) {
+  auto db = OpenDBForTest("cluster_plan_groups");
+  ClusterManager cluster(8);
+  PopulateClusterManager(&cluster);
+  CommandExecutor exec(db.get(), &cluster);
+
+  const auto keys = FindCrossNodeKeys(&cluster);
+  ASSERT_FALSE(keys.first.empty());
+  ASSERT_FALSE(keys.second.empty());
+
+  const std::string resp = exec.Execute(
+      Command{CommandType::kCluster,
+              {"PLAN", "SET", keys.first, "1", "DEL", keys.second},
+              "CLUSTER PLAN"});
+  EXPECT_NE(resp.find("cluster.batch_group_count=2"), std::string::npos);
+  EXPECT_NE(resp.find("group[0].op_count=1"), std::string::npos);
+  EXPECT_NE(resp.find("group[1].op_count=1"), std::string::npos);
+  EXPECT_NE(resp.find("group[0].op[0]=SET " + keys.first + " 1"),
+            std::string::npos);
+  EXPECT_NE(resp.find("group[1].op[0]=DEL " + keys.second), std::string::npos);
+}
+
 TEST(SessionTest, HandleLineParsesAndExecutes) {
   auto db = OpenDBForTest("session");
   Session session(db.get());
@@ -255,6 +277,8 @@ TEST(SessionTest, ClusterCommandsRouteAndBatch) {
   EXPECT_EQ(session.HandleLine("CLUSTER BATCH SET x 1 SET y 2"), "+OK\r\n");
   EXPECT_EQ(session.HandleLine("GET x"), "$1\r\n1\r\n");
   EXPECT_EQ(session.HandleLine("GET y"), "$1\r\n2\r\n");
+  EXPECT_NE(session.HandleLine("CLUSTER PLAN SET x 1 DEL y").find("cluster.batch_group_count=1"),
+            std::string::npos);
 }
 
 TEST(SessionTest, InfoAndStatsInAndOutTransaction) {

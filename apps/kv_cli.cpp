@@ -137,7 +137,7 @@ void PrintHelp() {
       << "  ping\n"
       << "  info\n"
       << "  stats\n"
-      << "  cluster route|status|batch\n"
+      << "  cluster route|status|plan|batch\n"
       << "  snap create <name>\n"
       << "  snap get <name> <key>\n"
       << "  snap release <name>\n"
