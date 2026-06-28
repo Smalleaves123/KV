@@ -170,9 +170,21 @@ provided, the command returns up to that many replica nodes in routing order.
 `CLUSTER STATUS node_id` returns a single node entry.
 
 `CLUSTER PLAN` groups a batch of `SET` and `DEL` operations by routed node and
-returns a RESP array. Each group contains the target node metadata and an
-ordered array of encoded operations. It does not mutate data; callers can use
-it to split a larger batch into per-node work units.
+returns a RESP array with this shape:
+
+```text
+[
+  [
+    [node_id, host, port, weight, alive],
+    [[op_type, key, value_or_nil], ...]
+  ],
+  ...
+]
+```
+
+Each group contains explicit node fields and explicit operation fields. It does
+not mutate data; callers can use it to split a larger batch into per-node work
+units without parsing ad-hoc text.
 
 `CLUSTER BATCH` applies a batch of `SET` and `DEL` operations as one write
 batch after routing validation. Current behavior is intentionally conservative:

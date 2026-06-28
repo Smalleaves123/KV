@@ -64,6 +64,16 @@ std::vector<std::string> EncodeNodeArray(const std::vector<NodeInfo>& nodes) {
   return encoded;
 }
 
+std::string EncodeNodeFields(const NodeInfo& node) {
+  return protocol::Array({
+      protocol::BulkString(node.id),
+      protocol::BulkString(node.host),
+      protocol::BulkString(std::to_string(node.port)),
+      protocol::BulkString(std::to_string(node.weight)),
+      protocol::BulkString(node.alive ? "1" : "0"),
+  });
+}
+
 enum class BatchOpType {
   kSet = 0,
   kDel,
@@ -169,13 +179,18 @@ bool GroupBatchOps(const ClusterManager& cluster_manager,
   return true;
 }
 
-std::string BatchOpToText(const BatchOp& op) {
-  std::ostringstream oss;
-  oss << (op.type == BatchOpType::kSet ? "SET " : "DEL ") << op.key;
+std::string EncodeBatchOp(const BatchOp& op) {
+  std::vector<std::string> encoded_fields;
+  encoded_fields.reserve(3);
+  encoded_fields.push_back(
+      protocol::BulkString(op.type == BatchOpType::kSet ? "SET" : "DEL"));
+  encoded_fields.push_back(protocol::BulkString(op.key));
   if (op.type == BatchOpType::kSet) {
-    oss << " " << op.value;
+    encoded_fields.push_back(protocol::BulkString(op.value));
+  } else {
+    encoded_fields.push_back(protocol::Nil());
   }
-  return oss.str();
+  return protocol::Array(encoded_fields);
 }
 
 std::string EncodeBatchPlan(const std::vector<BatchGroup>& groups) {
@@ -183,18 +198,15 @@ std::string EncodeBatchPlan(const std::vector<BatchGroup>& groups) {
   encoded_groups.reserve(groups.size());
 
   for (const auto& group : groups) {
-    std::vector<std::string> encoded_group;
-    encoded_group.reserve(2);
-    encoded_group.push_back(protocol::BulkString(NodeToLine(group.node)));
-
     std::vector<std::string> encoded_ops;
     encoded_ops.reserve(group.ops.size());
     for (const auto& op : group.ops) {
-      encoded_ops.push_back(protocol::BulkString(BatchOpToText(op)));
+      encoded_ops.push_back(EncodeBatchOp(op));
     }
-    encoded_group.push_back(protocol::Array(encoded_ops));
-
-    encoded_groups.push_back(protocol::Array(encoded_group));
+    encoded_groups.push_back(protocol::Array({
+        EncodeNodeFields(group.node),
+        protocol::Array(encoded_ops),
+    }));
   }
 
   return protocol::Array(encoded_groups);

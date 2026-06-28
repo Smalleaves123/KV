@@ -387,9 +387,10 @@ TEST_F(ServerIntegrationTest, ClusterCommandsWorkOverNetwork) {
   ASSERT_TRUE(SendLine(fd, "CLUSTER PLAN SET net_a 1 DEL net_b"));
   ASSERT_TRUE(ReadResp(fd, &resp));
   EXPECT_NE(resp.find("*1\r\n"), std::string::npos);
-  EXPECT_NE(resp.find("id=n1"), std::string::npos);
-  EXPECT_NE(resp.find("SET net_a 1"), std::string::npos);
-  EXPECT_NE(resp.find("DEL net_b"), std::string::npos);
+  EXPECT_NE(resp.find("$2\r\nn1\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("$3\r\nSET\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("$3\r\nDEL\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("$-1\r\n"), std::string::npos);
 
   ASSERT_TRUE(SendLine(fd, "CLUSTER BATCH SET net_a 1 SET net_b 2"));
   ASSERT_TRUE(ReadResp(fd, &resp));
