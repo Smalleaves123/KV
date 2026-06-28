@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "kv/cluster/router.h"
+#include "kv/engine/write_batch.h"
 
 namespace kv {
 
@@ -13,6 +14,11 @@ struct ClusterStatus {
 	size_t node_count = 0;
 	size_t active_node_count = 0;
 	std::vector<NodeInfo> nodes;
+};
+
+struct ClusterBatchGroup {
+	NodeInfo node;
+	WriteBatch batch;
 };
 
 class ClusterManager {
@@ -29,6 +35,8 @@ class ClusterManager {
 																			size_t replica_count) const;
 	bool RouteKeys(const std::vector<std::string>& keys,
 								 std::vector<NodeInfo>* nodes) const;
+	bool PartitionBatch(const WriteBatch& batch,
+										 std::vector<ClusterBatchGroup>* groups) const;
 
 	void SetLocalNodeId(std::string node_id);
 	const std::string& LocalNodeId() const noexcept;

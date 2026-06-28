@@ -74,32 +74,16 @@ std::string EncodeNodeFields(const NodeInfo& node) {
   });
 }
 
-enum class BatchOpType {
-  kSet = 0,
-  kDel,
-};
-
-struct BatchOp {
-  BatchOpType type = BatchOpType::kSet;
-  std::string key;
-  std::string value;
-};
-
-struct BatchGroup {
-  NodeInfo node;
-  std::vector<BatchOp> ops;
-};
-
-bool ParseBatchOps(const std::vector<std::string>& args, size_t start,
-                   std::vector<BatchOp>* ops, std::string* error) {
-  if (ops == nullptr) {
+bool ParseClusterWriteBatch(const std::vector<std::string>& args, size_t start,
+                           WriteBatch* batch, std::string* error) {
+  if (batch == nullptr) {
     if (error != nullptr) {
-      *error = "batch operation sink is null";
+      *error = "batch sink is null";
     }
     return false;
   }
 
-  ops->clear();
+  batch->Clear();
   for (size_t i = start; i < args.size();) {
     const std::string op = ToUpper(args[i]);
     if (op == "SET") {
@@ -110,7 +94,7 @@ bool ParseBatchOps(const std::vector<std::string>& args, size_t start,
         return false;
       }
 
-      ops->push_back(BatchOp{BatchOpType::kSet, args[i + 1], args[i + 2]});
+      batch->Put(args[i + 1], args[i + 2]);
       i += 3;
       continue;
     }
@@ -123,7 +107,7 @@ bool ParseBatchOps(const std::vector<std::string>& args, size_t start,
         return false;
       }
 
-      ops->push_back(BatchOp{BatchOpType::kDel, args[i + 1], {}});
+      batch->Delete(args[i + 1]);
       i += 2;
       continue;
     }
@@ -137,55 +121,13 @@ bool ParseBatchOps(const std::vector<std::string>& args, size_t start,
   return true;
 }
 
-bool GroupBatchOps(const ClusterManager& cluster_manager,
-                   const std::vector<BatchOp>& ops, std::vector<BatchGroup>* groups,
-                   std::string* error) {
-  if (groups == nullptr) {
-    if (error != nullptr) {
-      *error = "batch group sink is null";
-    }
-    return false;
-  }
-
-  groups->clear();
-  std::vector<std::string> seen_node_ids;
-
-  for (const auto& op : ops) {
-    NodeInfo node;
-    if (!cluster_manager.Route(op.key, &node)) {
-      if (error != nullptr) {
-        *error = "no route available";
-      }
-      groups->clear();
-      return false;
-    }
-
-    size_t index = groups->size();
-    for (size_t i = 0; i < seen_node_ids.size(); ++i) {
-      if (seen_node_ids[i] == node.id) {
-        index = i;
-        break;
-      }
-    }
-
-    if (index == groups->size()) {
-      seen_node_ids.push_back(node.id);
-      groups->push_back(BatchGroup{node, {}});
-    }
-
-    groups->at(index).ops.push_back(op);
-  }
-
-  return true;
-}
-
-std::string EncodeBatchOp(const BatchOp& op) {
+std::string EncodeBatchOp(const WriteBatch::Operation& op) {
   std::vector<std::string> encoded_fields;
   encoded_fields.reserve(3);
-  encoded_fields.push_back(
-      protocol::BulkString(op.type == BatchOpType::kSet ? "SET" : "DEL"));
+  encoded_fields.push_back(protocol::BulkString(
+      op.type == WriteBatch::ValueType::kPut ? "SET" : "DEL"));
   encoded_fields.push_back(protocol::BulkString(op.key));
-  if (op.type == BatchOpType::kSet) {
+  if (op.type == WriteBatch::ValueType::kPut) {
     encoded_fields.push_back(protocol::BulkString(op.value));
   } else {
     encoded_fields.push_back(protocol::Nil());
@@ -193,14 +135,14 @@ std::string EncodeBatchOp(const BatchOp& op) {
   return protocol::Array(encoded_fields);
 }
 
-std::string EncodeBatchPlan(const std::vector<BatchGroup>& groups) {
+std::string EncodeBatchPlan(const std::vector<ClusterBatchGroup>& groups) {
   std::vector<std::string> encoded_groups;
   encoded_groups.reserve(groups.size());
 
   for (const auto& group : groups) {
     std::vector<std::string> encoded_ops;
-    encoded_ops.reserve(group.ops.size());
-    for (const auto& op : group.ops) {
+    encoded_ops.reserve(group.batch.Count());
+    for (const auto& op : group.batch.operations()) {
       encoded_ops.push_back(EncodeBatchOp(op));
     }
     encoded_groups.push_back(protocol::Array({
@@ -377,14 +319,9 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
           return Error("wrong number of arguments for 'CLUSTER BATCH'");
         }
 
-        std::vector<BatchOp> ops;
+        WriteBatch batch;
         std::string error;
-        if (!ParseBatchOps(cmd.args, 1, &ops, &error)) {
-          return Error(error);
-        }
-
-        std::vector<BatchGroup> groups;
-        if (!GroupBatchOps(*cluster_manager_, ops, &groups, &error)) {
+        if (!ParseClusterWriteBatch(cmd.args, 1, &batch, &error)) {
           return Error(error);
         }
 
@@ -393,25 +330,25 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
           return Error("cluster local node id is not configured");
         }
 
+        std::vector<ClusterBatchGroup> groups;
+        if (!cluster_manager_->PartitionBatch(batch, &groups)) {
+          return Error("no route available");
+        }
+
+        if (groups.empty()) {
+          return Error("no route available");
+        }
+
         if (groups.size() != 1) {
           return Error("cluster batch routes to multiple nodes");
         }
 
-        const BatchGroup& group = groups.front();
+        const ClusterBatchGroup& group = groups.front();
         if (group.node.id != local_node_id) {
           return Error("cluster batch routes to a remote node");
         }
 
-        WriteBatch batch;
-        for (const auto& op : ops) {
-          if (op.type == BatchOpType::kSet) {
-            batch.Put(op.key, op.value);
-          } else {
-            batch.Delete(op.key);
-          }
-        }
-
-        Status s = db_->Write(WriteOptions{}, batch);
+        Status s = db_->Write(WriteOptions{}, group.batch);
         if (!s.ok()) {
           return Error(s.ToString());
         }
@@ -423,15 +360,15 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
           return Error("wrong number of arguments for 'CLUSTER PLAN'");
         }
 
-        std::vector<BatchOp> ops;
+        WriteBatch batch;
         std::string error;
-        if (!ParseBatchOps(cmd.args, 1, &ops, &error)) {
+        if (!ParseClusterWriteBatch(cmd.args, 1, &batch, &error)) {
           return Error(error);
         }
 
-        std::vector<BatchGroup> groups;
-        if (!GroupBatchOps(*cluster_manager_, ops, &groups, &error)) {
-          return Error(error);
+        std::vector<ClusterBatchGroup> groups;
+        if (!cluster_manager_->PartitionBatch(batch, &groups)) {
+          return Error("no route available");
         }
 
         return EncodeBatchPlan(groups);

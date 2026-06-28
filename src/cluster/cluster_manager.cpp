@@ -61,6 +61,44 @@ bool ClusterManager::RouteKeys(const std::vector<std::string>& keys,
 	return true;
 }
 
+bool ClusterManager::PartitionBatch(const WriteBatch& batch,
+																	 std::vector<ClusterBatchGroup>* groups) const {
+	if (groups == nullptr) {
+		return false;
+	}
+
+	groups->clear();
+	std::vector<std::string> seen_node_ids;
+	for (const auto& op : batch.operations()) {
+		NodeInfo node;
+		if (!Route(op.key, &node)) {
+			groups->clear();
+			return false;
+		}
+
+		size_t index = groups->size();
+		for (size_t i = 0; i < seen_node_ids.size(); ++i) {
+			if (seen_node_ids[i] == node.id) {
+				index = i;
+				break;
+			}
+		}
+
+		if (index == groups->size()) {
+			seen_node_ids.push_back(node.id);
+			groups->push_back(ClusterBatchGroup{node, WriteBatch{}});
+		}
+
+		if (op.type == WriteBatch::ValueType::kPut) {
+			groups->at(index).batch.Put(op.key, op.value);
+		} else {
+			groups->at(index).batch.Delete(op.key);
+		}
+	}
+
+	return true;
+}
+
 void ClusterManager::SetLocalNodeId(std::string node_id) {
 	local_node_id_ = std::move(node_id);
 }

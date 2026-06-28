@@ -187,7 +187,9 @@ not mutate data; callers can use it to split a larger batch into per-node work
 units without parsing ad-hoc text.
 
 `CLUSTER BATCH` applies a batch of `SET` and `DEL` operations as one write
-batch after routing validation. Current behavior is intentionally conservative:
+batch after routing validation. The implementation first partitions operations
+by routed node, then applies the local node group when it is the only target.
+Current behavior is intentionally conservative:
 
 - all keys in the batch must route to the same node;
 - the configured local node id must be present and must match that node;

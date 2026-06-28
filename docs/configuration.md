@@ -166,6 +166,8 @@ Notes:
 - `CLUSTER PLAN` is a client-side routing helper that groups batch operations
   by node without executing them and returns a fixed RESP schema instead of
   free-form text.
+- `CLUSTER BATCH` uses the same partitioning logic internally before deciding
+  whether the local node can execute the request.
 - The current cluster command surface is node-routing oriented; it is not a
   distributed control plane.
 
