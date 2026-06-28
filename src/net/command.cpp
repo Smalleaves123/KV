@@ -178,19 +178,26 @@ std::string BatchOpToText(const BatchOp& op) {
   return oss.str();
 }
 
-std::string BatchPlanToText(const std::vector<BatchGroup>& groups) {
-  std::ostringstream oss;
-  oss << "cluster.batch_group_count=" << groups.size();
-  for (size_t i = 0; i < groups.size(); ++i) {
-    const auto& group = groups[i];
-    oss << "\ngroup[" << i << "].node=" << NodeToLine(group.node)
-        << "\ngroup[" << i << "].op_count=" << group.ops.size();
-    for (size_t j = 0; j < group.ops.size(); ++j) {
-      oss << "\ngroup[" << i << "].op[" << j << "]="
-          << BatchOpToText(group.ops[j]);
+std::string EncodeBatchPlan(const std::vector<BatchGroup>& groups) {
+  std::vector<std::string> encoded_groups;
+  encoded_groups.reserve(groups.size());
+
+  for (const auto& group : groups) {
+    std::vector<std::string> encoded_group;
+    encoded_group.reserve(2);
+    encoded_group.push_back(protocol::BulkString(NodeToLine(group.node)));
+
+    std::vector<std::string> encoded_ops;
+    encoded_ops.reserve(group.ops.size());
+    for (const auto& op : group.ops) {
+      encoded_ops.push_back(protocol::BulkString(BatchOpToText(op)));
     }
+    encoded_group.push_back(protocol::Array(encoded_ops));
+
+    encoded_groups.push_back(protocol::Array(encoded_group));
   }
-  return oss.str();
+
+  return protocol::Array(encoded_groups);
 }
 
 }  // namespace
@@ -415,7 +422,7 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
           return Error(error);
         }
 
-        return BulkString(BatchPlanToText(groups));
+        return EncodeBatchPlan(groups);
       }
 
       return Error("unknown cluster command");

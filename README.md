@@ -204,6 +204,7 @@ INFO
 STATS
 CLUSTER ROUTE key [replica_count]
 CLUSTER STATUS [node_id]
+CLUSTER PLAN SET key value [SET key value ...] [DEL key ...]
 CLUSTER BATCH SET key value [SET key value ...] [DEL key ...]
 ```
 

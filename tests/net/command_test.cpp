@@ -235,12 +235,11 @@ TEST(CommandExecutorTest, ClusterPlanGroupsOperationsByNode) {
       Command{CommandType::kCluster,
               {"PLAN", "SET", keys.first, "1", "DEL", keys.second},
               "CLUSTER PLAN"});
-  EXPECT_NE(resp.find("cluster.batch_group_count=2"), std::string::npos);
-  EXPECT_NE(resp.find("group[0].op_count=1"), std::string::npos);
-  EXPECT_NE(resp.find("group[1].op_count=1"), std::string::npos);
-  EXPECT_NE(resp.find("group[0].op[0]=SET " + keys.first + " 1"),
-            std::string::npos);
-  EXPECT_NE(resp.find("group[1].op[0]=DEL " + keys.second), std::string::npos);
+  EXPECT_NE(resp.find("*2\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("id=n1"), std::string::npos);
+  EXPECT_NE(resp.find("id=n2"), std::string::npos);
+  EXPECT_NE(resp.find("SET " + keys.first + " 1"), std::string::npos);
+  EXPECT_NE(resp.find("DEL " + keys.second), std::string::npos);
 }
 
 TEST(SessionTest, HandleLineParsesAndExecutes) {
@@ -277,8 +276,11 @@ TEST(SessionTest, ClusterCommandsRouteAndBatch) {
   EXPECT_EQ(session.HandleLine("CLUSTER BATCH SET x 1 SET y 2"), "+OK\r\n");
   EXPECT_EQ(session.HandleLine("GET x"), "$1\r\n1\r\n");
   EXPECT_EQ(session.HandleLine("GET y"), "$1\r\n2\r\n");
-  EXPECT_NE(session.HandleLine("CLUSTER PLAN SET x 1 DEL y").find("cluster.batch_group_count=1"),
-            std::string::npos);
+  const std::string plan = session.HandleLine("CLUSTER PLAN SET x 1 DEL y");
+  EXPECT_NE(plan.find("*1\r\n"), std::string::npos);
+  EXPECT_NE(plan.find("id=n1"), std::string::npos);
+  EXPECT_NE(plan.find("SET x 1"), std::string::npos);
+  EXPECT_NE(plan.find("DEL y"), std::string::npos);
 }
 
 TEST(SessionTest, InfoAndStatsInAndOutTransaction) {
