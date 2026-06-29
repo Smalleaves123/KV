@@ -99,6 +99,33 @@ bool ClusterManager::PartitionBatch(const WriteBatch& batch,
 	return true;
 }
 
+Status ClusterManager::ExecutePartitionedBatch(const WriteBatch& batch,
+																							 const ClusterBatchHandler& handler) const {
+	if (!handler) {
+		return Status::InvalidArgument("cluster batch handler is null");
+	}
+	if (batch.Empty()) {
+		return Status::InvalidArgument("cluster batch is empty");
+	}
+
+	std::vector<ClusterBatchGroup> groups;
+	if (!PartitionBatch(batch, &groups)) {
+		return Status::InvalidArgument("no route available");
+	}
+	if (groups.empty()) {
+		return Status::InvalidArgument("no route available");
+	}
+
+	for (size_t i = 0; i < groups.size(); ++i) {
+		Status s = handler(groups[i], i, groups.size());
+		if (!s.ok()) {
+			return s;
+		}
+	}
+
+	return Status::OK();
+}
+
 void ClusterManager::SetLocalNodeId(std::string node_id) {
 	local_node_id_ = std::move(node_id);
 }

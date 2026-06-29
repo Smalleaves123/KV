@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,6 +22,9 @@ struct ClusterBatchGroup {
 	WriteBatch batch;
 };
 
+using ClusterBatchHandler =
+		std::function<Status(const ClusterBatchGroup& group, size_t index, size_t total)>;
+
 class ClusterManager {
  public:
 	explicit ClusterManager(size_t virtual_nodes_per_weight = 32);
@@ -37,6 +41,8 @@ class ClusterManager {
 								 std::vector<NodeInfo>* nodes) const;
 	bool PartitionBatch(const WriteBatch& batch,
 										 std::vector<ClusterBatchGroup>* groups) const;
+	Status ExecutePartitionedBatch(const WriteBatch& batch,
+																 const ClusterBatchHandler& handler) const;
 
 	void SetLocalNodeId(std::string node_id);
 	const std::string& LocalNodeId() const noexcept;

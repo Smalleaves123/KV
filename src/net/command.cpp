@@ -154,6 +154,13 @@ std::string EncodeBatchPlan(const std::vector<ClusterBatchGroup>& groups) {
   return protocol::Array(encoded_groups);
 }
 
+std::string ProtocolMessageForStatus(const Status& status) {
+  if (status.message().empty()) {
+    return status.ToString();
+  }
+  return status.message();
+}
+
 }  // namespace
 
 CommandExecutor::CommandExecutor(DB* db, const ClusterManager* cluster_manager)
@@ -330,27 +337,18 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
           return Error("cluster local node id is not configured");
         }
 
-        std::vector<ClusterBatchGroup> groups;
-        if (!cluster_manager_->PartitionBatch(batch, &groups)) {
-          return Error("no route available");
-        }
-
-        if (groups.empty()) {
-          return Error("no route available");
-        }
-
-        if (groups.size() != 1) {
-          return Error("cluster batch routes to multiple nodes");
-        }
-
-        const ClusterBatchGroup& group = groups.front();
-        if (group.node.id != local_node_id) {
-          return Error("cluster batch routes to a remote node");
-        }
-
-        Status s = db_->Write(WriteOptions{}, group.batch);
+        const Status s = cluster_manager_->ExecutePartitionedBatch(
+            batch, [&](const ClusterBatchGroup& group, size_t /*index*/, size_t total) {
+              if (total != 1) {
+                return Status::InvalidArgument("cluster batch routes to multiple nodes");
+              }
+              if (group.node.id != local_node_id) {
+                return Status::InvalidArgument("cluster batch routes to a remote node");
+              }
+              return db_->Write(WriteOptions{}, group.batch);
+            });
         if (!s.ok()) {
-          return Error(s.ToString());
+          return Error(ProtocolMessageForStatus(s));
         }
         return SimpleString("OK");
       }

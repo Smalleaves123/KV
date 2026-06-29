@@ -5,6 +5,39 @@
 namespace kv {
 namespace {
 
+std::pair<std::string, std::string> FindCrossNodeKeys(ClusterManager* mgr,
+                                                      NodeInfo* first_node = nullptr,
+                                                      NodeInfo* second_node = nullptr) {
+  if (mgr == nullptr) {
+    return {};
+  }
+
+  std::string first_key;
+  NodeInfo first;
+  for (int i = 0; i < 5000; ++i) {
+    const std::string candidate = "key_" + std::to_string(i);
+    NodeInfo node;
+    if (!mgr->Route(candidate, &node)) {
+      continue;
+    }
+    if (first_key.empty()) {
+      first_key = candidate;
+      first = node;
+      continue;
+    }
+    if (node.id != first.id) {
+      if (first_node != nullptr) {
+        *first_node = first;
+      }
+      if (second_node != nullptr) {
+        *second_node = node;
+      }
+      return {first_key, candidate};
+    }
+  }
+  return {};
+}
+
 TEST(ClusterManagerTest, RouteOnNonEmptyCluster) {
   ClusterManager mgr(8);
 
@@ -76,12 +109,47 @@ TEST(ClusterManagerTest, PartitionBatchGroupsOperationsByNode) {
   EXPECT_TRUE(mgr.AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
   EXPECT_TRUE(mgr.AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, true}));
 
+  NodeInfo first_node;
+  NodeInfo second_node;
+  const auto keys = FindCrossNodeKeys(&mgr, &first_node, &second_node);
+  ASSERT_FALSE(keys.first.empty());
+  ASSERT_FALSE(keys.second.empty());
+  ASSERT_NE(first_node.id, second_node.id);
+
+  WriteBatch batch;
+  batch.Put(keys.first, "v1");
+  batch.Delete(keys.second);
+  batch.Put(keys.first, "v3");
+
+  std::vector<ClusterBatchGroup> groups;
+  EXPECT_TRUE(mgr.PartitionBatch(batch, &groups));
+  ASSERT_EQ(groups.size(), 2U);
+  EXPECT_EQ(groups[0].node.id, first_node.id);
+  EXPECT_EQ(groups[1].node.id, second_node.id);
+  EXPECT_EQ(groups[0].batch.Count(), 2U);
+  EXPECT_EQ(groups[1].batch.Count(), 1U);
+
+  const auto& first_ops = groups[0].batch.operations();
+  const auto& second_ops = groups[1].batch.operations();
+  ASSERT_EQ(first_ops.size(), 2U);
+  ASSERT_EQ(second_ops.size(), 1U);
+  EXPECT_EQ(first_ops[0].key, keys.first);
+  EXPECT_EQ(first_ops[1].key, keys.first);
+  EXPECT_EQ(second_ops[0].key, keys.second);
+}
+
+TEST(ClusterManagerTest, ExecutePartitionedBatchInvokesHandlerInOrder) {
+  ClusterManager mgr(8);
+
+  EXPECT_TRUE(mgr.AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+  EXPECT_TRUE(mgr.AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, true}));
+
   std::string first_key;
   std::string second_key;
   NodeInfo first_node;
   NodeInfo second_node;
   for (int i = 0; i < 2000; ++i) {
-    const std::string candidate = "key_" + std::to_string(i);
+    const std::string candidate = "exec_" + std::to_string(i);
     NodeInfo node;
     ASSERT_TRUE(mgr.Route(candidate, &node));
     if (first_key.empty()) {
@@ -103,23 +171,53 @@ TEST(ClusterManagerTest, PartitionBatchGroupsOperationsByNode) {
   WriteBatch batch;
   batch.Put(first_key, "v1");
   batch.Delete(second_key);
-  batch.Put(first_key, "v3");
+  batch.Put(first_key, "v2");
 
-  std::vector<ClusterBatchGroup> groups;
-  EXPECT_TRUE(mgr.PartitionBatch(batch, &groups));
-  ASSERT_EQ(groups.size(), 2U);
-  EXPECT_EQ(groups[0].node.id, first_node.id);
-  EXPECT_EQ(groups[1].node.id, second_node.id);
-  EXPECT_EQ(groups[0].batch.Count(), 2U);
-  EXPECT_EQ(groups[1].batch.Count(), 1U);
+  std::vector<std::string> seen;
+  Status s = mgr.ExecutePartitionedBatch(
+      batch, [&](const ClusterBatchGroup& group, size_t index, size_t total) {
+        seen.push_back(group.node.id + ":" + std::to_string(index) + "/" +
+                       std::to_string(total) + ":" +
+                       std::to_string(group.batch.Count()));
+        return Status::OK();
+      });
 
-  const auto& first_ops = groups[0].batch.operations();
-  const auto& second_ops = groups[1].batch.operations();
-  ASSERT_EQ(first_ops.size(), 2U);
-  ASSERT_EQ(second_ops.size(), 1U);
-  EXPECT_EQ(first_ops[0].key, first_key);
-  EXPECT_EQ(first_ops[1].key, first_key);
-  EXPECT_EQ(second_ops[0].key, second_key);
+  EXPECT_TRUE(s.ok());
+  ASSERT_EQ(seen.size(), 2U);
+  EXPECT_EQ(seen[0].find(first_node.id), 0U);
+  EXPECT_EQ(seen[1].find(second_node.id), 0U);
+  EXPECT_NE(seen[0].find("0/2"), std::string::npos);
+  EXPECT_NE(seen[1].find("1/2"), std::string::npos);
+}
+
+TEST(ClusterManagerTest, ExecutePartitionedBatchStopsOnHandlerError) {
+  ClusterManager mgr(8);
+
+  EXPECT_TRUE(mgr.AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+  EXPECT_TRUE(mgr.AddNode(NodeInfo{"n2", "127.0.0.1", 9002, 1, true}));
+
+  NodeInfo first_node;
+  const auto keys = FindCrossNodeKeys(&mgr, &first_node);
+  ASSERT_FALSE(keys.first.empty());
+  ASSERT_FALSE(keys.second.empty());
+
+  WriteBatch batch;
+  batch.Put(keys.first, "v1");
+  batch.Put(keys.second, "v2");
+
+  int calls = 0;
+  Status s = mgr.ExecutePartitionedBatch(
+      batch, [&](const ClusterBatchGroup&, size_t, size_t total) {
+        ++calls;
+        if (total > 1) {
+          return Status::InvalidArgument("multi-node batch");
+        }
+        return Status::OK();
+      });
+
+  EXPECT_TRUE(s.IsInvalidArgument());
+  EXPECT_EQ(s.message(), "multi-node batch");
+  EXPECT_EQ(calls, 1);
 }
 
 }  // namespace
