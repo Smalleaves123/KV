@@ -1,6 +1,5 @@
 #include "kv/sstable/block_iterator.h"
 
-#include <algorithm>
 #include <cstring>
 
 #include "kv/sstable/block.h"
@@ -55,28 +54,6 @@ void BlockIterator::SeekToFirst() {
   valid_ = current_entry_.offset > 0 || !current_entry_.key.empty();
 }
 
-void BlockIterator::SeekToLast() {
-  const uint32_t nr = block_.NumRestarts();
-  if (nr == 0) {
-    valid_ = false;
-    return;
-  }
-
-  SeekToRestart(static_cast<int>(nr - 1));
-
-  const uint32_t data_end = block_.restart_offset_;
-  while (current_entry_.offset < data_end) {
-    Next();
-    if (!Valid()) {
-      return;
-    }
-  }
-
-  if (current_ < data_end) {
-    valid_ = current_entry_.offset > 0 || !current_entry_.key.empty();
-  }
-}
-
 void BlockIterator::Seek(std::string_view target) {
   uint32_t lo = 0;
   uint32_t hi = block_.NumRestarts();
@@ -127,41 +104,6 @@ void BlockIterator::Next() {
   current_ = current_entry_.offset;
   current_entry_ = next;
   valid_ = true;
-}
-
-void BlockIterator::Prev() {
-  if (!Valid()) return;
-
-  const uint32_t target = current_;
-  SeekToFirst();
-  if (!Valid() || current_ == target) {
-    valid_ = false;
-    return;
-  }
-
-  Entry prev_entry = current_entry_;
-  uint32_t prev_offset = current_;
-  while (Valid() && current_ < target) {
-    prev_entry = current_entry_;
-    prev_offset = current_;
-    Next();
-  }
-
-  if (!Valid()) {
-    current_ = prev_offset;
-    current_entry_ = prev_entry;
-    valid_ = true;
-    return;
-  }
-
-  if (current_ == target) {
-    current_ = prev_offset;
-    current_entry_ = prev_entry;
-    valid_ = true;
-    return;
-  }
-
-  valid_ = false;
 }
 
 bool BlockIterator::Valid() const noexcept {

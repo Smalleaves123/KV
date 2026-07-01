@@ -4,6 +4,9 @@
 #include <ios>
 #include <system_error>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 namespace kv {
 namespace {
 
@@ -61,7 +64,7 @@ Status GetInitialFileSize(const std::filesystem::path& path,
 
 }  // namespace
 
-WALWriter::WALWriter() : stream_(), file_path_(), file_size_(0) {}
+WALWriter::WALWriter() : stream_(), file_path_(), file_size_(0), sync_fd_(-1) {}
 
 WALWriter::~WALWriter() {
   (void)Close();
@@ -70,6 +73,11 @@ WALWriter::~WALWriter() {
 Status WALWriter::Open(const std::string& file_path, bool append) {
   if (file_path.empty()) {
     return Status::InvalidArgument("wal file path is empty");
+  }
+
+  if (sync_fd_ >= 0) {
+    (void)::close(sync_fd_);
+    sync_fd_ = -1;
   }
 
   if (stream_.is_open()) {
@@ -100,12 +108,28 @@ Status WALWriter::Open(const std::string& file_path, bool append) {
     return Status::IOError("failed to open wal file: " + file_path);
   }
 
+  // Open a raw fd for fsync (ofstream does not expose its file descriptor).
+  int flags = O_WRONLY;
+  flags |= append ? O_APPEND : O_TRUNC;
+  sync_fd_ = ::open(file_path.c_str(), flags | O_CREAT, 0644);
+  if (sync_fd_ < 0) {
+    const std::string err = std::strerror(errno);
+    stream_.close();
+    stream_.clear();
+    return Status::IOError("failed to open wal fd for sync: " + file_path + ": " + err);
+  }
+
   file_path_ = file_path;
   file_size_ = initial_size;
   return Status::OK();
 }
 
 Status WALWriter::Close() {
+  if (sync_fd_ >= 0) {
+    (void)::close(sync_fd_);
+    sync_fd_ = -1;
+  }
+
   if (!stream_.is_open()) {
     stream_.clear();
     return Status::OK();
@@ -176,8 +200,12 @@ Status WALWriter::Sync() {
     return Status::IOError("failed to flush wal file");
   }
 
-  // 这里只是 flush 到用户态/标准库缓冲之后的输出流层面，
-  // 还不是严格意义上的 fsync 持久化。
+  if (sync_fd_ >= 0) {
+    if (::fsync(sync_fd_) != 0) {
+      return Status::IOError("fsync failed: " + std::string(std::strerror(errno)));
+    }
+  }
+
   return Status::OK();
 }
 

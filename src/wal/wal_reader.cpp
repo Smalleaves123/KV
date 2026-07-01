@@ -81,7 +81,7 @@ Status WALReader::ReadNext(LogRecord* record) {
 
   if (header_bytes != static_cast<std::streamsize>(header.size())) {
     stream_.clear();
-    return Status::Corruption("truncated wal record header");
+    return Status::NotFound("truncated wal record header");
   }
 
   const uint32_t key_size = DecodeFixed32(header.data() + 13);
@@ -101,7 +101,7 @@ Status WALReader::ReadNext(LogRecord* record) {
 
     if (payload_bytes != static_cast<std::streamsize>(payload.size())) {
       stream_.clear();
-      return Status::Corruption("truncated wal record payload");
+      return Status::NotFound("truncated wal record payload");
     }
 
     encoded.append(payload);

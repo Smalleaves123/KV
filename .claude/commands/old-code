@@ -1,0 +1,22 @@
+---
+description: "开启 old-code 深度工程模式"
+triggers:
+  - old-code
+---
+
+# old-code 命令
+
+调用 `old-code` skill，进入强调白盒分析、执行流推演和边界审计的模式。
+
+## 调用方式
+
+- `old-code` - 默认进入原理反问模式
+- `old-code -c` - 进入代码临摹模式
+- `old-code -p` - 进入原理反问模式
+
+## 使用场景
+
+- 复杂 bug 排查
+- 底层机制解释
+- 高风险代码审计
+- 需要逐步推导执行流的任务

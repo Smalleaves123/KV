@@ -35,6 +35,7 @@ private:
     std::ofstream stream_;
     std::string file_path_;
     uint64_t file_size_;
+    int sync_fd_;  // raw file descriptor for fsync
 };
 
 }

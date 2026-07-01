@@ -14,10 +14,8 @@ class BlockIterator {
   BlockIterator(const Block& block);
 
   void SeekToFirst();
-  void SeekToLast();
   void Seek(std::string_view target);
   void Next();
-  void Prev();
 
   bool Valid() const noexcept;
   std::string_view key() const noexcept;
