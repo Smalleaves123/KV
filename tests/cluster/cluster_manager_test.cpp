@@ -220,5 +220,69 @@ TEST(ClusterManagerTest, ExecutePartitionedBatchStopsOnHandlerError) {
   EXPECT_EQ(calls, 1);
 }
 
+TEST(ClusterManagerTest, EmptyClusterRouteFails) {
+  ClusterManager mgr(8);
+
+  NodeInfo node;
+  EXPECT_FALSE(mgr.Route("any_key", &node));
+}
+
+TEST(ClusterManagerTest, RouteKeysOnEmptyClusterFails) {
+  ClusterManager mgr(8);
+
+  std::vector<NodeInfo> nodes;
+  EXPECT_FALSE(mgr.RouteKeys({"k1", "k2"}, &nodes));
+  EXPECT_TRUE(nodes.empty());
+}
+
+TEST(ClusterManagerTest, PartitionBatchAllKeysSameNode) {
+  ClusterManager mgr(8);
+  ASSERT_TRUE(mgr.AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+
+  WriteBatch batch;
+  batch.Put("a", "1");
+  batch.Put("b", "2");
+  batch.Delete("a");
+
+  std::vector<ClusterBatchGroup> groups;
+  ASSERT_TRUE(mgr.PartitionBatch(batch, &groups));
+  ASSERT_EQ(groups.size(), 1U);
+  EXPECT_EQ(groups[0].node.id, "n1");
+  EXPECT_EQ(groups[0].batch.Count(), 3U);
+}
+
+TEST(ClusterManagerTest, PartitionBatchOnEmptyClusterFails) {
+  ClusterManager mgr(8);
+
+  WriteBatch batch;
+  batch.Put("a", "1");
+
+  std::vector<ClusterBatchGroup> groups;
+  EXPECT_FALSE(mgr.PartitionBatch(batch, &groups));
+  EXPECT_TRUE(groups.empty());
+}
+
+TEST(ClusterManagerTest, ExecutePartitionedBatchNullHandler) {
+  ClusterManager mgr(8);
+  ASSERT_TRUE(mgr.AddNode(NodeInfo{"n1", "127.0.0.1", 9001, 1, true}));
+  mgr.SetLocalNodeId("n1");
+
+  WriteBatch batch;
+  batch.Put("a", "1");
+
+  Status s = mgr.ExecutePartitionedBatch(batch, nullptr);
+  EXPECT_TRUE(s.IsInvalidArgument());
+}
+
+TEST(ClusterManagerTest, ExecutePartitionedBatchEmptyBatch) {
+  ClusterManager mgr(8);
+
+  Status s = mgr.ExecutePartitionedBatch(
+      WriteBatch{}, [](const ClusterBatchGroup&, size_t, size_t) {
+        return Status::OK();
+      });
+  EXPECT_TRUE(s.IsInvalidArgument());
+}
+
 }  // namespace
 }  // namespace kv

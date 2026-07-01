@@ -87,5 +87,48 @@ TEST(RecoveryTest, ReplayReturnsMaxSequence) {
   EXPECT_EQ(max_seq, 121U);
 }
 
+TEST(RecoveryTest, TruncatedWALTrailingRecordIsIgnored) {
+  const std::string path = MakeRecoveryTestPath("truncated_trailing");
+  RemoveIfExists(path);
+
+  // Write two complete records
+  {
+    WALWriter writer;
+    ASSERT_TRUE(writer.Open(path, false).ok());
+    ASSERT_TRUE(writer.AppendPut(10, "k1", "v1").ok());
+    ASSERT_TRUE(writer.AppendPut(20, "k2", "v2").ok());
+    ASSERT_TRUE(writer.Close().ok());
+  }
+
+  // Truncate the last few bytes so the trailing record is incomplete
+  {
+    std::string content;
+    {
+      std::ifstream in(path, std::ios::binary);
+      std::ostringstream oss;
+      oss << in.rdbuf();
+      content = oss.str();
+    }
+    ASSERT_FALSE(content.empty());
+    content.resize(content.size() - 4);
+    {
+      std::ofstream out(path, std::ios::binary | std::ios::trunc);
+      out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    }
+  }
+
+  // Recovery should succeed, replaying only the first complete record
+  MemTable mem;
+  uint64_t max_seq = 0;
+  Status s = Recovery::ReplayWAL(path, &mem, &max_seq);
+  ASSERT_TRUE(s.ok());
+  EXPECT_EQ(max_seq, 10U);
+
+  std::string value;
+  EXPECT_TRUE(mem.Get("k1", &value).ok());
+  EXPECT_EQ(value, "v1");
+  EXPECT_TRUE(mem.Get("k2", &value).IsNotFound());
+}
+
 }  // namespace
 }  // namespace kv
