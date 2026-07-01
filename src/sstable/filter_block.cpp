@@ -1,28 +1,9 @@
 #include "kv/sstable/filter_block.h"
 
+#include "kv/common/encoding.h"
 #include "kv/table/bloom_filter.h"
 
 namespace kv {
-
-namespace {
-
-void PutFixed32(std::string* out, uint32_t v) {
-  out->push_back(static_cast<char>(v & 0xFF));
-  out->push_back(static_cast<char>((v >> 8) & 0xFF));
-  out->push_back(static_cast<char>((v >> 16) & 0xFF));
-  out->push_back(static_cast<char>((v >> 24) & 0xFF));
-}
-
-uint32_t DecodeFixed32(const char* p) {
-  uint32_t v = 0;
-  v |= static_cast<uint32_t>(static_cast<uint8_t>(p[0]));
-  v |= static_cast<uint32_t>(static_cast<uint8_t>(p[1])) << 8;
-  v |= static_cast<uint32_t>(static_cast<uint8_t>(p[2])) << 16;
-  v |= static_cast<uint32_t>(static_cast<uint8_t>(p[3])) << 24;
-  return v;
-}
-
-}  // namespace
 
 FilterBlockBuilder::FilterBlockBuilder(size_t bits_per_key)
     : keys_(), bits_per_key_(bits_per_key == 0 ? 10 : bits_per_key) {}
@@ -46,8 +27,8 @@ std::string FilterBlockBuilder::Finish() {
 
   std::string out;
   out.reserve(8 + data_size);
-  PutFixed32(&out, bits32);
-  PutFixed32(&out, data_size);
+  EncodeFixed32(&out, bits32);
+  EncodeFixed32(&out, data_size);
   for (uint8_t b : data) {
     out.push_back(static_cast<char>(b));
   }

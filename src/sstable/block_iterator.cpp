@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "kv/common/encoding.h"
+
 #include "kv/sstable/block.h"
 
 namespace kv {
@@ -21,23 +23,6 @@ const char* DecodeVarint32(const char* p, const char* limit, uint32_t* out) {
     }
   }
   return nullptr;
-}
-
-uint64_t DecodeFixed64(const char* p) {
-  uint64_t v = 0;
-  for (int i = 0; i < 8; ++i) {
-    v |= (static_cast<uint64_t>(static_cast<uint8_t>(p[i]))) << (8 * i);
-  }
-  return v;
-}
-
-uint32_t DecodeFixed32(const char* p) {
-  uint32_t v = 0;
-  v |= static_cast<uint32_t>(static_cast<uint8_t>(p[0]));
-  v |= static_cast<uint32_t>(static_cast<uint8_t>(p[1])) << 8;
-  v |= static_cast<uint32_t>(static_cast<uint8_t>(p[2])) << 16;
-  v |= static_cast<uint32_t>(static_cast<uint8_t>(p[3])) << 24;
-  return v;
 }
 
 }  // namespace

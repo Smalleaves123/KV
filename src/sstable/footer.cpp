@@ -2,26 +2,13 @@
 
 #include <cstring>
 
+#include "kv/common/encoding.h"
+
 namespace kv {
 
-static void PutFixed64(std::string* out, uint64_t v) {
-  for (int i = 0; i < 8; ++i) {
-    out->push_back(static_cast<char>(v & 0xFF));
-    v >>= 8;
-  }
-}
-
-static uint64_t DecodeFixed64(const char* p) {
-  uint64_t v = 0;
-  for (int i = 0; i < 8; ++i) {
-    v |= (static_cast<uint64_t>(static_cast<uint8_t>(p[i]))) << (8 * i);
-  }
-  return v;
-}
-
 void BlockHandle::EncodeTo(std::string* out) const {
-  PutFixed64(out, offset);
-  PutFixed64(out, size);
+  EncodeFixed64(out, offset);
+  EncodeFixed64(out, size);
 }
 
 BlockHandle BlockHandle::DecodeFrom(const char* p, const char* limit,
@@ -43,8 +30,8 @@ std::string Footer::Encode() const {
 
   index_handle.EncodeTo(&out);   // 16 bytes
   filter_handle.EncodeTo(&out);  // 16 bytes
-  PutFixed64(&out, max_seq);     // 8 bytes
-  PutFixed64(&out, kSSTMagic);   // 8 bytes
+  EncodeFixed64(&out, max_seq);     // 8 bytes
+  EncodeFixed64(&out, kSSTMagic);   // 8 bytes
 
   return out;
 }

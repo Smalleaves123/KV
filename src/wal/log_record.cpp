@@ -3,36 +3,10 @@
 #include <array>
 #include <cstring>
 
+#include "kv/common/encoding.h"
+
 namespace kv {
 namespace {
-
-inline void AppendFixed32(std::string* out, uint32_t value) {
-  out->push_back(static_cast<char>(value & 0xFF));
-  out->push_back(static_cast<char>((value >> 8) & 0xFF));
-  out->push_back(static_cast<char>((value >> 16) & 0xFF));
-  out->push_back(static_cast<char>((value >> 24) & 0xFF));
-}
-
-inline void AppendFixed64(std::string* out, uint64_t value) {
-  for (int i = 0; i < 8; ++i) {
-    out->push_back(static_cast<char>((value >> (8 * i)) & 0xFF));
-  }
-}
-
-inline uint32_t DecodeFixed32(const char* p) {
-  return static_cast<uint32_t>(static_cast<unsigned char>(p[0])) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[1])) << 8) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[2])) << 16) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[3])) << 24);
-}
-
-inline uint64_t DecodeFixed64(const char* p) {
-  uint64_t value = 0;
-  for (int i = 0; i < 8; ++i) {
-    value |= (static_cast<uint64_t>(static_cast<unsigned char>(p[i])) << (8 * i));
-  }
-  return value;
-}
 
 const std::array<uint32_t, 256>& GetCrc32Table() {
   static const std::array<uint32_t, 256> table = [] {
@@ -70,9 +44,9 @@ Status LogRecordCodec::Encode(const LogRecord& record, std::string* out) {
   payload.reserve(1 + 8 + 4 + 4 + record.key.size() + record.value.size());
 
   payload.push_back(static_cast<char>(record.type));
-  AppendFixed64(&payload, record.seq);
-  AppendFixed32(&payload, static_cast<uint32_t>(record.key.size()));
-  AppendFixed32(&payload, static_cast<uint32_t>(record.value.size()));
+  EncodeFixed64(&payload, record.seq);
+  EncodeFixed32(&payload, static_cast<uint32_t>(record.key.size()));
+  EncodeFixed32(&payload, static_cast<uint32_t>(record.value.size()));
   payload.append(record.key);
   payload.append(record.value);
 
@@ -80,7 +54,7 @@ Status LogRecordCodec::Encode(const LogRecord& record, std::string* out) {
 
   out->clear();
   out->reserve(4 + payload.size());
-  AppendFixed32(out, checksum);
+  EncodeFixed32(out, checksum);
   out->append(payload);
 
   return Status::OK();

@@ -1,20 +1,8 @@
 #include "kv/wal/wal_reader.h"
 
-#include <array>
-#include <cstdint>
-#include <string>
+#include "kv/common/encoding.h"
 
 namespace kv {
-namespace {
-
-uint32_t DecodeFixed32(const char* p) {
-  return static_cast<uint32_t>(static_cast<unsigned char>(p[0])) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[1])) << 8) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[2])) << 16) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[3])) << 24);
-}
-
-}  // namespace
 
 WALReader::WALReader() : stream_(), file_path_(), offset_(0) {}
 

@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <system_error>
 
+#include "kv/common/encoding.h"
+
 namespace kv {
 namespace {
 
@@ -13,34 +15,6 @@ enum class ManifestTag : uint8_t {
   kAddFile = 1,
   kRemoveFile = 2,
 };
-
-void AppendFixed32(std::string* out, uint32_t value) {
-  out->push_back(static_cast<char>(value & 0xFF));
-  out->push_back(static_cast<char>((value >> 8) & 0xFF));
-  out->push_back(static_cast<char>((value >> 16) & 0xFF));
-  out->push_back(static_cast<char>((value >> 24) & 0xFF));
-}
-
-void AppendFixed64(std::string* out, uint64_t value) {
-  for (int i = 0; i < 8; ++i) {
-    out->push_back(static_cast<char>((value >> (8 * i)) & 0xFF));
-  }
-}
-
-uint32_t DecodeFixed32(const char* p) {
-  return static_cast<uint32_t>(static_cast<unsigned char>(p[0])) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[1])) << 8) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[2])) << 16) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(p[3])) << 24);
-}
-
-uint64_t DecodeFixed64(const char* p) {
-  uint64_t value = 0;
-  for (int i = 0; i < 8; ++i) {
-    value |= (static_cast<uint64_t>(static_cast<unsigned char>(p[i])) << (8 * i));
-  }
-  return value;
-}
 
 Status EnsureParentDirectory(const std::filesystem::path& path) {
   const auto parent = path.parent_path();
@@ -144,9 +118,9 @@ Status Manifest::AddFile(const ManifestFileMeta& file_meta) {
   std::string record;
   record.reserve(1 + 8 + 8 + 4 + file_meta.file_path.size());
   record.push_back(static_cast<char>(ManifestTag::kAddFile));
-  AppendFixed64(&record, file_meta.file_number);
-  AppendFixed64(&record, file_meta.max_seq);
-  AppendFixed32(&record, static_cast<uint32_t>(file_meta.file_path.size()));
+  EncodeFixed64(&record, file_meta.file_number);
+  EncodeFixed64(&record, file_meta.max_seq);
+  EncodeFixed32(&record, static_cast<uint32_t>(file_meta.file_path.size()));
   record.append(file_meta.file_path);
 
   append_stream_.write(record.data(), static_cast<std::streamsize>(record.size()));
@@ -173,7 +147,7 @@ Status Manifest::RemoveFile(uint64_t file_number) {
   std::string record;
   record.reserve(1 + 8);
   record.push_back(static_cast<char>(ManifestTag::kRemoveFile));
-  AppendFixed64(&record, file_number);
+  EncodeFixed64(&record, file_number);
 
   append_stream_.write(record.data(), static_cast<std::streamsize>(record.size()));
   if (!append_stream_) {
