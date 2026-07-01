@@ -8,6 +8,7 @@
 #include "kv/cache/cache.h"
 #include "kv/common/slice.h"
 #include "kv/common/status.h"
+#include "kv/engine/iterator.h"
 #include "kv/engine/transaction.h"
 
 namespace kv {
@@ -114,6 +115,12 @@ class DB {
   virtual Status ReleaseSnapshot(const Snapshot* snapshot) = 0;
 
   virtual Status Close() = 0;
+
+  // Return a key-ordered iterator over entries visible at the given snapshot
+  // (or the current state if options.snapshot is null).
+  // The iterator is created under a fixed snapshot of the DB state at call time:
+  // entries added after NewIterator() are not visible.
+  virtual std::unique_ptr<Iterator> NewIterator(const ReadOptions& options) = 0;
 
   // Direct apply (bypasses WAL) — used by Raft for applying committed entries.
   virtual Status ApplyPut(const std::string& key, const std::string& value) = 0;

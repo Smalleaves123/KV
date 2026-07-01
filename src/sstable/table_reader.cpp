@@ -207,6 +207,68 @@ void TableIterator::SeekToFirst() {
   LoadNextBlock();
 }
 
+void TableIterator::Seek(const std::string& target) {
+  valid_ = false;
+  block_data_.clear();
+  block_ptr_ = nullptr;
+  block_end_ = nullptr;
+
+  const auto& idx = reader_.index();
+  if (idx.empty()) {
+    return;
+  }
+
+  // Binary search the index for the block that may contain target.
+  size_t lo = 0;
+  size_t hi = idx.size();
+  while (lo < hi) {
+    const size_t mid = lo + (hi - lo) / 2;
+    if (idx[mid].last_key < target) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+
+  if (lo >= idx.size()) {
+    // target is past the last index entry's last_key — nothing to find.
+    return;
+  }
+
+  block_idx_ = lo;
+  const size_t data_end = idx.size();
+
+  // Load the first candidate block and seek within it.
+  do {
+    Status s = reader_.ReadBlock(idx[block_idx_].block_offset,
+                                  idx[block_idx_].block_size, &block_data_);
+    if (!s.ok()) {
+      valid_ = false;
+      return;
+    }
+
+    Block block(block_data_.data(), block_data_.size());
+    BlockIterator it(block);
+    it.Seek(target);
+
+    if (it.Valid()) {
+      current_key_ = std::string(it.key());
+      current_seq_ = it.seq();
+      current_type_ = it.type();
+      current_value_ = std::string(it.value());
+      block_ptr_ = block_data_.data();
+      block_end_ = block_data_.data() + block_data_.size();
+      valid_ = true;
+      return;
+    }
+
+    ++block_idx_;
+  } while (block_idx_ < data_end);
+
+  // Exhausted all blocks — not found.
+  valid_ = false;
+}
+
 void TableIterator::LoadNextBlock() {
   const auto& idx = reader_.index();
   if (block_idx_ >= idx.size()) {
@@ -282,7 +344,7 @@ bool TableIterator::Valid() const noexcept {
   return valid_;
 }
 
-std::string TableIterator::key() const {
+const std::string& TableIterator::key() const noexcept {
   return current_key_;
 }
 
@@ -294,7 +356,7 @@ uint8_t TableIterator::type() const noexcept {
   return current_type_;
 }
 
-std::string TableIterator::value() const {
+const std::string& TableIterator::value() const noexcept {
   return current_value_;
 }
 

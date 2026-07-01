@@ -61,6 +61,8 @@ class DBImpl final : public DB {
 
   Status Close() override;
 
+  std::unique_ptr<Iterator> NewIterator(const ReadOptions& options) override;
+
   Status ApplyPut(const std::string& key, const std::string& value) override;
   Status ApplyDelete(const std::string& key) override;
 

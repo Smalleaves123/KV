@@ -375,6 +375,50 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
       return Error("unknown cluster command");
     }
 
+    case CommandType::kScan: {
+      // SCAN [key] [LIMIT N]
+      std::string start_key;
+      int64_t limit = 100;
+
+      size_t arg_idx = 0;
+      if (arg_idx < cmd.args.size() && std::toupper(static_cast<unsigned char>(cmd.args[arg_idx][0])) != 'L') {
+        start_key = cmd.args[arg_idx];
+        ++arg_idx;
+      }
+      if (arg_idx < cmd.args.size() &&
+          ToUpper(cmd.args[arg_idx]) == "LIMIT" &&
+          arg_idx + 1 < cmd.args.size()) {
+        char* end = nullptr;
+        const long v = std::strtol(cmd.args[arg_idx + 1].c_str(), &end, 10);
+        if (end != nullptr && *end == '\0' && v > 0) {
+          limit = static_cast<int64_t>(v);
+        } else {
+          return Error("invalid LIMIT value for 'SCAN'");
+        }
+      }
+
+      auto it = db_->NewIterator(ReadOptions{});
+      if (it == nullptr) {
+        return Error("failed to create iterator");
+      }
+
+      if (start_key.empty()) {
+        it->SeekToFirst();
+      } else {
+        it->Seek(start_key);
+      }
+
+      std::vector<std::string> items;
+      items.reserve(static_cast<size_t>(limit) * 2);
+
+      for (int64_t count = 0; count < limit && it->Valid(); it->Next(), ++count) {
+        items.push_back(protocol::BulkString(it->key().ToString()));
+        items.push_back(protocol::BulkString(it->value().ToString()));
+      }
+
+      return protocol::Array(items);
+    }
+
     case CommandType::kBegin:
     case CommandType::kExec:
     case CommandType::kAbort:

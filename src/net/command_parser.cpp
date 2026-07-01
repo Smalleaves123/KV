@@ -50,6 +50,7 @@ Command CommandParser::ParseTokens(const std::vector<std::string>& tokens) {
   else if (head == "BEGIN") cmd.type = CommandType::kBegin;
   else if (head == "EXEC") cmd.type = CommandType::kExec;
   else if (head == "ABORT") cmd.type = CommandType::kAbort;
+  else if (head == "SCAN") cmd.type = CommandType::kScan;
   else cmd.type = CommandType::kInvalid;
 
   return cmd;

@@ -20,6 +20,7 @@ add_library(kv
   version/version_set.cpp
   version/compaction.cpp
   engine/recovery.cpp
+  engine/iterator.cpp
   engine/write_batch.cpp
   engine/db.cpp
   engine/db_impl.cpp

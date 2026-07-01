@@ -563,6 +563,11 @@ class RaftDBWrapper final : public kv::DB {
 
   kv::Status Close() override { return real_db_->Close(); }
 
+  std::unique_ptr<kv::Iterator> NewIterator(
+      const kv::ReadOptions& options) override {
+    return real_db_->NewIterator(options);
+  }
+
   kv::Status ApplyPut(const std::string& key,
                       const std::string& value) override {
     return real_db_->ApplyPut(key, value);

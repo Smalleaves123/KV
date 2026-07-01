@@ -25,6 +25,13 @@
 #include "kv/table/table_index.h"
 
 namespace kv {
+
+// Forward declaration of the merging iterator factory (defined in iterator.cpp).
+std::unique_ptr<Iterator> NewMergingIterator(
+    std::unique_ptr<MemTable::Iterator> mem_iter,
+    std::vector<std::unique_ptr<TableIterator>> sst_iters,
+    uint64_t read_seq);
+
 namespace {
 
 class SnapshotImpl final : public Snapshot {
@@ -628,6 +635,39 @@ Status DBImpl::ReleaseSnapshot(const Snapshot* snapshot) {
   }
 
   return Status::InvalidArgument("snapshot ownership mismatch");
+}
+
+std::unique_ptr<Iterator> DBImpl::NewIterator(const ReadOptions& options) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) {
+    return nullptr;
+  }
+
+  Status snapshot_status = ValidateSnapshot(options.snapshot);
+  if (!snapshot_status.ok()) {
+    return nullptr;
+  }
+
+  const uint64_t read_seq = ResolveReadSequence(options);
+
+  // MemTable iterator.
+  auto mem_iter = std::make_unique<MemTable::Iterator>(memtable_.NewIterator());
+
+  // SST iterators.
+  std::vector<std::unique_ptr<TableIterator>> sst_iters;
+  sst_iters.reserve(sst_files_.size());
+  for (const auto& file : sst_files_) {
+    std::shared_ptr<const TableReader> reader;
+    Status s = table_cache_->Get(file, &reader);
+    if (!s.ok()) {
+      return nullptr;
+    }
+    sst_iters.push_back(std::make_unique<TableIterator>(*reader));
+  }
+
+  return NewMergingIterator(std::move(mem_iter), std::move(sst_iters), read_seq);
 }
 
 Status DBImpl::Close() {

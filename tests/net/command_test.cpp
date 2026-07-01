@@ -245,6 +245,38 @@ TEST(CommandExecutorTest, ClusterPlanGroupsOperationsByNode) {
   EXPECT_NE(resp.find("$-1\r\n"), std::string::npos);
 }
 
+TEST(CommandExecutorTest, ScanReturnsAllKeys) {
+  auto db = OpenDBForTest("scan_all");
+  CommandExecutor exec(db.get());
+
+  EXPECT_EQ(exec.Execute(Command{CommandType::kSet, {"k1", "v1"}, ""}), "+OK\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kSet, {"k2", "v2"}, ""}), "+OK\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kSet, {"k3", "v3"}, ""}), "+OK\r\n");
+
+  const std::string resp =
+      exec.Execute(Command{CommandType::kScan, {}, "SCAN"});
+  EXPECT_NE(resp.find("*6\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("$2\r\nk1\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("$2\r\nk2\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("$2\r\nk3\r\n"), std::string::npos);
+}
+
+TEST(CommandExecutorTest, ScanFromKey) {
+  auto db = OpenDBForTest("scan_from");
+  CommandExecutor exec(db.get());
+
+  EXPECT_EQ(exec.Execute(Command{CommandType::kSet, {"a", "1"}, ""}), "+OK\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kSet, {"b", "2"}, ""}), "+OK\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kSet, {"c", "3"}, ""}), "+OK\r\n");
+
+  const std::string resp =
+      exec.Execute(Command{CommandType::kScan, {"b"}, "SCAN b"});
+  // Should return b and c (4 items in array: key, value, key, value)
+  EXPECT_NE(resp.find("*4\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("$1\r\nb\r\n"), std::string::npos);
+  EXPECT_NE(resp.find("$1\r\nc\r\n"), std::string::npos);
+}
+
 TEST(SessionTest, HandleLineParsesAndExecutes) {
   auto db = OpenDBForTest("session");
   Session session(db.get());

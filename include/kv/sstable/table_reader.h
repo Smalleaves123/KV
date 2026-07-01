@@ -75,13 +75,15 @@ class TableIterator {
   TableIterator(const TableReader& reader);
 
   void SeekToFirst();
+  // Position at the first entry with key >= target.
+  void Seek(const std::string& target);
   void Next();
   bool Valid() const noexcept;
 
-  std::string key() const;
+  const std::string& key() const noexcept;
   uint64_t seq() const noexcept;
   uint8_t type() const noexcept;
-  std::string value() const;
+  const std::string& value() const noexcept;
 
  private:
   void LoadNextBlock();

@@ -55,6 +55,7 @@ std::string Session::HandleCommand(const Command& cmd) {
     case CommandType::kInfo:
     case CommandType::kStats:
     case CommandType::kCluster:
+    case CommandType::kScan:
       if (active_txn_ != nullptr) {
         return HandleDataCommandInTxn(cmd);
       }
@@ -203,6 +204,9 @@ std::string Session::HandleDataCommandInTxn(const Command& cmd) {
       if (!cmd.args.empty()) {
         return Error("wrong number of arguments for 'INFO/STATS'");
       }
+      return executor_.Execute(cmd);
+
+    case CommandType::kScan:
       return executor_.Execute(cmd);
 
     case CommandType::kCluster: {
