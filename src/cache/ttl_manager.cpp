@@ -1,5 +1,7 @@
 #include "kv/cache/ttl_manager.h"
 
+#include <algorithm>
+
 namespace kv {
 
 TTLManager::TTLManager(int64_t default_ttl_ms)
@@ -59,18 +61,25 @@ size_t TTLManager::PurgeExpired(std::vector<std::string>* expired_keys) {
   std::lock_guard<std::mutex> lk(mu_);
   const TimePoint now = Now();
 
+  std::vector<std::string> expired;
   size_t purged = 0;
   for (auto it = expires_.begin(); it != expires_.end();) {
     if (now >= it->second) {
-      if (expired_keys != nullptr) {
-        expired_keys->push_back(it->first);
-      }
+      expired.push_back(it->first);
       it = expires_.erase(it);
       ++purged;
     } else {
       ++it;
     }
   }
+
+  if (!expired.empty()) {
+    std::sort(expired.begin(), expired.end());
+    if (expired_keys != nullptr) {
+      expired_keys->insert(expired_keys->end(), expired.begin(), expired.end());
+    }
+  }
+
   return purged;
 }
 

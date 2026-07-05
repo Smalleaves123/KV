@@ -48,7 +48,7 @@ TEST(TTLManagerTest, NonPositiveTTLMeansNoExpiration) {
 TEST(TTLManagerTest, PurgeExpiredRemovesOnlyExpired) {
   TTLManager mgr;
   mgr.SetTTL("k1", 20);
-  mgr.SetTTL("k2", 60);
+  mgr.SetTTL("k2", 500);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(35));
 
@@ -61,6 +61,24 @@ TEST(TTLManagerTest, PurgeExpiredRemovesOnlyExpired) {
 
   EXPECT_FALSE(mgr.HasTTL("k1"));
   EXPECT_TRUE(mgr.HasTTL("k2"));
+}
+
+TEST(TTLManagerTest, PurgeExpiredReturnsStableOrder) {
+  TTLManager mgr;
+  mgr.SetTTL("k2", 20);
+  mgr.SetTTL("k1", 20);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+
+  std::vector<std::string> expired;
+  size_t purged = mgr.PurgeExpired(&expired);
+
+  EXPECT_EQ(purged, 2U);
+  ASSERT_EQ(expired.size(), 2U);
+  EXPECT_EQ(expired[0], "k1");
+  EXPECT_EQ(expired[1], "k2");
+  EXPECT_FALSE(mgr.HasTTL("k1"));
+  EXPECT_FALSE(mgr.HasTTL("k2"));
 }
 
 }  // namespace
