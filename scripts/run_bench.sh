@@ -2,6 +2,7 @@
 set -euo pipefail
 
 BUILD_DIR="${BUILD_DIR:-build-bench}"
+BUILD_CONFIG="${BUILD_CONFIG:-Release}"
 WORKLOAD="${WORKLOAD:-mixed}"
 OPS="${OPS:-10000}"
 VALUE_SIZE="${VALUE_SIZE:-100}"
@@ -15,7 +16,7 @@ cmake -S . -B "${BUILD_DIR}" \
   -DKV_BUILD_APPS=OFF \
   -DKV_BUILD_BENCHMARKS=ON
 
-cmake --build "${BUILD_DIR}" --parallel
+cmake --build "${BUILD_DIR}" --parallel --config "${BUILD_CONFIG}"
 
 "${BUILD_DIR}/bench/kv_db_bench" \
   --db "${DB_PATH}" \

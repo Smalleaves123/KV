@@ -1,0 +1,11 @@
+Checks: >-
+  -*,
+  bugprone-unused-raii,
+  bugprone-use-after-move,
+  performance-*,
+  readability-container-size-empty,
+  readability-delete-null-pointer,
+  readability-duplicate-include,
+  modernize-use-nullptr
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(include|src|apps|tests|examples|bench|tools)/'

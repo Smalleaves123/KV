@@ -1,0 +1,7 @@
+function(kv_enable_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PUBLIC /W4 /permissive-)
+    else()
+        target_compile_options(${target} PUBLIC -Wall -Wextra -Wpedantic)
+    endif()
+endfunction()

@@ -15,7 +15,8 @@ engine into a more complete storage-system project.
 
 - Extend CI coverage across more operating systems and compilers.
 - Add optional TSan CI once runtime is stable.
-- Add clang-format and clang-tidy configurations with real rules.
+- Keep the repository-wide clang-format and clang-tidy configuration aligned
+  with the supported toolchain.
 - Package a developer preset with `CMakePresets.json`.
 
 ### Test Quality

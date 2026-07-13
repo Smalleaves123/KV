@@ -3,6 +3,7 @@ set -euo pipefail
 
 BUILD_DIR="${BUILD_DIR:-build}"
 BUILD_TYPE="${BUILD_TYPE:-Debug}"
+BUILD_CONFIG="${BUILD_CONFIG:-${BUILD_TYPE}}"
 BUILD_TESTS="${BUILD_TESTS:-ON}"
 BUILD_APPS="${BUILD_APPS:-ON}"
 BUILD_EXAMPLES="${BUILD_EXAMPLES:-OFF}"
@@ -19,4 +20,4 @@ cmake -S . -B "${BUILD_DIR}" \
   -DKV_ENABLE_SANITIZERS="${ENABLE_SANITIZERS}" \
   -DKV_SANITIZERS="${SANITIZERS}"
 
-cmake --build "${BUILD_DIR}" --parallel
+cmake --build "${BUILD_DIR}" --parallel --config "${BUILD_CONFIG}"

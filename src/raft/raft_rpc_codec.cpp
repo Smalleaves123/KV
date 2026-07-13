@@ -1,8 +1,5 @@
 #include "kv/raft/raft_rpc_codec.h"
 
-#include <cerrno>
-#include <unistd.h>
-
 namespace kv {
 namespace raft {
 
@@ -258,36 +255,42 @@ bool DecodeCmd(const std::string& data, char* op, std::string* key,
 
 // ======================== I/O helpers ========================
 
-ssize_t ReadFull(int fd, void* data, size_t len) {
+platform::SocketIoResult ReadFull(platform::SocketHandle fd, void* data,
+                                  size_t len) {
   auto* p = static_cast<char*>(data);
   size_t nread = 0;
   while (nread < len) {
-    ssize_t n = ::read(fd, p + nread, len - nread);
+    const platform::SocketIoResult n =
+        platform::ReceiveSocket(fd, p + nread, len - nread, 0);
     if (n < 0) {
-      if (errno == EINTR) continue;
+      if (platform::IsInterruptedSocketError(platform::LastSocketError()))
+        continue;
       return -1;
     }
     if (n == 0) break;
     nread += static_cast<size_t>(n);
   }
-  return static_cast<ssize_t>(nread);
+  return static_cast<platform::SocketIoResult>(nread);
 }
 
-ssize_t WriteFull(int fd, const void* data, size_t len) {
+platform::SocketIoResult WriteFull(platform::SocketHandle fd,
+                                   const void* data, size_t len) {
   auto* p = static_cast<const char*>(data);
   size_t written = 0;
   while (written < len) {
-    ssize_t n = ::write(fd, p + written, len - written);
+    const platform::SocketIoResult n =
+        platform::SendSocket(fd, p + written, len - written, 0);
     if (n < 0) {
-      if (errno == EINTR) continue;
+      if (platform::IsInterruptedSocketError(platform::LastSocketError()))
+        continue;
       return -1;
     }
     written += static_cast<size_t>(n);
   }
-  return static_cast<ssize_t>(written);
+  return static_cast<platform::SocketIoResult>(written);
 }
 
-std::string ReadMessage(int fd) {
+std::string ReadMessage(platform::SocketHandle fd) {
   // Length prefix (4 bytes BE)
   uint8_t len_buf[4];
   if (ReadFull(fd, len_buf, 4) != 4) return {};
@@ -297,7 +300,8 @@ std::string ReadMessage(int fd) {
 
   // Read the rest (type + body)
   std::string msg(total, '\0');
-  if (ReadFull(fd, msg.data(), total) != static_cast<ssize_t>(total))
+  if (ReadFull(fd, msg.data(), total) !=
+      static_cast<platform::SocketIoResult>(total))
     return {};
 
   // Prepend the length for DecodeMessage

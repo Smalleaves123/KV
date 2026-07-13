@@ -3,13 +3,14 @@
 #include <string>
 #include <vector>
 
+#include "kv/common/socket_compat.h"
 #include "kv/common/status.h"
 
 namespace kv::net {
 
 class Connection {
  public:
-  explicit Connection(int fd = -1);
+  explicit Connection(platform::SocketHandle fd = platform::kInvalidSocket);
   ~Connection();
 
   Connection(const Connection&) = delete;
@@ -19,7 +20,7 @@ class Connection {
   Connection& operator=(Connection&& other) noexcept;
 
   bool IsOpen() const noexcept;
-  int fd() const noexcept;
+  platform::SocketHandle fd() const noexcept;
 
   Status ReadLine(std::string* line);
   Status ReadRequest(std::vector<std::string>* tokens);
@@ -27,7 +28,7 @@ class Connection {
   Status Close();
 
  private:
-  int fd_;
+  platform::SocketHandle fd_;
   std::string read_buffer_;
 };
 

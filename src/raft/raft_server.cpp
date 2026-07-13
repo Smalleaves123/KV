@@ -1,17 +1,9 @@
 #include "kv/raft/raft_server.h"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include <cerrno>
 #include <chrono>
 #include <condition_variable>
-#include <cstring>
 #include <thread>
 
-#include "kv/engine/db.h"
 #include "kv/raft/raft_rpc_codec.h"
 #include "kv/raft/raft_storage_impl.h"
 
@@ -19,9 +11,9 @@ namespace kv {
 
 // ==================== RaftServer ====================
 
-RaftServer::RaftServer(const RaftConfig& config, DB* db)
+RaftServer::RaftServer(const RaftConfig& config, WriteApplier* applier)
     : config_(config),
-      db_(db),
+      applier_(applier),
       storage_(std::make_shared<raft::FileRaftStorage>(config.data_dir)),
       raft_node_(),
       raft_mu_(),
@@ -29,13 +21,14 @@ RaftServer::RaftServer(const RaftConfig& config, DB* db)
       rpc_thread_(),
       running_(false),
       rpc_pool_(std::make_unique<ThreadPool>(2)),
-      rpc_fd_(-1),
+      rpc_fd_(platform::kInvalidSocket),
       conn_mu_(),
       peer_fds_(),
       hard_state_mu_(),
       apply_mu_(),
       apply_cv_(),
       applied_results_(),
+      socket_runtime_(),
       last_applied_(0) {
   // Build RaftOptions and create RaftNode
   raft::RaftOptions opts;
@@ -82,14 +75,19 @@ Status RaftServer::Start() {
     return Status::AlreadyExists("raft server already running");
   }
 
-  rpc_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (rpc_fd_ < 0) {
-    return Status::IOError("raft rpc socket: " +
-                           std::string(std::strerror(errno)));
+  if (!socket_runtime_.Start()) {
+    return Status::IOError("failed to initialize socket runtime");
   }
 
-  int yes = 1;
-  ::setsockopt(rpc_fd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  rpc_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (!platform::IsValidSocket(rpc_fd_)) {
+    socket_runtime_.Stop();
+    return Status::IOError("raft rpc socket: " +
+                           platform::SocketErrorString(
+                               platform::LastSocketError()));
+  }
+
+  (void)platform::SetSocketOptionInt(rpc_fd_, SOL_SOCKET, SO_REUSEADDR, 1);
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -97,17 +95,21 @@ Status RaftServer::Start() {
   addr.sin_port = htons(config_.raft_port);
 
   if (::bind(rpc_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(rpc_fd_);
-    rpc_fd_ = -1;
+    (void)platform::CloseSocket(rpc_fd_);
+    rpc_fd_ = platform::kInvalidSocket;
+    socket_runtime_.Stop();
     return Status::IOError("raft rpc bind: " +
-                           std::string(std::strerror(errno)));
+                           platform::SocketErrorString(
+                               platform::LastSocketError()));
   }
 
   if (::listen(rpc_fd_, 32) < 0) {
-    ::close(rpc_fd_);
-    rpc_fd_ = -1;
+    (void)platform::CloseSocket(rpc_fd_);
+    rpc_fd_ = platform::kInvalidSocket;
+    socket_runtime_.Stop();
     return Status::IOError("raft rpc listen: " +
-                           std::string(std::strerror(errno)));
+                           platform::SocketErrorString(
+                               platform::LastSocketError()));
   }
 
   {
@@ -127,16 +129,16 @@ Status RaftServer::Stop() {
   running_.store(false);
   apply_cv_.notify_all();
 
-  if (rpc_fd_ >= 0) {
-    ::shutdown(rpc_fd_, SHUT_RDWR);
-    ::close(rpc_fd_);
-    rpc_fd_ = -1;
+  if (platform::IsValidSocket(rpc_fd_)) {
+    (void)platform::ShutdownSocket(rpc_fd_);
+    (void)platform::CloseSocket(rpc_fd_);
+    rpc_fd_ = platform::kInvalidSocket;
   }
 
   {
     std::lock_guard<std::mutex> lk(conn_mu_);
     for (auto& [id, fd] : peer_fds_) {
-      ::close(fd);
+      (void)platform::CloseSocket(fd);
     }
     peer_fds_.clear();
   }
@@ -144,6 +146,8 @@ Status RaftServer::Stop() {
   if (tick_thread_.joinable()) tick_thread_.join();
   if (rpc_thread_.joinable()) rpc_thread_.join();
   rpc_pool_->WaitAndStop();
+
+  socket_runtime_.Stop();
 
   PersistHardState();
 
@@ -253,9 +257,9 @@ void RaftServer::ApplyCommitted() {
 
     Status apply_status = Status::Corruption("unsupported raft command");
     if (op == 'S') {
-      apply_status = db_->ApplyPut(key, value);
+      apply_status = applier_->ApplyPut(key, value);
     } else if (op == 'D') {
-      apply_status = db_->ApplyDelete(key);
+      apply_status = applier_->ApplyDelete(key);
     } else if (op == 'N') {
       apply_status = Status::OK();
     }
@@ -289,20 +293,21 @@ void RaftServer::PersistHardState() {
 void RaftServer::RpcListenLoop() {
   while (running_.load()) {
     sockaddr_in peer{};
-    socklen_t peer_len = sizeof(peer);
-    int client_fd = ::accept(rpc_fd_, reinterpret_cast<sockaddr*>(&peer),
-                             &peer_len);
-    if (client_fd < 0) {
+    platform::SocketLength peer_len = sizeof(peer);
+    platform::SocketHandle client_fd =
+        ::accept(rpc_fd_, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+    if (!platform::IsValidSocket(client_fd)) {
       if (!running_.load()) break;
-      if (errno == EINTR) continue;
+      if (platform::IsInterruptedSocketError(platform::LastSocketError()))
+        continue;
       continue;
     }
     HandleRpcConnection(client_fd);
-    ::close(client_fd);
+    (void)platform::CloseSocket(client_fd);
   }
 }
 
-void RaftServer::HandleRpcConnection(int fd) {
+void RaftServer::HandleRpcConnection(platform::SocketHandle fd) {
   std::string framed = raft::ReadMessage(fd);
   if (framed.empty()) return;
 
@@ -364,12 +369,11 @@ void RaftServer::SendRequestVote(uint64_t to,
   std::string msg = raft::EncodeMessage(
       raft::RaftMsgType::kRequestVote, body);
 
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return;
+  platform::SocketHandle fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (!platform::IsValidSocket(fd)) return;
 
-  timeval timeout{1, 0};
-  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  (void)platform::SetSendTimeout(fd, 1000);
+  (void)platform::SetReceiveTimeout(fd, 1000);
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -377,17 +381,17 @@ void RaftServer::SendRequestVote(uint64_t to,
   addr.sin_port = htons(it->second.raft_port);
 
   if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
+    (void)platform::CloseSocket(fd);
     return;
   }
 
   if (raft::WriteFull(fd, msg.data(), msg.size()) < 0) {
-    ::close(fd);
+    (void)platform::CloseSocket(fd);
     return;
   }
 
   std::string reply_framed = raft::ReadMessage(fd);
-  ::close(fd);
+  (void)platform::CloseSocket(fd);
 
   if (reply_framed.empty()) return;
 
@@ -418,12 +422,11 @@ void RaftServer::SendAppendEntries(uint64_t to,
   std::string msg = raft::EncodeMessage(
       raft::RaftMsgType::kAppendEntries, body);
 
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return;
+  platform::SocketHandle fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (!platform::IsValidSocket(fd)) return;
 
-  timeval timeout{2, 0};
-  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  (void)platform::SetSendTimeout(fd, 2000);
+  (void)platform::SetReceiveTimeout(fd, 2000);
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -431,17 +434,17 @@ void RaftServer::SendAppendEntries(uint64_t to,
   addr.sin_port = htons(it->second.raft_port);
 
   if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
+    (void)platform::CloseSocket(fd);
     return;
   }
 
   if (raft::WriteFull(fd, msg.data(), msg.size()) < 0) {
-    ::close(fd);
+    (void)platform::CloseSocket(fd);
     return;
   }
 
   std::string reply_framed = raft::ReadMessage(fd);
-  ::close(fd);
+  (void)platform::CloseSocket(fd);
 
   if (reply_framed.empty()) return;
 

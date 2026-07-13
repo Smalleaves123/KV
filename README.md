@@ -51,9 +51,13 @@ config/            Example server configuration
 ## Requirements
 
 - CMake 3.16 or newer.
-- A C++17 compiler. The project is regularly built with AppleClang.
+- A C++17 compiler: MSVC 2022, GCC, Clang, or AppleClang.
 - Network access on the first test build if GoogleTest is not already present
   in the build directory.
+
+The supported development platforms are Linux, macOS, and Windows. Windows
+uses native Winsock and filesystem APIs through the portability layer in
+`include/kv/common/` and links `ws2_32` automatically through CMake.
 
 ## Build
 
@@ -68,6 +72,12 @@ Useful environment variables:
 ```bash
 BUILD_DIR=build-release BUILD_TYPE=Release ./scripts/build.sh
 BUILD_APPS=OFF BUILD_TESTS=ON ./scripts/build.sh
+```
+
+Build examples when example sources contain executable entry points:
+
+```bash
+BUILD_EXAMPLES=ON ./scripts/build.sh
 ```
 
 Manual CMake usage:
@@ -90,6 +100,9 @@ cmake --build --preset release
 
 `compile_commands.json` is generated in the build directory for clangd and
 static-analysis tools.
+
+The CMake presets do not force a generator, so they use Makefiles/Ninja on
+Unix-like systems and Visual Studio or another native generator on Windows.
 
 ## Sanitizer Build
 
@@ -119,6 +132,19 @@ Forward extra CTest arguments:
 ```bash
 ./scripts/run_tests.sh -R DBTest
 ctest --test-dir build --output-on-failure
+```
+
+Formatting and static-analysis configuration is kept in `.clang-format` and
+`.clang-tidy`. Run formatting with:
+
+```bash
+./scripts/format.sh
+```
+
+To check newly added C++ files without rewriting files:
+
+```bash
+FORMAT_SCOPE=added CHECK=1 ./scripts/format.sh
 ```
 
 Some integration tests open loopback sockets. In heavily sandboxed

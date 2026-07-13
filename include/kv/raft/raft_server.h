@@ -11,12 +11,12 @@
 #include <vector>
 
 #include "kv/common/status.h"
+#include "kv/common/socket_compat.h"
 #include "kv/concurrency/thread_pool.h"
+#include "kv/engine/write_applier.h"
 #include "kv/raft/raft_node.h"
 
 namespace kv {
-
-class DB;
 
 // Raft cluster configuration for a single node.
 struct RaftConfig {
@@ -45,7 +45,7 @@ struct RaftConfig {
 //   4. Client reads go directly to DB (no consensus needed)
 class RaftServer {
  public:
-  RaftServer(const RaftConfig& config, DB* db);
+  RaftServer(const RaftConfig& config, WriteApplier* applier);
   ~RaftServer();
 
   RaftServer(const RaftServer&) = delete;
@@ -69,7 +69,7 @@ class RaftServer {
 
   // RPC listener: accepts connections from other Raft nodes
   void RpcListenLoop();
-  void HandleRpcConnection(int fd);
+  void HandleRpcConnection(platform::SocketHandle fd);
 
   // Apply committed entries to the DB
   void ApplyCommitted();
@@ -91,7 +91,7 @@ class RaftServer {
                   const std::string& msg);
 
   RaftConfig config_;
-  DB* db_;
+  WriteApplier* applier_;
 
   // Raft consensus
   std::shared_ptr<raft::RaftStorage> storage_;
@@ -105,16 +105,18 @@ class RaftServer {
   std::unique_ptr<ThreadPool> rpc_pool_;
 
   // RPC listener
-  int rpc_fd_;
+  platform::SocketHandle rpc_fd_;
 
   // Peer connections cache
   mutable std::mutex conn_mu_;
-  std::unordered_map<uint64_t, int> peer_fds_;
+  std::unordered_map<uint64_t, platform::SocketHandle> peer_fds_;
 
   mutable std::mutex hard_state_mu_;
   mutable std::mutex apply_mu_;
   std::condition_variable apply_cv_;
   std::unordered_map<uint64_t, Status> applied_results_;
+
+  platform::SocketRuntime socket_runtime_;
 
   // Last applied index
   uint64_t last_applied_;

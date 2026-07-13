@@ -1,10 +1,5 @@
 #include "kv/net/server.h"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -14,6 +9,7 @@
 
 #include "gtest/gtest.h"
 #include "kv/cluster/cluster_manager.h"
+#include "kv/common/socket_compat.h"
 #include "kv/engine/db.h"
 
 namespace kv::net {
@@ -45,17 +41,14 @@ void RemoveDirIfExists(const std::string& path) {
   std::filesystem::remove_all(path, ec);
 }
 
-int ConnectWithRetry(uint16_t port) {
+platform::SocketHandle ConnectWithRetry(uint16_t port) {
   for (int i = 0; i < 50; ++i) {
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-      return -1;
+    const platform::SocketHandle fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (!platform::IsValidSocket(fd)) {
+      return platform::kInvalidSocket;
     }
 
-    timeval tv{};
-    tv.tv_sec = 2;
-    tv.tv_usec = 0;
-    (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    (void)platform::SetReceiveTimeout(fd, 2000);
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -66,21 +59,22 @@ int ConnectWithRetry(uint16_t port) {
       return fd;
     }
 
-    (void)::close(fd);
+    (void)platform::CloseSocket(fd);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
 
-  return -1;
+  return platform::kInvalidSocket;
 }
 
-bool ReadExact(int fd, size_t n, std::string* out) {
+bool ReadExact(platform::SocketHandle fd, size_t n, std::string* out) {
   out->clear();
   out->reserve(n);
   while (out->size() < n) {
     char buf[256];
     const size_t need = n - out->size();
     const size_t chunk = need < sizeof(buf) ? need : sizeof(buf);
-    const ssize_t r = ::recv(fd, buf, chunk, 0);
+    const platform::SocketIoResult r =
+        platform::ReceiveSocket(fd, buf, chunk, 0);
     if (r <= 0) {
       return false;
     }
@@ -89,11 +83,11 @@ bool ReadExact(int fd, size_t n, std::string* out) {
   return true;
 }
 
-bool ReadLineCRLF(int fd, std::string* line) {
+bool ReadLineCRLF(platform::SocketHandle fd, std::string* line) {
   line->clear();
   while (true) {
     char c = 0;
-    const ssize_t r = ::recv(fd, &c, 1, 0);
+    const platform::SocketIoResult r = platform::ReceiveSocket(fd, &c, 1, 0);
     if (r <= 0) {
       return false;
     }
@@ -106,11 +100,11 @@ bool ReadLineCRLF(int fd, std::string* line) {
   }
 }
 
-bool ReadResp(int fd, std::string* encoded) {
+bool ReadResp(platform::SocketHandle fd, std::string* encoded) {
   encoded->clear();
 
   char prefix = 0;
-  if (::recv(fd, &prefix, 1, 0) != 1) {
+  if (platform::ReceiveSocket(fd, &prefix, 1, 0) != 1) {
     return false;
   }
   encoded->push_back(prefix);
@@ -166,11 +160,12 @@ bool ReadResp(int fd, std::string* encoded) {
   return false;
 }
 
-bool SendLine(int fd, const std::string& cmd) {
+bool SendLine(platform::SocketHandle fd, const std::string& cmd) {
   const std::string req = cmd + "\n";
   size_t sent = 0;
   while (sent < req.size()) {
-    const ssize_t n = ::send(fd, req.data() + sent, req.size() - sent, 0);
+    const platform::SocketIoResult n =
+        platform::SendSocket(fd, req.data() + sent, req.size() - sent, 0);
     if (n <= 0) {
       return false;
     }
@@ -179,10 +174,11 @@ bool SendLine(int fd, const std::string& cmd) {
   return true;
 }
 
-bool SendRaw(int fd, const std::string& req) {
+bool SendRaw(platform::SocketHandle fd, const std::string& req) {
   size_t sent = 0;
   while (sent < req.size()) {
-    const ssize_t n = ::send(fd, req.data() + sent, req.size() - sent, 0);
+    const platform::SocketIoResult n =
+        platform::SendSocket(fd, req.data() + sent, req.size() - sent, 0);
     if (n <= 0) {
       return false;
     }
@@ -248,7 +244,7 @@ TEST_F(ServerIntegrationTest, EndToEndCommandFlow) {
                  << last_status_.ToString();
   }
 
-  const int fd = ConnectWithRetry(port_);
+  const platform::SocketHandle fd = ConnectWithRetry(port_);
   ASSERT_GE(fd, 0);
 
   std::string resp;
@@ -292,7 +288,7 @@ TEST_F(ServerIntegrationTest, EndToEndCommandFlow) {
   EXPECT_GE(stats.txn_begin, 1U);
   EXPECT_GE(stats.txn_commit, 1U);
 
-  (void)::close(fd);
+  (void)platform::CloseSocket(fd);
 }
 
 TEST_F(ServerIntegrationTest, StopThenRejectNewConnection) {
@@ -305,7 +301,7 @@ TEST_F(ServerIntegrationTest, StopThenRejectNewConnection) {
   EXPECT_TRUE(s.ok()) << s.ToString();
   EXPECT_FALSE(server_.IsRunning());
 
-  const int fd = ConnectWithRetry(port_);
+  const platform::SocketHandle fd = ConnectWithRetry(port_);
   EXPECT_LT(fd, 0);
 }
 
@@ -323,7 +319,7 @@ TEST_F(ServerIntegrationTest, CanRestartAfterStop) {
   ASSERT_TRUE(s.ok()) << s.ToString();
   ASSERT_TRUE(server_.IsRunning());
 
-  const int fd = ConnectWithRetry(port_);
+  const platform::SocketHandle fd = ConnectWithRetry(port_);
   ASSERT_GE(fd, 0);
 
   std::string resp;
@@ -331,7 +327,7 @@ TEST_F(ServerIntegrationTest, CanRestartAfterStop) {
   ASSERT_TRUE(ReadResp(fd, &resp));
   EXPECT_EQ(resp, "+PONG\r\n");
 
-  (void)::close(fd);
+  (void)platform::CloseSocket(fd);
 }
 
 TEST_F(ServerIntegrationTest, StartWithZeroUsesEphemeralPort) {
@@ -350,7 +346,7 @@ TEST_F(ServerIntegrationTest, RespArrayRequestSupportsValuesWithSpaces) {
                  << last_status_.ToString();
   }
 
-  const int fd = ConnectWithRetry(port_);
+  const platform::SocketHandle fd = ConnectWithRetry(port_);
   ASSERT_GE(fd, 0);
 
   std::string resp;
@@ -362,7 +358,7 @@ TEST_F(ServerIntegrationTest, RespArrayRequestSupportsValuesWithSpaces) {
   ASSERT_TRUE(ReadResp(fd, &resp));
   EXPECT_EQ(resp, "$11\r\nhello world\r\n");
 
-  (void)::close(fd);
+  (void)platform::CloseSocket(fd);
 }
 
 TEST_F(ServerIntegrationTest, ClusterCommandsWorkOverNetwork) {
@@ -371,7 +367,7 @@ TEST_F(ServerIntegrationTest, ClusterCommandsWorkOverNetwork) {
                  << last_status_.ToString();
   }
 
-  const int fd = ConnectWithRetry(port_);
+  const platform::SocketHandle fd = ConnectWithRetry(port_);
   ASSERT_GE(fd, 0);
 
   std::string resp;
@@ -400,7 +396,7 @@ TEST_F(ServerIntegrationTest, ClusterCommandsWorkOverNetwork) {
   ASSERT_TRUE(ReadResp(fd, &resp));
   EXPECT_EQ(resp, "$1\r\n1\r\n");
 
-  (void)::close(fd);
+  (void)platform::CloseSocket(fd);
 }
 
 }  // namespace

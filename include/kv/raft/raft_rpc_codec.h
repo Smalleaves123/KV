@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 
+#include "kv/common/socket_compat.h"
 #include "kv/raft/raft_rpc.h"
 
 namespace kv {
@@ -68,14 +69,16 @@ bool DecodeCmd(const std::string& data, char* op, std::string* key,
 // ---- I/O helpers (handle EINTR, short reads/writes) ----
 
 // Read exactly `len` bytes from fd into `data`.  Returns bytes read, or -1.
-ssize_t ReadFull(int fd, void* data, size_t len);
+platform::SocketIoResult ReadFull(platform::SocketHandle fd, void* data,
+                                   size_t len);
 
 // Write all `len` bytes from `data` to fd.  Returns bytes written, or -1.
-ssize_t WriteFull(int fd, const void* data, size_t len);
+platform::SocketIoResult WriteFull(platform::SocketHandle fd,
+                                   const void* data, size_t len);
 
 // Read one complete framed message from fd.  Returns the raw bytes.
 // On EOF or error, returns an empty string.
-std::string ReadMessage(int fd);
+std::string ReadMessage(platform::SocketHandle fd);
 
 }  // namespace raft
 }  // namespace kv

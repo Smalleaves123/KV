@@ -11,6 +11,7 @@
 #include "kv/cache/cache.h"
 #include "kv/engine/db.h"
 #include "kv/engine/snapshot.h"
+#include "kv/engine/write_applier.h"
 #include "kv/engine/write_batch.h"
 #include "kv/memtable/memtable.h"
 #include "kv/sstable/table_cache.h"
@@ -19,7 +20,7 @@
 
 namespace kv {
 
-class DBImpl final : public DB {
+class DBImpl final : public DB, public WriteApplier {
  public:
   explicit DBImpl(DBOptions options);
   ~DBImpl() override;
@@ -63,7 +64,8 @@ class DBImpl final : public DB {
 
   std::unique_ptr<Iterator> NewIterator(const ReadOptions& options) override;
 
-  Status ApplyPut(const std::string& key, const std::string& value) override;
+  Status ApplyPut(const std::string& key,
+                  const std::string& value) override;
   Status ApplyDelete(const std::string& key) override;
 
   bool is_open() const noexcept;
@@ -79,6 +81,10 @@ class DBImpl final : public DB {
   Status ApplyDelete(uint64_t seq,
                      const WriteOptions& options,
                      const Slice& key);
+  // Applies one already-validated operation without syncing the WAL. Callers
+  // that process a batch can sync once after all operations are appended.
+  Status ApplyOperationLocked(uint64_t seq,
+                              const WriteBatch::Operation& operation);
   Status MaybeFlushMemTable();
   Status FlushMemTableToSST(std::string* out_file);
   Status GetFromMemTableAt(const Slice& key,

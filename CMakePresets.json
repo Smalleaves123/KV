@@ -9,7 +9,6 @@
     {
       "name": "debug",
       "displayName": "Debug",
-      "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -21,7 +20,6 @@
     {
       "name": "release",
       "displayName": "Release",
-      "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -33,7 +31,6 @@
     {
       "name": "asan",
       "displayName": "ASan UBSan",
-      "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build-asan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -47,7 +44,6 @@
     {
       "name": "bench",
       "displayName": "Benchmarks",
-      "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build-bench",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -61,11 +57,13 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "configuration": "Debug",
       "jobs": 0
     },
     {
       "name": "release",
       "configurePreset": "release",
+      "configuration": "Release",
       "jobs": 0
     },
     {
@@ -76,6 +74,7 @@
     {
       "name": "bench",
       "configurePreset": "bench",
+      "configuration": "Release",
       "jobs": 0
     }
   ],
@@ -83,6 +82,7 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "configuration": "Debug",
       "output": {
         "outputOnFailure": true
       }
@@ -90,6 +90,7 @@
     {
       "name": "release",
       "configurePreset": "release",
+      "configuration": "Release",
       "output": {
         "outputOnFailure": true
       }
@@ -97,6 +98,7 @@
     {
       "name": "asan",
       "configurePreset": "asan",
+      "configuration": "Debug",
       "output": {
         "outputOnFailure": true
       }

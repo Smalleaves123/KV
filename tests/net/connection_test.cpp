@@ -3,10 +3,9 @@
 #include <string>
 #include <vector>
 
-#include <sys/socket.h>
-#include <unistd.h>
-
+#include "kv/common/socket_compat.h"
 #include "kv/net/connection.h"
+#include "test_socket_pair.h"
 
 namespace kv::net {
 namespace {
@@ -14,29 +13,23 @@ namespace {
 class ConnectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds_), 0);
+    ASSERT_TRUE(test::CreateSocketPair(&pair_));
   }
 
   void TearDown() override {
-    if (fds_[0] >= 0) {
-      (void)::close(fds_[0]);
-      fds_[0] = -1;
-    }
-    if (fds_[1] >= 0) {
-      (void)::close(fds_[1]);
-      fds_[1] = -1;
-    }
+    test::CloseSocketPair(&pair_);
   }
 
-  int fds_[2] = {-1, -1};
+  test::SocketPair pair_;
 };
 
 TEST_F(ConnectionTest, ReadLineWorks) {
-  Connection conn(fds_[0]);
-  fds_[0] = -1;
+  Connection conn(pair_.first);
+  pair_.first = platform::kInvalidSocket;
 
   const std::string req = "PING\r\n";
-  ASSERT_EQ(::write(fds_[1], req.data(), req.size()), static_cast<ssize_t>(req.size()));
+  ASSERT_EQ(platform::SendSocket(pair_.second, req.data(), req.size(), 0),
+            static_cast<platform::SocketIoResult>(req.size()));
 
   std::string line;
   Status s = conn.ReadLine(&line);
@@ -45,25 +38,26 @@ TEST_F(ConnectionTest, ReadLineWorks) {
 }
 
 TEST_F(ConnectionTest, WriteAllWorks) {
-  Connection conn(fds_[0]);
-  fds_[0] = -1;
+  Connection conn(pair_.first);
+  pair_.first = platform::kInvalidSocket;
 
   const std::string resp = "+PONG\r\n";
   Status s = conn.WriteAll(resp);
   EXPECT_TRUE(s.ok()) << s.ToString();
 
   char buf[64] = {0};
-  const ssize_t n = ::read(fds_[1], buf, sizeof(buf));
+  const platform::SocketIoResult n =
+      platform::ReceiveSocket(pair_.second, buf, sizeof(buf), 0);
   ASSERT_GT(n, 0);
   EXPECT_EQ(std::string(buf, static_cast<size_t>(n)), resp);
 }
 
 TEST_F(ConnectionTest, ReadLinePeerClosedReturnsNotFound) {
-  Connection conn(fds_[0]);
-  fds_[0] = -1;
+  Connection conn(pair_.first);
+  pair_.first = platform::kInvalidSocket;
 
-  (void)::close(fds_[1]);
-  fds_[1] = -1;
+  (void)platform::CloseSocket(pair_.second);
+  pair_.second = platform::kInvalidSocket;
 
   std::string line;
   Status s = conn.ReadLine(&line);
@@ -71,12 +65,12 @@ TEST_F(ConnectionTest, ReadLinePeerClosedReturnsNotFound) {
 }
 
 TEST_F(ConnectionTest, ReadRequestDecodesRespArray) {
-  Connection conn(fds_[0]);
-  fds_[0] = -1;
+  Connection conn(pair_.first);
+  pair_.first = platform::kInvalidSocket;
 
   const std::string req = "*2\r\n$3\r\nGET\r\n$1\r\nk\r\n";
-  ASSERT_EQ(::write(fds_[1], req.data(), req.size()),
-            static_cast<ssize_t>(req.size()));
+  ASSERT_EQ(platform::SendSocket(pair_.second, req.data(), req.size(), 0),
+            static_cast<platform::SocketIoResult>(req.size()));
 
   std::vector<std::string> tokens;
   Status s = conn.ReadRequest(&tokens);

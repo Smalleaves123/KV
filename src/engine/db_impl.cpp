@@ -32,156 +32,12 @@ std::unique_ptr<Iterator> NewMergingIterator(
     std::vector<std::unique_ptr<TableIterator>> sst_iters,
     uint64_t read_seq);
 
+std::unique_ptr<Snapshot> NewSnapshot(uint64_t seq);
+std::unique_ptr<Transaction> NewOCCTransaction(DBImpl* db,
+                                                TxnOptions options,
+                                                uint64_t start_seq);
+
 namespace {
-
-class SnapshotImpl final : public Snapshot {
- public:
-  explicit SnapshotImpl(uint64_t seq) : seq_(seq) {}
-  uint64_t sequence() const noexcept override { return seq_; }
-
- private:
-  uint64_t seq_;
-};
-
-class OCCTransaction final : public Transaction {
- public:
-  OCCTransaction(DBImpl* db, TxnOptions options, uint64_t start_seq)
-      : db_(db),
-        options_(options),
-        start_seq_(start_seq),
-        active_(true),
-        read_set_(),
-        writes_(),
-        write_index_() {}
-
-  ~OCCTransaction() override {
-    if (active_) {
-      (void)Rollback();
-    }
-  }
-
-  Status Get(const Slice& key, std::string* value) override {
-    if (!active_) {
-      return Status::InvalidArgument("transaction already finished");
-    }
-    if (db_ == nullptr) {
-      return Status::IOError("transaction db is null");
-    }
-    Status s = db_->TxnValidateKey(key);
-    if (!s.ok()) {
-      return s;
-    }
-    if (value == nullptr) {
-      return Status::InvalidArgument("value output pointer is null");
-    }
-
-    const std::string key_str = key.ToString();
-    auto it = write_index_.find(key_str);
-    if (it != write_index_.end()) {
-      const auto& op = writes_[it->second];
-      if (op.type == WriteBatch::ValueType::kDelete) {
-        return Status::NotFound("key deleted");
-      }
-      *value = op.value;
-      return Status::OK();
-    }
-
-    s = db_->TxnGetAtSequence(key, start_seq_, value);
-    read_set_.insert(key_str);
-    return s;
-  }
-
-  Status Put(const Slice& key, const Slice& value) override {
-    if (!active_) {
-      return Status::InvalidArgument("transaction already finished");
-    }
-    if (db_ == nullptr) {
-      return Status::IOError("transaction db is null");
-    }
-    Status s = db_->TxnValidateKey(key);
-    if (!s.ok()) {
-      return s;
-    }
-
-    WriteBatch::Operation op;
-    op.type = WriteBatch::ValueType::kPut;
-    op.key = key.ToString();
-    op.value = value.ToString();
-
-    auto [it, inserted] = write_index_.insert({op.key, writes_.size()});
-    if (inserted) {
-      writes_.push_back(std::move(op));
-    } else {
-      writes_[it->second] = std::move(op);
-    }
-    return Status::OK();
-  }
-
-  Status Delete(const Slice& key) override {
-    if (!active_) {
-      return Status::InvalidArgument("transaction already finished");
-    }
-    if (db_ == nullptr) {
-      return Status::IOError("transaction db is null");
-    }
-    Status s = db_->TxnValidateKey(key);
-    if (!s.ok()) {
-      return s;
-    }
-
-    WriteBatch::Operation op;
-    op.type = WriteBatch::ValueType::kDelete;
-    op.key = key.ToString();
-    op.value.clear();
-
-    auto [it, inserted] = write_index_.insert({op.key, writes_.size()});
-    if (inserted) {
-      writes_.push_back(std::move(op));
-    } else {
-      writes_[it->second] = std::move(op);
-    }
-    return Status::OK();
-  }
-
-  Status Commit() override {
-    if (!active_) {
-      return Status::InvalidArgument("transaction already finished");
-    }
-    if (db_ == nullptr) {
-      return Status::IOError("transaction db is null");
-    }
-
-    Status s = db_->TxnCommitOCC(options_, start_seq_, read_set_, writes_);
-    active_ = false;
-    db_->TxnUnregister(this);
-    return s;
-  }
-
-  Status Rollback() override {
-    if (!active_) {
-      return Status::InvalidArgument("transaction already finished");
-    }
-    if (db_ == nullptr) {
-      return Status::IOError("transaction db is null");
-    }
-
-    active_ = false;
-    read_set_.clear();
-    writes_.clear();
-    write_index_.clear();
-    db_->TxnUnregister(this);
-    return Status::OK();
-  }
-
- private:
-  DBImpl* db_;
-  TxnOptions options_;
-  uint64_t start_seq_;
-  bool active_;
-  std::unordered_set<std::string> read_set_;
-  std::vector<WriteBatch::Operation> writes_;
-  std::unordered_map<std::string, size_t> write_index_;
-};
 
 Status RequireOpen(bool is_open) {
   if (!is_open) {
@@ -448,28 +304,10 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
 
   for (const auto& op : batch.operations()) {
     const uint64_t seq = next_seq_;
-    Status s;
-
-    if (op.type == WriteBatch::ValueType::kPut) {
-      s = wal_writer_.AppendPut(seq, op.key, op.value);
-      if (!s.ok()) {
-        return s;
-      }
-      s = memtable_.Put(seq, op.key, op.value);
-    } else {
-      s = wal_writer_.AppendDelete(seq, op.key);
-      if (!s.ok()) {
-        return s;
-      }
-      s = memtable_.Delete(seq, op.key);
-    }
-
+    Status s = ApplyOperationLocked(seq, op);
     if (!s.ok()) {
       return s;
     }
-
-    InvalidateCacheEntry(op.key);
-    latest_key_seq_[op.key] = seq;
     ++next_seq_;
   }
 
@@ -497,7 +335,7 @@ Status DBImpl::BeginTransaction(const TxnOptions& options,
   }
 
   const uint64_t start_seq = next_seq_ == 0 ? 0 : next_seq_ - 1;
-  auto occ = std::make_unique<OCCTransaction>(this, options, start_seq);
+  auto occ = NewOCCTransaction(this, options, start_seq);
   RegisterTransaction(occ.get());
   *txn = std::move(occ);
   return Status::OK();
@@ -607,7 +445,7 @@ const Snapshot* DBImpl::GetSnapshot() {
   }
 
   const uint64_t seq = next_seq_ == 0 ? 0 : next_seq_ - 1;
-  auto snapshot = std::make_unique<SnapshotImpl>(seq);
+  auto snapshot = NewSnapshot(seq);
   const Snapshot* raw = snapshot.get();
   active_snapshots_.insert(raw);
   owned_snapshots_.push_back(std::move(snapshot));
@@ -714,11 +552,15 @@ Status DBImpl::ApplyPut(uint64_t seq,
                         const WriteOptions& options,
                         const Slice& key,
                         const Slice& value) {
-  Status s = wal_writer_.AppendPut(seq, key, value);
+  WriteBatch::Operation operation;
+  operation.type = WriteBatch::ValueType::kPut;
+  operation.key = key.ToString();
+  operation.value = value.ToString();
+
+  Status s = ApplyOperationLocked(seq, operation);
   if (!s.ok()) {
     return s;
   }
-
   if (ShouldSync(options)) {
     s = wal_writer_.Sync();
     if (!s.ok()) {
@@ -726,23 +568,20 @@ Status DBImpl::ApplyPut(uint64_t seq,
     }
   }
 
-  s = memtable_.Put(seq, key, value);
-  if (!s.ok()) {
-    return s;
-  }
-  InvalidateCacheEntry(key.ToString());
-  latest_key_seq_[key.ToString()] = seq;
   return Status::OK();
 }
 
 Status DBImpl::ApplyDelete(uint64_t seq,
                            const WriteOptions& options,
                            const Slice& key) {
-  Status s = wal_writer_.AppendDelete(seq, key);
+  WriteBatch::Operation operation;
+  operation.type = WriteBatch::ValueType::kDelete;
+  operation.key = key.ToString();
+
+  Status s = ApplyOperationLocked(seq, operation);
   if (!s.ok()) {
     return s;
   }
-
   if (ShouldSync(options)) {
     s = wal_writer_.Sync();
     if (!s.ok()) {
@@ -750,12 +589,29 @@ Status DBImpl::ApplyDelete(uint64_t seq,
     }
   }
 
-  s = memtable_.Delete(seq, key);
+  return Status::OK();
+}
+
+Status DBImpl::ApplyOperationLocked(
+    uint64_t seq, const WriteBatch::Operation& operation) {
+  Status s;
+  if (operation.type == WriteBatch::ValueType::kPut) {
+    s = wal_writer_.AppendPut(seq, operation.key, operation.value);
+    if (s.ok()) {
+      s = memtable_.Put(seq, operation.key, operation.value);
+    }
+  } else {
+    s = wal_writer_.AppendDelete(seq, operation.key);
+    if (s.ok()) {
+      s = memtable_.Delete(seq, operation.key);
+    }
+  }
   if (!s.ok()) {
     return s;
   }
-  InvalidateCacheEntry(key.ToString());
-  latest_key_seq_[key.ToString()] = seq;
+
+  InvalidateCacheEntry(operation.key);
+  latest_key_seq_[operation.key] = seq;
   return Status::OK();
 }
 
@@ -978,7 +834,7 @@ Status DBImpl::RebuildLatestKeySeqIndex() {
       // Scan the file to build sequence index
       TableIterator iter(*direct_reader);
       for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
-        const std::string k = iter.key();
+        const std::string& k = iter.key();
         const uint64_t seq = iter.seq();
         auto it = latest_key_seq_.find(k);
         if (it == latest_key_seq_.end() || seq > it->second) {
@@ -988,7 +844,7 @@ Status DBImpl::RebuildLatestKeySeqIndex() {
     } else {
       TableIterator iter(*reader);
       for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
-        const std::string k = iter.key();
+        const std::string& k = iter.key();
         const uint64_t seq = iter.seq();
         auto it = latest_key_seq_.find(k);
         if (it == latest_key_seq_.end() || seq > it->second) {
@@ -1043,26 +899,10 @@ Status DBImpl::CommitOCCTransaction(
 
   for (const auto& op : writes) {
     const uint64_t seq = next_seq_;
-    Status s;
-    if (op.type == WriteBatch::ValueType::kPut) {
-      s = wal_writer_.AppendPut(seq, op.key, op.value);
-      if (!s.ok()) {
-        return s;
-      }
-      s = memtable_.Put(seq, op.key, op.value);
-    } else {
-      s = wal_writer_.AppendDelete(seq, op.key);
-      if (!s.ok()) {
-        return s;
-      }
-      s = memtable_.Delete(seq, op.key);
-    }
+    Status s = ApplyOperationLocked(seq, op);
     if (!s.ok()) {
       return s;
     }
-
-    InvalidateCacheEntry(op.key);
-    latest_key_seq_[op.key] = seq;
     ++next_seq_;
   }
 

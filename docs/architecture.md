@@ -21,6 +21,14 @@ kv::DB API
     +-- Cache / table cache
 ```
 
+## Platform Boundary
+
+Platform-specific socket and durable-file operations are isolated under
+`include/kv/common/`. The network layer uses the socket compatibility API for
+Winsock, Linux, and macOS, while WAL synchronization uses the corresponding
+`fsync` or `_commit` implementation. Higher-level storage and protocol code
+does not include Unix-only headers.
+
 Subsystems:
 
 - `src/engine`: DB orchestration, write path, read path, snapshots,

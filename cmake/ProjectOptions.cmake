@@ -1,14 +1,9 @@
+include(${CMAKE_CURRENT_LIST_DIR}/Warnings.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/Sanitizers.cmake)
+
 function(kv_setup_global_options)
     if(MSVC)
         add_compile_options(/utf-8)
-    endif()
-endfunction()
-
-function(kv_enable_warnings target)
-    if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endfunction()
 

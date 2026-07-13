@@ -1,6 +1,7 @@
 add_library(kv
   common/status.cpp
   common/slice.cpp
+  common/socket_compat.cpp
   memtable/memtable.cpp
   wal/log_record.cpp
   wal/wal_writer.cpp
@@ -20,6 +21,8 @@ add_library(kv
   version/version_set.cpp
   version/compaction.cpp
   engine/recovery.cpp
+  engine/snapshot_impl.cpp
+  engine/transaction_impl.cpp
   engine/iterator.cpp
   engine/write_batch.cpp
   engine/db.cpp
@@ -49,6 +52,7 @@ add_library(kv
   raft/raft_log.cpp
   raft/raft_node.cpp
   raft/raft_rpc_codec.cpp
+  raft/raft_db_adapter.cpp
   raft/raft_storage_impl.cpp
   raft/raft_server.cpp
   concurrency/thread_pool.cpp
@@ -63,3 +67,4 @@ target_include_directories(kv
 )
 
 target_compile_features(kv PUBLIC cxx_std_17)
+kv_enable_warnings(kv)

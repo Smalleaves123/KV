@@ -9,14 +9,16 @@ learning and integration testing, but it is not production-ready.
 - `RaftLog`: in-memory/logical log management.
 - `RaftStorageImpl`: persistent hard-state and log storage support.
 - `RaftServer`: RPC listener, tick loop, peer RPC sending, commit apply loop.
-- `RaftDBWrapper`: server-side DB wrapper that routes writes through Raft.
+- `RaftDBAdapter`: server-side DB adapter that routes writes through Raft.
+- `WriteApplier`: small interface used by Raft to apply committed writes
+  without coupling Raft to the full `DB` API.
 
 ## Write Flow
 
 When Raft is enabled in `kv_server`:
 
 1. A client sends `SET` or `DEL` to the TCP server.
-2. `RaftDBWrapper` checks that the local node is leader.
+2. `RaftDBAdapter` checks that the local node is leader.
 3. The wrapper encodes the write command.
 4. `RaftServer::Propose` appends the command through `RaftNode`.
 5. The leader replicates entries with AppendEntries RPC.
@@ -142,6 +144,6 @@ In restricted environments, listener socket tests may skip.
 - No InstallSnapshot RPC.
 - No production operational tooling.
 - No client-side redirect protocol beyond an error message.
-- Raft write batches and transactions are not supported by `RaftDBWrapper`.
+- Raft write batches and transactions are not supported by `RaftDBAdapter`.
 - The implementation is designed for learning and testing, not production
   deployment.

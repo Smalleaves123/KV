@@ -1,6 +1,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -13,9 +14,10 @@
 #include <vector>
 
 #include "kv/engine/db.h"
+#include "kv/engine/write_applier.h"
 #include "kv/cluster/cluster_manager.h"
 #include "kv/net/server.h"
-#include "kv/raft/raft_rpc_codec.h"
+#include "kv/raft/raft_db_adapter.h"
 #include "kv/raft/raft_server.h"
 
 namespace {
@@ -187,7 +189,7 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
   }
 
   AppConfigFile cfg;
-  enum class Section {
+  enum class Section : uint8_t {
     kNone,
     kServer,
     kStorage,
@@ -477,111 +479,6 @@ void EnsureSelfNode(std::vector<kv::NodeInfo>* nodes, const std::string& self_id
   nodes->push_back(self);
 }
 
-// Wrapper DB that routes writes through Raft, reads directly from local DB.
-class RaftDBWrapper final : public kv::DB {
- public:
-  RaftDBWrapper(kv::DB* real_db, kv::RaftServer* raft)
-      : real_db_(real_db), raft_(raft) {}
-
-  kv::Status Put(const kv::WriteOptions&, const kv::Slice& key,
-                 const kv::Slice& value) override {
-    if (!raft_->IsLeader()) {
-      return kv::Status::AlreadyExists(
-          "not the leader, current leader is " +
-          std::to_string(raft_->LeaderId()));
-    }
-
-    std::string cmd = kv::raft::EncodePutCmd(key.ToString(),
-                                               value.ToString());
-    return raft_->Propose(cmd);
-  }
-
-  kv::Status Get(const kv::ReadOptions& options, const kv::Slice& key,
-                 std::string* value) override {
-    if (!raft_->IsLeader()) {
-      return kv::Status::AlreadyExists(
-          "not the leader, current leader is " +
-          std::to_string(raft_->LeaderId()));
-    }
-    kv::Status s = raft_->LinearizableReadBarrier();
-    if (!s.ok()) {
-      return s;
-    }
-    return real_db_->Get(options, key, value);
-  }
-
-  kv::Status Delete(const kv::WriteOptions&, const kv::Slice& key) override {
-    if (!raft_->IsLeader()) {
-      return kv::Status::AlreadyExists(
-          "not the leader, current leader is " +
-          std::to_string(raft_->LeaderId()));
-    }
-
-    std::string cmd = kv::raft::EncodeDelCmd(key.ToString());
-    return raft_->Propose(cmd);
-  }
-
-  kv::Status Write(const kv::WriteOptions& options,
-                   const kv::WriteBatch& batch) override {
-    (void)options;
-    (void)batch;
-    return kv::Status::InvalidArgument(
-        "write batch is not supported when raft is enabled");
-  }
-
-  kv::Status BeginTransaction(const kv::TxnOptions& options,
-                              std::unique_ptr<kv::Transaction>* txn) override {
-    (void)options;
-    if (txn != nullptr) {
-      txn->reset();
-    }
-    return kv::Status::InvalidArgument(
-        "transactions are not supported when raft is enabled");
-  }
-
-  kv::Status Compact() override { return real_db_->Compact(); }
-
-  kv::Status GetCacheStats(kv::CacheStats* stats) const override {
-    return real_db_->GetCacheStats(stats);
-  }
-
-  kv::Status GetReadPathStats(kv::ReadPathStats* stats) const override {
-    return real_db_->GetReadPathStats(stats);
-  }
-
-  kv::Status GetCompactionStats(kv::CompactionStats* stats) const override {
-    return real_db_->GetCompactionStats(stats);
-  }
-
-  const kv::Snapshot* GetSnapshot() override {
-    return real_db_->GetSnapshot();
-  }
-
-  kv::Status ReleaseSnapshot(const kv::Snapshot* snapshot) override {
-    return real_db_->ReleaseSnapshot(snapshot);
-  }
-
-  kv::Status Close() override { return real_db_->Close(); }
-
-  std::unique_ptr<kv::Iterator> NewIterator(
-      const kv::ReadOptions& options) override {
-    return real_db_->NewIterator(options);
-  }
-
-  kv::Status ApplyPut(const std::string& key,
-                      const std::string& value) override {
-    return real_db_->ApplyPut(key, value);
-  }
-
-  kv::Status ApplyDelete(const std::string& key) override {
-    return real_db_->ApplyDelete(key);
-  }
-
- private:
-  kv::DB* real_db_;
-  kv::RaftServer* raft_;
-};
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -589,7 +486,7 @@ int main(int argc, char** argv) {
   if (argc >= 2 && std::string(argv[1]).rfind("--config=", 0) == 0) {
     config_path = std::string(argv[1]).substr(9);
   } else if (const char* v = std::getenv("KV_CONFIG"); v != nullptr &&
-             std::string(v).size() > 0) {
+             !std::string(v).empty()) {
     config_path = v;
   }
 
@@ -637,11 +534,11 @@ int main(int argc, char** argv) {
   std::vector<kv::NodeInfo> cluster_nodes = file_config.cluster_nodes;
   std::string cluster_local_node_id = file_config.cluster_local_node_id;
   if (const char* v = std::getenv("KV_CLUSTER_NODES"); v != nullptr &&
-      std::string(v).size() > 0) {
+      !std::string(v).empty()) {
     cluster_nodes = ParseClusterNodes(v);
   }
   if (const char* v = std::getenv("KV_CLUSTER_LOCAL_NODE_ID"); v != nullptr &&
-      std::string(v).size() > 0) {
+      !std::string(v).empty()) {
     cluster_local_node_id = v;
   }
 
@@ -750,7 +647,12 @@ int main(int argc, char** argv) {
 
   // ---- Start Raft if enabled ----
   if (raft_enabled && raft_config) {
-    raft_server = std::make_unique<kv::RaftServer>(*raft_config, db.get());
+    auto* applier = dynamic_cast<kv::WriteApplier*>(db.get());
+    if (applier == nullptr) {
+      std::cerr << "database does not support replicated writes\n";
+      return 1;
+    }
+    raft_server = std::make_unique<kv::RaftServer>(*raft_config, applier);
     s = raft_server->Start();
     if (!s.ok()) {
       std::cerr << "raft server start failed: " << s.ToString() << "\n";
@@ -761,11 +663,11 @@ int main(int argc, char** argv) {
   }
 
   // ---- Start client server ----
-  std::unique_ptr<RaftDBWrapper> raft_db;
+  std::unique_ptr<kv::RaftDBAdapter> raft_db;
   kv::DB* server_db = db.get();
 
   if (raft_server) {
-    raft_db = std::make_unique<RaftDBWrapper>(db.get(), raft_server.get());
+    raft_db = std::make_unique<kv::RaftDBAdapter>(db.get(), raft_server.get());
     server_db = raft_db.get();
   }
 

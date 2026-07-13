@@ -1,17 +1,13 @@
 #include "kv/net/connection.h"
 
-#include <cerrno>
-#include <cstring>
 #include <utility>
-
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include "kv/net/codec.h"
 
 namespace kv::net {
 
-Connection::Connection(int fd) : fd_(fd), read_buffer_() {}
+Connection::Connection(platform::SocketHandle fd)
+    : fd_(fd), read_buffer_() {}
 
 Connection::~Connection() {
   (void)Close();
@@ -19,7 +15,7 @@ Connection::~Connection() {
 
 Connection::Connection(Connection&& other) noexcept
     : fd_(other.fd_), read_buffer_(std::move(other.read_buffer_)) {
-  other.fd_ = -1;
+  other.fd_ = platform::kInvalidSocket;
 }
 
 Connection& Connection::operator=(Connection&& other) noexcept {
@@ -27,16 +23,16 @@ Connection& Connection::operator=(Connection&& other) noexcept {
     (void)Close();
     fd_ = other.fd_;
     read_buffer_ = std::move(other.read_buffer_);
-    other.fd_ = -1;
+    other.fd_ = platform::kInvalidSocket;
   }
   return *this;
 }
 
 bool Connection::IsOpen() const noexcept {
-  return fd_ >= 0;
+  return platform::IsValidSocket(fd_);
 }
 
-int Connection::fd() const noexcept {
+platform::SocketHandle Connection::fd() const noexcept {
   return fd_;
 }
 
@@ -54,15 +50,18 @@ Status Connection::ReadLine(std::string* line) {
 
   char buf[1024];
   while (true) {
-    const ssize_t n = ::recv(fd_, buf, sizeof(buf), 0);
+    const platform::SocketIoResult n =
+        platform::ReceiveSocket(fd_, buf, sizeof(buf), 0);
     if (n == 0) {
       return Status::NotFound("peer closed");
     }
     if (n < 0) {
-      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+      const int error = platform::LastSocketError();
+      if (platform::IsRetryableSocketError(error)) {
         continue;
       }
-      return Status::IOError("recv failed: " + std::string(std::strerror(errno)));
+      return Status::IOError("recv failed: " +
+                             platform::SocketErrorString(error));
     }
 
     read_buffer_.append(buf, static_cast<size_t>(n));
@@ -90,15 +89,18 @@ Status Connection::ReadRequest(std::vector<std::string>* tokens) {
 
   char buf[1024];
   while (true) {
-    const ssize_t n = ::recv(fd_, buf, sizeof(buf), 0);
+    const platform::SocketIoResult n =
+        platform::ReceiveSocket(fd_, buf, sizeof(buf), 0);
     if (n == 0) {
       return Status::NotFound("peer closed");
     }
     if (n < 0) {
-      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+      const int error = platform::LastSocketError();
+      if (platform::IsRetryableSocketError(error)) {
         continue;
       }
-      return Status::IOError("recv failed: " + std::string(std::strerror(errno)));
+      return Status::IOError("recv failed: " +
+                             platform::SocketErrorString(error));
     }
 
     read_buffer_.append(buf, static_cast<size_t>(n));
@@ -118,12 +120,14 @@ Status Connection::WriteAll(const std::string& data) {
 
   size_t sent = 0;
   while (sent < data.size()) {
-    const ssize_t n = ::send(fd_, data.data() + sent, data.size() - sent, 0);
+    const platform::SocketIoResult n = platform::SendSocket(
+        fd_, data.data() + sent, data.size() - sent, 0);
     if (n < 0) {
-      if (errno == EINTR) {
+      if (platform::IsInterruptedSocketError(platform::LastSocketError())) {
         continue;
       }
-      return Status::IOError("send failed: " + std::string(std::strerror(errno)));
+      return Status::IOError("send failed: " + platform::SocketErrorString(
+                                 platform::LastSocketError()));
     }
     if (n == 0) {
       return Status::IOError("send returned 0");
@@ -135,17 +139,18 @@ Status Connection::WriteAll(const std::string& data) {
 }
 
 Status Connection::Close() {
-  if (fd_ < 0) {
+  if (!platform::IsValidSocket(fd_)) {
     return Status::OK();
   }
 
-  if (::close(fd_) != 0) {
-    const int e = errno;
-    fd_ = -1;
-    return Status::IOError("close failed: " + std::string(std::strerror(e)));
+  if (platform::CloseSocket(fd_) != 0) {
+    const int error = platform::LastSocketError();
+    fd_ = platform::kInvalidSocket;
+    return Status::IOError("close failed: " +
+                           platform::SocketErrorString(error));
   }
 
-  fd_ = -1;
+  fd_ = platform::kInvalidSocket;
   return Status::OK();
 }
 

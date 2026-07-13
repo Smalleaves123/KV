@@ -5,6 +5,7 @@
 #include <memory>
 #include <thread>
 
+#include "kv/common/socket_compat.h"
 #include "kv/common/status.h"
 #include "kv/concurrency/thread_pool.h"
 
@@ -43,7 +44,9 @@ class Server {
  private:
   Status SetupListenSocket(uint16_t port);
   void AcceptLoop(DB* db, ClusterManager* cluster_manager);
-  static void HandleClient(int client_fd, DB* db, ClusterManager* cluster_manager,
+  static void HandleClient(platform::SocketHandle client_fd,
+                           DB* db,
+                           ClusterManager* cluster_manager,
                            std::atomic<bool>* running,
                            std::atomic<uint64_t>* total_requests,
                            std::atomic<uint64_t>* txn_begin,
@@ -52,7 +55,7 @@ class Server {
                            std::atomic<uint64_t>* txn_conflict,
                            std::atomic<uint64_t>* active_connections);
 
-  int listen_fd_;
+  platform::SocketHandle listen_fd_;
   uint16_t port_;
   std::atomic<bool> running_;
   std::atomic<uint64_t> total_connections_;
@@ -65,6 +68,7 @@ class Server {
 
   std::thread accept_thread_;
   std::unique_ptr<ThreadPool> pool_;
+  platform::SocketRuntime socket_runtime_;
 };
 
 }  // namespace kv::net

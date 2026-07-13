@@ -4,9 +4,7 @@
 #include <ios>
 #include <system_error>
 
-#include <fcntl.h>
-#include <unistd.h>
-
+#include "kv/common/file_compat.h"
 namespace kv {
 namespace {
 
@@ -76,7 +74,7 @@ Status WALWriter::Open(const std::string& file_path, bool append) {
   }
 
   if (sync_fd_ >= 0) {
-    (void)::close(sync_fd_);
+    (void)platform::CloseFile(sync_fd_);
     sync_fd_ = -1;
   }
 
@@ -109,11 +107,9 @@ Status WALWriter::Open(const std::string& file_path, bool append) {
   }
 
   // Open a raw fd for fsync (ofstream does not expose its file descriptor).
-  int flags = O_WRONLY;
-  flags |= append ? O_APPEND : O_TRUNC;
-  sync_fd_ = ::open(file_path.c_str(), flags | O_CREAT, 0644);
+  sync_fd_ = platform::OpenSyncFile(file_path, append);
   if (sync_fd_ < 0) {
-    const std::string err = std::strerror(errno);
+    const std::string err = platform::FileErrorString();
     stream_.close();
     stream_.clear();
     return Status::IOError("failed to open wal fd for sync: " + file_path + ": " + err);
@@ -126,7 +122,7 @@ Status WALWriter::Open(const std::string& file_path, bool append) {
 
 Status WALWriter::Close() {
   if (sync_fd_ >= 0) {
-    (void)::close(sync_fd_);
+    (void)platform::CloseFile(sync_fd_);
     sync_fd_ = -1;
   }
 
@@ -201,8 +197,9 @@ Status WALWriter::Sync() {
   }
 
   if (sync_fd_ >= 0) {
-    if (::fsync(sync_fd_) != 0) {
-      return Status::IOError("fsync failed: " + std::string(std::strerror(errno)));
+    if (platform::SyncFile(sync_fd_) != 0) {
+      return Status::IOError("file sync failed: " +
+                             platform::FileErrorString());
     }
   }
 

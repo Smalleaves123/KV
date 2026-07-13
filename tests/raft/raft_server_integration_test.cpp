@@ -10,6 +10,7 @@
 
 #include "gtest/gtest.h"
 #include "kv/engine/db.h"
+#include "kv/engine/write_applier.h"
 #include "kv/raft/raft_rpc_codec.h"
 
 namespace kv {
@@ -81,7 +82,9 @@ class RaftServerIntegrationTest : public ::testing::Test {
       cfg.data_dir = node.raft_dir;
       cfg.peers = peers;
 
-      node.raft = std::make_unique<RaftServer>(cfg, node.db.get());
+      auto* applier = dynamic_cast<WriteApplier*>(node.db.get());
+      ASSERT_NE(applier, nullptr);
+      node.raft = std::make_unique<RaftServer>(cfg, applier);
       s = node.raft->Start();
       if (!s.ok() &&
           s.ToString().find("raft rpc bind: Operation not permitted") !=

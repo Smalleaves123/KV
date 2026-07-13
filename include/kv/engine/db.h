@@ -122,9 +122,6 @@ class DB {
   // entries added after NewIterator() are not visible.
   virtual std::unique_ptr<Iterator> NewIterator(const ReadOptions& options) = 0;
 
-  // Direct apply (bypasses WAL) — used by Raft for applying committed entries.
-  virtual Status ApplyPut(const std::string& key, const std::string& value) = 0;
-  virtual Status ApplyDelete(const std::string& key) = 0;
 };
 
 }  // namespace kv
