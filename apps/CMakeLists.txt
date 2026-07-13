@@ -18,6 +18,7 @@ target_link_libraries(kv_admin
 
 add_executable(kv_server
   kv_server.cpp
+  server_config.cpp
 )
 
 target_link_libraries(kv_server
