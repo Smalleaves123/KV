@@ -253,6 +253,20 @@ The server tracks:
 
 These are printed periodically by `kv_server` health logs.
 
+## Monitoring HTTP Endpoints
+
+When `server.metrics_port` or `KV_METRICS_PORT` is a non-zero port,
+`kv_server` starts a separate HTTP listener:
+
+- `GET /health` or `GET /healthz`: liveness JSON;
+- `GET /ready` or `GET /readyz`: readiness JSON, returning HTTP 503 when the
+  command server or DB is not ready;
+- `GET /metrics`: Prometheus text exposition format.
+
+The monitoring listener is independent from the command protocol and binds to
+loopback by default. It exposes connection, request, transaction, cache,
+Bloom-filter, table-cache, and compaction metrics.
+
 ## Raft Mode
 
 When Raft is enabled:

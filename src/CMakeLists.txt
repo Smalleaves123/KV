@@ -14,6 +14,7 @@ add_library(kv
   net/codec.cpp
   net/connection.cpp
   net/server.cpp
+  net/monitoring_server.cpp
   net/session.cpp
   version/manifest.cpp
   version/file_meta.cpp

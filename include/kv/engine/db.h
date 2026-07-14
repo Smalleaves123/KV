@@ -87,6 +87,8 @@ class DB {
  public:
   virtual ~DB() = default;
 
+  virtual bool IsOpen() const noexcept = 0;
+
   static Status Open(const DBOptions& options, std::unique_ptr<DB>* db);
 
   virtual Status Put(const WriteOptions& options,

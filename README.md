@@ -23,6 +23,7 @@ production database.
 - Write batches.
 - LRU, LFU, and sharded LRU cache implementations with TTL support.
 - Data-level TTL commands and APIs: `EXPIRE`, `TTL`, and `PERSIST`.
+- Optional Prometheus/health HTTP endpoint on a separate monitoring port.
 - TCP command server with Redis-like RESP responses.
 - CLI and admin utilities.
 - Experimental Raft node/server integration for replicated writes.

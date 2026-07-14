@@ -10,9 +10,12 @@
 #   KV_CACHE=1                    Enable cache
 #   KV_CACHE_CAPACITY=1024        Cache capacity
 #   KV_CACHE_TTL_MS=0             Default TTL (0=no expiry)
+#   KV_METRICS_PORT=9090          Prometheus/health HTTP port (0=disabled)
 
 server:
   port: 9527
+  # Prometheus/health HTTP port; 0 disables the endpoint.
+  metrics_port: 0
   db_path: data/db
 
 storage:

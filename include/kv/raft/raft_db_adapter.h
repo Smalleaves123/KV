@@ -15,6 +15,8 @@ class RaftDBAdapter final : public DB {
 public:
   RaftDBAdapter(DB* local_db, RaftServer* raft);
 
+  bool IsOpen() const noexcept override;
+
   Status Put(const WriteOptions& options, const Slice& key,
              const Slice& value) override;
   Status Get(const ReadOptions& options, const Slice& key, std::string* value) override;

@@ -41,12 +41,15 @@ and DB path:
 ```yaml
 server:
   port: 9527
+  metrics_port: 9090
   db_path: data/db
 ```
 
 Fields:
 
 - `port`: TCP client port for line-oriented commands.
+- `metrics_port`: optional HTTP port for `/health`, `/ready`, and `/metrics`;
+  `0` disables the monitoring server.
 - `db_path`: directory used to derive default WAL, SST, and manifest paths.
 
 Derived default storage paths:
@@ -55,6 +58,12 @@ Derived default storage paths:
 wal_path      = db_path + "/wal.log"
 sst_dir       = db_path + "/sst"
 manifest_path = db_path + "/MANIFEST"
+```
+
+Environment override:
+
+```bash
+KV_METRICS_PORT=9090
 ```
 
 ## Storage Section

@@ -671,6 +671,10 @@ bool DBImpl::is_open() const noexcept {
   return open_;
 }
 
+bool DBImpl::IsOpen() const noexcept {
+  return is_open();
+}
+
 uint64_t DBImpl::LatestSequence() const noexcept {
   std::lock_guard<std::mutex> lk(mu_);
   return next_seq_ == 0 ? 0 : next_seq_ - 1;

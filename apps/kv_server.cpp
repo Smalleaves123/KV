@@ -19,6 +19,7 @@
 #include "kv/engine/write_applier.h"
 #include "kv/cluster/cluster_manager.h"
 #include "kv/net/server.h"
+#include "kv/net/monitoring_server.h"
 #include "kv/raft/raft_db_adapter.h"
 #include "kv/raft/raft_server.h"
 
@@ -52,6 +53,7 @@ int main(int argc, char** argv) {
   }
 
   int port = file_config.server_port;
+  int metrics_port = file_config.metrics_port;
   std::string db_path = file_config.db_path;
   int arg_index = 1;
   if (argc >= 2 && std::string(argv[1]).rfind("--config=", 0) == 0) {
@@ -68,6 +70,11 @@ int main(int argc, char** argv) {
 
   if (argc > arg_index + 1) {
     db_path = argv[arg_index + 1];
+  }
+
+  if (const char* v = std::getenv("KV_METRICS_PORT"); v != nullptr) {
+    const int parsed = kv::app::ParseOptionalPort(v);
+    if (parsed >= 0) metrics_port = parsed;
   }
 
   // ---- Raft config from file/env ----
@@ -229,11 +236,27 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  kv::net::MonitoringServer monitoring_server;
+  if (metrics_port > 0) {
+    s = monitoring_server.Start(static_cast<uint16_t>(metrics_port), &server,
+                                db.get());
+    if (!s.ok()) {
+      std::cerr << "monitoring server start failed: " << s.ToString() << "\n";
+      (void)server.Stop();
+      if (raft_server) (void)raft_server->Stop();
+      (void)db->Close();
+      return 1;
+    }
+  }
+
   std::signal(SIGINT, OnSignal);
   std::signal(SIGTERM, OnSignal);
 
   std::cout << "kv_server listening on 0.0.0.0:" << port
             << " db_path=" << db_path;
+  if (monitoring_server.IsRunning()) {
+    std::cout << " metrics_port=" << monitoring_server.port();
+  }
   if (raft_enabled) {
     std::cout << " raft=yes";
   }
@@ -279,6 +302,7 @@ int main(int argc, char** argv) {
     }
   }
 
+  (void)monitoring_server.Stop();
   (void)server.Stop();
   if (raft_server) (void)raft_server->Stop();
   (void)db->Close();

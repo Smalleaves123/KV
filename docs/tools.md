@@ -55,6 +55,21 @@ Health logs are printed every five seconds:
 [health] running=yes port=9527 active_connections=0 total_connections=1 ...
 ```
 
+For Prometheus scraping and process probes, enable the separate HTTP listener:
+
+```yaml
+server:
+  metrics_port: 9090
+```
+
+Then use:
+
+```text
+GET http://127.0.0.1:9090/health
+GET http://127.0.0.1:9090/ready
+GET http://127.0.0.1:9090/metrics
+```
+
 ## kv_cli
 
 `kv_cli` opens a DB directly. It does not connect to `kv_server`.

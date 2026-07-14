@@ -66,6 +66,7 @@ class DBImpl final : public DB, public WriteApplier {
   void TxnUnregister(Transaction* txn);
 
   Status Close() override;
+  bool IsOpen() const noexcept override;
 
   std::unique_ptr<Iterator> NewIterator(const ReadOptions& options) override;
 

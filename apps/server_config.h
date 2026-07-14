@@ -15,6 +15,7 @@ namespace kv::app {
 
 struct AppConfigFile {
   int server_port = 9527;
+  int metrics_port = 0;
   std::string db_path = "data/db";
   bool raft_enabled = false;
   kv::RaftConfig raft;
@@ -31,6 +32,7 @@ struct AppConfigFile {
 };
 
 int ParsePort(const char* value);
+int ParseOptionalPort(const char* value);
 uint64_t ParseNodeId(const char* value);
 bool ParseBoolValue(const std::string& value, bool* result);
 bool ParseSizeValue(const std::string& value, size_t* result);

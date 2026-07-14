@@ -12,6 +12,10 @@ namespace kv {
 RaftDBAdapter::RaftDBAdapter(DB* local_db, RaftServer* raft)
     : local_db_(local_db), raft_(raft) {}
 
+bool RaftDBAdapter::IsOpen() const noexcept {
+  return local_db_ != nullptr && local_db_->IsOpen();
+}
+
 Status RaftDBAdapter::NotLeader() const {
   if (raft_ == nullptr) {
     return Status::IOError("raft server is null");

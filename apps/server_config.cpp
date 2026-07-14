@@ -17,6 +17,16 @@ int ParsePort(const char* s) {
   return static_cast<int>(v);
 }
 
+int ParseOptionalPort(const char* s) {
+  if (s == nullptr)
+    return -1;
+  char* end = nullptr;
+  const long v = std::strtol(s, &end, 10);
+  if (end == s || *end != '\0' || v < 0 || v > 65535)
+    return -1;
+  return static_cast<int>(v);
+}
+
 uint64_t ParseNodeId(const char* s) {
   if (s == nullptr)
     return 0;
@@ -342,6 +352,9 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
     if (section == Section::kServer) {
       if (key == "port") {
         ParseIntValue(value, &cfg.server_port);
+      } else if (key == "metrics_port") {
+        const int port = ParseOptionalPort(value.c_str());
+        if (port >= 0) cfg.metrics_port = port;
       } else if (key == "db_path") {
         cfg.db_path = value;
       }

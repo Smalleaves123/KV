@@ -101,6 +101,7 @@ add_executable(kv_net_test
   net/command_test.cpp
   net/codec_test.cpp
   net/connection_test.cpp
+  net/monitoring_server_test.cpp
   net/server_integration_test.cpp
 )
 
