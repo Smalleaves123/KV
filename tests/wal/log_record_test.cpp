@@ -52,6 +52,26 @@ TEST(LogRecordCodecTest, EncodeAndDecodeDeleteRecord) {
   EXPECT_TRUE(output.value.empty());
 }
 
+TEST(LogRecordCodecTest, EncodeAndDecodePutWithTTLRecord) {
+  LogRecord input;
+  input.type = LogRecordType::kPutWithTTL;
+  input.seq = 8;
+  input.key = "session";
+  input.value = "value";
+  input.expires_at_ms = 123456789;
+
+  std::string encoded;
+  ASSERT_TRUE(LogRecordCodec::Encode(input, &encoded).ok());
+
+  LogRecord output;
+  ASSERT_TRUE(LogRecordCodec::Decode(encoded, &output).ok());
+  EXPECT_EQ(output.type, LogRecordType::kPutWithTTL);
+  EXPECT_EQ(output.seq, 8U);
+  EXPECT_EQ(output.key, "session");
+  EXPECT_EQ(output.value, "value");
+  EXPECT_EQ(output.expires_at_ms, 123456789U);
+}
+
 TEST(LogRecordCodecTest, RejectZeroSequence) {
   LogRecord input;
   input.type = LogRecordType::kPut;

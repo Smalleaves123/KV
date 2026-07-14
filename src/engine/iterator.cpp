@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "kv/common/time.h"
 #include "kv/memtable/memtable.h"
 #include "kv/sstable/table_reader.h"
 
@@ -40,6 +41,11 @@ struct Source {
   std::string_view Value() const {
     if (is_memtable) return mem_iter->entry().value;
     return sst_iter->value();
+  }
+
+  uint64_t ExpiresAtMs() const {
+    if (is_memtable) return mem_iter->entry().expires_at_ms;
+    return sst_iter->expires_at_ms();
   }
 
   void Next() {
@@ -156,6 +162,7 @@ class MergingIterator final : public Iterator {
       uint64_t best_seq = 0;
       int best_version_source = -1;
       bool is_tombstone = false;
+      uint64_t expires_at_ms = 0;
       std::string best_value;
 
       for (size_t si = 0; si < sources_.size(); ++si) {
@@ -169,13 +176,15 @@ class MergingIterator final : public Iterator {
             best_seq = src.Seq();
             best_version_source = static_cast<int>(si);
             is_tombstone = (src.Type() == 1);
+            expires_at_ms = src.ExpiresAtMs();
             best_value = std::string(src.Value());  // capture now, before advance
           }
           src.Next();
         }
       }
 
-      if (best_version_source >= 0 && !is_tombstone) {
+      if (best_version_source >= 0 && !is_tombstone &&
+          !IsExpired(expires_at_ms, NowUnixMillis())) {
         current_key_ = std::string(candidate_key);
         current_value_ = std::move(best_value);
         valid_ = true;

@@ -100,6 +100,15 @@ class DB {
   virtual Status Delete(const WriteOptions& options,
                         const Slice& key) = 0;
 
+  // Set a wall-clock expiry in seconds. A non-positive TTL deletes the key.
+  virtual Status Expire(const WriteOptions& options, const Slice& key,
+                        int64_t ttl_seconds) = 0;
+  // Redis-compatible result: -2 missing/expired, -1 persistent, otherwise
+  // remaining whole seconds (rounded down).
+  virtual Status TTL(const ReadOptions& options, const Slice& key,
+                     int64_t* ttl_seconds) = 0;
+  virtual Status Persist(const WriteOptions& options, const Slice& key) = 0;
+
   virtual Status Write(const WriteOptions& options,
                        const WriteBatch& batch) = 0;
 

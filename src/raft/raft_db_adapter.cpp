@@ -2,7 +2,9 @@
 
 #include "kv/raft/raft_rpc_codec.h"
 #include "kv/raft/raft_server.h"
+#include "kv/common/time.h"
 
+#include <limits>
 #include <string>
 
 namespace kv {
@@ -47,6 +49,55 @@ Status RaftDBAdapter::Delete(const WriteOptions&, const Slice& key) {
     return NotLeader();
   }
   return raft_->Propose(raft::EncodeDelCmd(key.ToString()));
+}
+
+Status RaftDBAdapter::Expire(const WriteOptions&, const Slice& key,
+                             int64_t ttl_seconds) {
+  if (!raft_->IsLeader()) return NotLeader();
+  Status s = raft_->LinearizableReadBarrier();
+  if (!s.ok()) return s;
+
+  std::string value;
+  s = local_db_->Get(ReadOptions{}, key, &value);
+  if (!s.ok()) return s;
+  if (ttl_seconds <= 0) {
+    return raft_->Propose(raft::EncodeDelCmd(key.ToString()));
+  }
+
+  const uint64_t now_ms = NowUnixMillis();
+  if (static_cast<uint64_t>(ttl_seconds) >
+      std::numeric_limits<uint64_t>::max() / 1000ULL) {
+    return Status::InvalidArgument("ttl is too large");
+  }
+  const uint64_t ttl_ms = static_cast<uint64_t>(ttl_seconds) * 1000ULL;
+  if (ttl_ms > std::numeric_limits<uint64_t>::max() - now_ms) {
+    return Status::InvalidArgument("ttl is too large");
+  }
+  return raft_->Propose(
+      raft::EncodeExpireCmd(key.ToString(), now_ms + ttl_ms));
+}
+
+Status RaftDBAdapter::TTL(const ReadOptions& options, const Slice& key,
+                          int64_t* ttl_seconds) {
+  if (!raft_->IsLeader()) return NotLeader();
+  Status s = raft_->LinearizableReadBarrier();
+  if (!s.ok()) return s;
+  return local_db_->TTL(options, key, ttl_seconds);
+}
+
+Status RaftDBAdapter::Persist(const WriteOptions&, const Slice& key) {
+  if (!raft_->IsLeader()) return NotLeader();
+  Status s = raft_->LinearizableReadBarrier();
+  if (!s.ok()) return s;
+
+  std::string value;
+  s = local_db_->Get(ReadOptions{}, key, &value);
+  if (!s.ok()) return s;
+  int64_t ttl_seconds = -2;
+  s = local_db_->TTL(ReadOptions{}, key, &ttl_seconds);
+  if (!s.ok()) return s;
+  if (ttl_seconds == -1) return Status::OK();
+  return raft_->Propose(raft::EncodeExpireCmd(key.ToString(), 0));
 }
 
 Status RaftDBAdapter::Write(const WriteOptions&, const WriteBatch&) {

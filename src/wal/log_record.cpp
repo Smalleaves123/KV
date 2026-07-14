@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstring>
+#include <limits>
 
 #include "kv/common/encoding.h"
 
@@ -36,18 +37,42 @@ Status LogRecordCodec::Encode(const LogRecord& record, std::string* out) {
   if (record.seq == 0) {
     return Status::InvalidArgument("log record sequence must be greater than 0");
   }
-  if (record.type == LogRecordType::kDelete && !record.value.empty()) {
+  if (record.type == LogRecordType::kDelete &&
+      (!record.value.empty() || record.expires_at_ms != 0)) {
     return Status::InvalidArgument("delete record must not contain value");
+  }
+  if (record.type == LogRecordType::kPut && record.expires_at_ms != 0) {
+    return Status::InvalidArgument("put record must not contain ttl");
+  }
+  if (record.type == LogRecordType::kPutWithTTL &&
+      record.expires_at_ms == 0) {
+    return Status::InvalidArgument("ttl record must contain expiry");
+  }
+  if (record.type != LogRecordType::kPut &&
+      record.type != LogRecordType::kDelete &&
+      record.type != LogRecordType::kPutWithTTL) {
+    return Status::InvalidArgument("unknown log record type");
   }
 
   std::string payload;
-  payload.reserve(1 + 8 + 4 + 4 + record.key.size() + record.value.size());
+  const size_t ttl_prefix =
+      record.type == LogRecordType::kPutWithTTL ? sizeof(uint64_t) : 0;
+  if (record.value.size() >
+          std::numeric_limits<uint32_t>::max() - ttl_prefix ||
+      record.key.size() > std::numeric_limits<uint32_t>::max()) {
+    return Status::InvalidArgument("log record payload is too large");
+  }
+  const size_t encoded_value_size = record.value.size() + ttl_prefix;
+  payload.reserve(1 + 8 + 4 + 4 + record.key.size() + encoded_value_size);
 
   payload.push_back(static_cast<char>(record.type));
   EncodeFixed64(&payload, record.seq);
   EncodeFixed32(&payload, static_cast<uint32_t>(record.key.size()));
-  EncodeFixed32(&payload, static_cast<uint32_t>(record.value.size()));
+  EncodeFixed32(&payload, static_cast<uint32_t>(encoded_value_size));
   payload.append(record.key);
+  if (record.type == LogRecordType::kPutWithTTL) {
+    EncodeFixed64(&payload, record.expires_at_ms);
+  }
   payload.append(record.value);
 
   const uint32_t checksum = ComputeChecksum(payload.data(), payload.size());
@@ -107,6 +132,9 @@ Status LogRecordCodec::Decode(const Slice& input,
     case 1:
       type = LogRecordType::kDelete;
       break;
+    case 2:
+      type = LogRecordType::kPutWithTTL;
+      break;
     default:
       return Status::Corruption("unknown log record type");
   }
@@ -121,11 +149,24 @@ Status LogRecordCodec::Decode(const Slice& input,
   if (type == LogRecordType::kDelete && value_size != 0) {
     return Status::Corruption("delete log record contains unexpected value");
   }
+  if (type == LogRecordType::kPutWithTTL && value_size < sizeof(uint64_t)) {
+    return Status::Corruption("ttl log record is missing expiry");
+  }
 
   record->type = type;
   record->seq = seq;
   record->key.assign(key_ptr, key_size);
-  record->value.assign(value_ptr, value_size);
+  record->expires_at_ms = 0;
+  if (type == LogRecordType::kPutWithTTL) {
+    record->expires_at_ms = DecodeFixed64(value_ptr);
+    if (record->expires_at_ms == 0) {
+      return Status::Corruption("ttl log record contains zero expiry");
+    }
+    record->value.assign(value_ptr + sizeof(uint64_t),
+                         value_size - sizeof(uint64_t));
+  } else {
+    record->value.assign(value_ptr, value_size);
+  }
 
   if (bytes_consumed != nullptr) {
     *bytes_consumed = total_size;

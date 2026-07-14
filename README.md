@@ -22,6 +22,7 @@ production database.
 - Optimistic transactions with read/write conflict detection.
 - Write batches.
 - LRU, LFU, and sharded LRU cache implementations with TTL support.
+- Data-level TTL commands and APIs: `EXPIRE`, `TTL`, and `PERSIST`.
 - TCP command server with Redis-like RESP responses.
 - CLI and admin utilities.
 - Experimental Raft node/server integration for replicated writes.

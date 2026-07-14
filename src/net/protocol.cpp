@@ -6,6 +6,10 @@ std::string SimpleString(const std::string &s) {
     return "+" + s + "\r\n";
 }
 
+std::string Integer(int64_t value) {
+    return ":" + std::to_string(value) + "\r\n";
+}
+
 std::string Error (const std::string & msg){
     return "-ERR" + msg + "\r\n";
 }

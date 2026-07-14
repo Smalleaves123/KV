@@ -51,6 +51,9 @@ std::string Session::HandleCommand(const Command& cmd) {
     case CommandType::kGet:
     case CommandType::kSet:
     case CommandType::kDel:
+    case CommandType::kExpire:
+    case CommandType::kTTL:
+    case CommandType::kPersist:
     case CommandType::kMGet:
     case CommandType::kInfo:
     case CommandType::kStats:

@@ -44,14 +44,15 @@ Subsystems:
 
 ## Write Path
 
-For `Put`, `Delete`, and `WriteBatch`:
+For `Put`, `Delete`, `EXPIRE`, `PERSIST`, and `WriteBatch`:
 
 1. Validate the DB is open and the key is non-empty.
 2. Allocate the next sequence number.
 3. Append a record to the WAL.
 4. Optionally sync the WAL if `WriteOptions::sync` or
    `DBOptions::sync_on_write` is enabled.
-5. Apply the versioned record to the memtable.
+5. Apply the versioned record to the memtable. TTL writes carry an absolute
+   expiry timestamp on the value version.
 6. Update the latest-key sequence index used by optimistic transactions.
 7. Flush the memtable when `memtable_write_buffer_size` is reached.
 8. Optionally run compaction after a flush.
@@ -75,6 +76,10 @@ For `Get`:
    cached by key.
 
 Deletes are represented as tombstones. A visible tombstone returns `NotFound`.
+Expired value versions also return `NotFound`; the expiry check uses wall-clock
+time after sequence visibility is resolved. TTL changes are represented as new
+value versions, so snapshots before `EXPIRE` or `PERSIST` retain their prior
+expiry state.
 
 ## Persistence
 
@@ -84,6 +89,11 @@ Durability uses three persistent structures:
 - SST files: immutable sorted files created by memtable flush and compaction.
 - Manifest: append-only metadata that records live SST files and their maximum
   sequence numbers.
+
+TTL metadata is backward-compatible on disk: legacy WAL records and SST values
+keep their original layout. TTL WAL records use a new record type, while SST
+values with an expiry use a small tagged value envelope. Legacy values are
+decoded unchanged.
 
 On open, the DB:
 
@@ -97,7 +107,7 @@ On open, the DB:
 ## Compaction
 
 Compaction merges SST files into one newer SST file. It keeps the newest version
-per key and preserves deletion tombstones needed to represent deletes. Manual
+per key, including its expiry metadata, and preserves deletion tombstones needed to represent deletes. Manual
 compaction is exposed through `DB::Compact()` and `kv_admin compact`.
 
 Automatic compaction can run after memtable flush when:

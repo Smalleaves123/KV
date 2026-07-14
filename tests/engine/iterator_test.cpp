@@ -1,10 +1,12 @@
 #include "kv/engine/db.h"
 
 #include <cstdlib>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -85,6 +87,21 @@ TEST(IteratorTest, SingleKey) {
 
   it->Next();
   EXPECT_FALSE(it->Valid());
+}
+
+TEST(IteratorTest, ExpiredKeysAreSkipped) {
+  auto db = OpenDB(MakeDBOptions("expired_keys"));
+  ASSERT_TRUE(db->Put(WriteOptions{}, "live", "1").ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "gone", "2").ok());
+  ASSERT_TRUE(db->Expire(WriteOptions{}, "gone", 1).ok());
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  auto it = db->NewIterator(ReadOptions{});
+  ASSERT_NE(it, nullptr);
+  it->SeekToFirst();
+  auto entries = CollectIterator(it.get());
+  ASSERT_EQ(entries.size(), 1U);
+  EXPECT_EQ(entries[0].first, "live");
 }
 
 TEST(IteratorTest, MultipleKeysOrdered) {

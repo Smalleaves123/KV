@@ -34,6 +34,8 @@ class TableBuilder {
   // type: 0 = value (put), 1 = deletion (delete)
   Status Add(const std::string& key, uint64_t seq, uint8_t type,
              const std::string& value);
+  Status Add(const std::string& key, uint64_t seq, uint8_t type,
+             uint64_t expires_at_ms, const std::string& value);
 
   // Finalize the file: flush last block, write filter/index/footer.
   Status Finish();

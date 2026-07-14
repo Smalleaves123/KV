@@ -28,6 +28,14 @@ TEST(CommandParserTest, ParsesCaseInsensitiveCommand) {
   EXPECT_EQ(cmd.args[2], "k3");
 }
 
+TEST(CommandParserTest, ParsesTTLCommands) {
+  EXPECT_EQ(CommandParser::ParseLine("EXPIRE key 10").type,
+            CommandType::kExpire);
+  EXPECT_EQ(CommandParser::ParseLine("ttl key").type, CommandType::kTTL);
+  EXPECT_EQ(CommandParser::ParseLine("PERSIST key").type,
+            CommandType::kPersist);
+}
+
 TEST(CommandParserTest, UnknownCommandIsInvalid) {
   Command cmd = CommandParser::ParseLine("NOOP a b");
   EXPECT_EQ(cmd.type, CommandType::kInvalid);

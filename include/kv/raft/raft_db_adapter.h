@@ -19,6 +19,11 @@ public:
              const Slice& value) override;
   Status Get(const ReadOptions& options, const Slice& key, std::string* value) override;
   Status Delete(const WriteOptions& options, const Slice& key) override;
+  Status Expire(const WriteOptions& options, const Slice& key,
+                int64_t ttl_seconds) override;
+  Status TTL(const ReadOptions& options, const Slice& key,
+             int64_t* ttl_seconds) override;
+  Status Persist(const WriteOptions& options, const Slice& key) override;
   Status Write(const WriteOptions& options, const WriteBatch& batch) override;
   Status BeginTransaction(const TxnOptions& options,
                           std::unique_ptr<Transaction>* txn) override;

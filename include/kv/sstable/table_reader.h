@@ -35,6 +35,9 @@ class TableReader {
              std::string* value) const;
   Status Get(const std::string& target, uint64_t read_seq, uint8_t* type,
              std::string* value, TableReadStatsDelta* stats) const;
+  Status Get(const std::string& target, uint64_t read_seq, uint8_t* type,
+             std::string* value, uint64_t* expires_at_ms,
+             TableReadStatsDelta* stats) const;
 
   // Maximum sequence number in this file.
   uint64_t MaxSequence() const noexcept { return max_seq_; }
@@ -84,6 +87,7 @@ class TableIterator {
   uint64_t seq() const noexcept;
   uint8_t type() const noexcept;
   const std::string& value() const noexcept;
+  uint64_t expires_at_ms() const noexcept;
 
  private:
   void LoadNextBlock();
@@ -100,6 +104,7 @@ class TableIterator {
   uint64_t current_seq_;
   uint8_t current_type_;
   std::string current_value_;
+  uint64_t current_expires_at_ms_;
   bool valid_;
 };
 

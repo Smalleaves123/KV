@@ -20,6 +20,7 @@ struct MemTableEntry {
   std::string key;
   std::string value;
   uint64_t seq = 0;
+  uint64_t expires_at_ms = 0;
   RecordType type = RecordType::kValue;
 };
 
@@ -71,6 +72,8 @@ class MemTable {
 
   Status Put(const Slice& key, const Slice& value);
   Status Put(uint64_t seq, const Slice& key, const Slice& value);
+  Status Put(uint64_t seq, const Slice& key, const Slice& value,
+             uint64_t expires_at_ms);
 
   Status Delete(const Slice& key);
   Status Delete(uint64_t seq, const Slice& key);
@@ -94,7 +97,8 @@ class MemTable {
   Status Add(uint64_t seq,
              RecordType type,
              const Slice& key,
-             const Slice& value);
+             const Slice& value,
+             uint64_t expires_at_ms);
 
   uint64_t AcquireSequence();
 

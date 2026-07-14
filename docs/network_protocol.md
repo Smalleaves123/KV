@@ -108,6 +108,34 @@ DEL key
 
 Stores a tombstone for the key. Deleting a missing key still returns `OK`.
 
+### EXPIRE
+
+```text
+EXPIRE key seconds
+```
+
+Sets a data-level wall-clock expiry. The response is `:1` when the key exists
+and the expiry is applied, or `:0` when the key is missing. A non-positive
+value deletes the key, matching the immediate-expiry behavior.
+
+### TTL
+
+```text
+TTL key
+```
+
+Returns an integer response: remaining whole seconds, `:-1` for a persistent
+key, or `:-2` for a missing/expired key.
+
+### PERSIST
+
+```text
+PERSIST key
+```
+
+Removes the data-level expiry. Returns `:1` when the key exists and `:0` when
+it is missing.
+
 ### MGET
 
 ```text
@@ -208,6 +236,7 @@ Inside a transaction:
 
 - `SET` and `DEL` are staged.
 - `GET` sees staged writes first.
+- TTL commands are currently not staged inside transactions.
 - `EXEC` validates and commits.
 - `ABORT` discards staged writes.
 
@@ -229,6 +258,9 @@ These are printed periodically by `kv_server` health logs.
 When Raft is enabled:
 
 - writes are proposed through Raft and must be sent to the leader;
+- `EXPIRE` and `PERSIST` are replicated as logical expiry operations;
+- expiry timestamps are computed by the leader before proposal so replicas do
+  not independently choose different deadlines;
 - reads require the node to be leader and pass a linearizable read barrier;
 - write batches and transactions are not supported by the Raft wrapper.
 

@@ -22,25 +22,31 @@ uint64_t MemTable::AcquireSequence() {
 }
 
 Status MemTable::Put(const Slice& key, const Slice& value) {
-  return Add(AcquireSequence(), RecordType::kValue, key, value);
+  return Put(AcquireSequence(), key, value, 0);
 }
 
 Status MemTable::Put(uint64_t seq, const Slice& key, const Slice& value) {
-  return Add(seq, RecordType::kValue, key, value);
+  return Put(seq, key, value, 0);
+}
+
+Status MemTable::Put(uint64_t seq, const Slice& key, const Slice& value,
+                     uint64_t expires_at_ms) {
+  return Add(seq, RecordType::kValue, key, value, expires_at_ms);
 }
 
 Status MemTable::Delete(const Slice& key) {
-  return Add(AcquireSequence(), RecordType::kDeletion, key, Slice());
+  return Delete(AcquireSequence(), key);
 }
 
 Status MemTable::Delete(uint64_t seq, const Slice& key) {
-  return Add(seq, RecordType::kDeletion, key, Slice());
+  return Add(seq, RecordType::kDeletion, key, Slice(), 0);
 }
 
 Status MemTable::Add(uint64_t seq,
                      RecordType type,
                      const Slice& key,
-                     const Slice& value) {
+                     const Slice& value,
+                     uint64_t expires_at_ms) {
   if (seq == 0) {
     return Status::InvalidArgument("sequence must be greater than 0");
   }
@@ -49,6 +55,7 @@ Status MemTable::Add(uint64_t seq,
   entry.key = key.ToString();
   entry.value = value.ToString();
   entry.seq = seq;
+  entry.expires_at_ms = expires_at_ms;
   entry.type = type;
 
   memory_usage_ += sizeof(MemTableEntry);
@@ -106,6 +113,7 @@ std::string MemTable::DebugString() const {
     const auto& e = it.key();
     oss << "[key=" << e.key << ", seq=" << e.seq << ", type="
         << (e.type == RecordType::kValue ? "put" : "del")
+        << ", expires_at_ms=" << e.expires_at_ms
         << ", value=" << e.value << "]\n";
     it.Next();
   }

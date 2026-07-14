@@ -209,6 +209,30 @@ std::string EncodePutCmd(const std::string& key, const std::string& value) {
   return cmd;
 }
 
+std::string EncodePutWithExpiryCmd(const std::string& key,
+                                   const std::string& value,
+                                   uint64_t expires_at_ms) {
+  std::string cmd;
+  cmd.reserve(1 + 4 + key.size() + 4 + value.size() + 8);
+  cmd.push_back('T');
+  PushBE32(&cmd, static_cast<uint32_t>(key.size()));
+  cmd.append(key);
+  PushBE32(&cmd, static_cast<uint32_t>(value.size()));
+  cmd.append(value);
+  PushBE64(&cmd, expires_at_ms);
+  return cmd;
+}
+
+std::string EncodeExpireCmd(const std::string& key, uint64_t expires_at_ms) {
+  std::string cmd;
+  cmd.reserve(1 + 4 + key.size() + 8);
+  cmd.push_back('E');
+  PushBE32(&cmd, static_cast<uint32_t>(key.size()));
+  cmd.append(key);
+  PushBE64(&cmd, expires_at_ms);
+  return cmd;
+}
+
 std::string EncodeDelCmd(const std::string& key) {
   std::string cmd;
   cmd.reserve(1 + 4 + key.size());
@@ -223,16 +247,17 @@ std::string EncodeNoopCmd() {
 }
 
 bool DecodeCmd(const std::string& data, char* op, std::string* key,
-               std::string* value) {
+               std::string* value, uint64_t* expires_at_ms) {
   if (data.empty()) return false;
 
   *op = data[0];
+  if (expires_at_ms != nullptr) *expires_at_ms = 0;
   if (*op == 'N') {
     key->clear();
     value->clear();
     return data.size() == 1;
   }
-  if (*op != 'S' && *op != 'D') return false;
+  if (*op != 'S' && *op != 'D' && *op != 'T' && *op != 'E') return false;
 
   if (data.size() < 5) return false;
   uint32_t key_len = PopBE32(data.data() + 1);
@@ -240,13 +265,23 @@ bool DecodeCmd(const std::string& data, char* op, std::string* key,
 
   key->assign(data.data() + 5, key_len);
 
-  if (*op == 'S') {
+  if (*op == 'E') {
+    const char* ep = data.data() + 5 + key_len;
+    if (ep + 8 > data.data() + data.size()) return false;
+    value->clear();
+    if (expires_at_ms != nullptr) *expires_at_ms = PopBE64(ep);
+  } else if (*op == 'S' || *op == 'T') {
     const char* vp = data.data() + 5 + key_len;
     if (vp + 4 > data.data() + data.size()) return false;
     uint32_t value_len = PopBE32(vp);
     vp += 4;
     if (vp + value_len > data.data() + data.size()) return false;
     value->assign(vp, value_len);
+    if (*op == 'T') {
+      const char* ep = vp + value_len;
+      if (ep + 8 > data.data() + data.size()) return false;
+      if (expires_at_ms != nullptr) *expires_at_ms = PopBE64(ep);
+    }
   } else {
     value->clear();
   }

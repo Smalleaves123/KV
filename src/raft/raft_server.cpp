@@ -247,7 +247,8 @@ void RaftServer::ApplyCommitted() {
 
     char op = 0;
     std::string key, value;
-    if (!raft::DecodeCmd(data, &op, &key, &value)) {
+    uint64_t expires_at_ms = 0;
+    if (!raft::DecodeCmd(data, &op, &key, &value, &expires_at_ms)) {
       std::lock_guard<std::mutex> lk(apply_mu_);
       applied_results_[last_applied_] =
           Status::Corruption("failed to decode committed raft command");
@@ -258,6 +259,11 @@ void RaftServer::ApplyCommitted() {
     Status apply_status = Status::Corruption("unsupported raft command");
     if (op == 'S') {
       apply_status = applier_->ApplyPut(key, value);
+    } else if (op == 'T') {
+      apply_status =
+          applier_->ApplyPutWithExpiry(key, value, expires_at_ms);
+    } else if (op == 'E') {
+      apply_status = applier_->ApplyExpireAt(key, expires_at_ms);
     } else if (op == 'D') {
       apply_status = applier_->ApplyDelete(key);
     } else if (op == 'N') {

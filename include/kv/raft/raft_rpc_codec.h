@@ -55,16 +55,25 @@ bool DecodeAppendEntriesReply(const char* data, size_t len,
 // Encode a Put command: 'S' + key_len(4 BE) + key + value_len(4 BE) + value
 std::string EncodePutCmd(const std::string& key, const std::string& value);
 
+// Encode a Put with an absolute wall-clock expiry (0 means persistent).
+std::string EncodePutWithExpiryCmd(const std::string& key,
+                                   const std::string& value,
+                                   uint64_t expires_at_ms);
+
+// Encode a logical expiry update. The value is read at apply time on each
+// replica; zero clears the expiry.
+std::string EncodeExpireCmd(const std::string& key, uint64_t expires_at_ms);
+
 // Encode a Delete command: 'D' + key_len(4 BE) + key
 std::string EncodeDelCmd(const std::string& key);
 
 // Encode a no-op barrier command: 'N'
 std::string EncodeNoopCmd();
 
-// Decode a command.  Sets *op ('S', 'D', or 'N'), *key, *value.
+// Decode a command. Sets *op ('S', 'D', 'T', 'E', or 'N'), *key, *value.
 // Returns false on parse error.
 bool DecodeCmd(const std::string& data, char* op, std::string* key,
-               std::string* value);
+               std::string* value, uint64_t* expires_at_ms = nullptr);
 
 // ---- I/O helpers (handle EINTR, short reads/writes) ----
 

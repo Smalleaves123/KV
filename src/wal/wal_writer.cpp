@@ -177,6 +177,18 @@ Status WALWriter::AppendPut(uint64_t seq, const Slice& key, const Slice& value) 
   return Append(record);
 }
 
+Status WALWriter::AppendPutWithTTL(uint64_t seq, const Slice& key,
+                                   const Slice& value,
+                                   uint64_t expires_at_ms) {
+  LogRecord record;
+  record.type = LogRecordType::kPutWithTTL;
+  record.seq = seq;
+  record.key = key.ToString();
+  record.value = value.ToString();
+  record.expires_at_ms = expires_at_ms;
+  return Append(record);
+}
+
 Status WALWriter::AppendDelete(uint64_t seq, const Slice& key) {
   LogRecord record;
   record.type = LogRecordType::kDelete;

@@ -6,6 +6,7 @@
 #include "kv/sstable/block.h"
 #include "kv/sstable/block_iterator.h"
 #include "kv/sstable/footer.h"
+#include "kv/sstable/value_codec.h"
 
 namespace kv {
 
@@ -99,14 +100,24 @@ Status TableReader::Init() {
 
 Status TableReader::Get(const std::string& target, uint64_t read_seq,
                         uint8_t* type, std::string* value) const {
-  return Get(target, read_seq, type, value, nullptr);
+  return Get(target, read_seq, type, value, nullptr, nullptr);
 }
 
 Status TableReader::Get(const std::string& target, uint64_t read_seq,
                         uint8_t* type, std::string* value,
                         TableReadStatsDelta* stats) const {
+  return Get(target, read_seq, type, value, nullptr, stats);
+}
+
+Status TableReader::Get(const std::string& target, uint64_t read_seq,
+                        uint8_t* type, std::string* value,
+                        uint64_t* expires_at_ms,
+                        TableReadStatsDelta* stats) const {
   if (type == nullptr || value == nullptr) {
     return Status::InvalidArgument("output pointer is null");
+  }
+  if (expires_at_ms != nullptr) {
+    *expires_at_ms = 0;
   }
 
   // Bloom filter check
@@ -160,7 +171,8 @@ Status TableReader::Get(const std::string& target, uint64_t read_seq,
       if (it.seq() <= read_seq) {
         *type = it.type();
         if (it.type() == 0) {
-          *value = std::string(it.value());
+          const std::string encoded_value(it.value());
+          DecodeSSTValue(encoded_value, value, expires_at_ms);
           return Status::OK();
         }
         // type == 1: deletion tombstone
@@ -195,6 +207,7 @@ TableIterator::TableIterator(const TableReader& reader)
       current_seq_(0),
       current_type_(0),
       current_value_(),
+      current_expires_at_ms_(0),
       valid_(false) {}
 
 void TableIterator::SeekToFirst() {
@@ -255,7 +268,9 @@ void TableIterator::Seek(const std::string& target) {
       current_key_ = std::string(it.key());
       current_seq_ = it.seq();
       current_type_ = it.type();
-      current_value_ = std::string(it.value());
+      const std::string encoded_value(it.value());
+      DecodeSSTValue(encoded_value, &current_value_,
+                     &current_expires_at_ms_);
       block_ptr_ = block_data_.data();
       block_end_ = block_data_.data() + block_data_.size();
       valid_ = true;
@@ -296,7 +311,8 @@ void TableIterator::LoadNextBlock() {
   current_key_ = std::string(it.key());
   current_seq_ = it.seq();
   current_type_ = it.type();
-  current_value_ = std::string(it.value());
+  const std::string encoded_value(it.value());
+  DecodeSSTValue(encoded_value, &current_value_, &current_expires_at_ms_);
 
   // Set up for Next() to find the next entry
   block_ptr_ = block_data_.data();
@@ -331,7 +347,9 @@ void TableIterator::Next() {
     current_key_ = std::string(it.key());
     current_seq_ = it.seq();
     current_type_ = it.type();
-    current_value_ = std::string(it.value());
+    const std::string encoded_value(it.value());
+    DecodeSSTValue(encoded_value, &current_value_,
+                   &current_expires_at_ms_);
     return;
   }
 
@@ -358,6 +376,10 @@ uint8_t TableIterator::type() const noexcept {
 
 const std::string& TableIterator::value() const noexcept {
   return current_value_;
+}
+
+uint64_t TableIterator::expires_at_ms() const noexcept {
+  return current_expires_at_ms_;
 }
 
 }  // namespace kv

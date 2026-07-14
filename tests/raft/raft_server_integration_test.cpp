@@ -11,6 +11,7 @@
 #include "gtest/gtest.h"
 #include "kv/engine/db.h"
 #include "kv/engine/write_applier.h"
+#include "kv/common/time.h"
 #include "kv/raft/raft_rpc_codec.h"
 
 namespace kv {
@@ -147,6 +148,41 @@ TEST_F(RaftServerIntegrationTest, LeaderReplicatesCommittedWriteToAllNodes) {
       },
       std::chrono::seconds(5)))
       << "replicated value did not become visible on all nodes";
+
+  ASSERT_TRUE(leader->Propose(raft::EncodePutCmd("ttl-key", "ttl-value")).ok());
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          std::string value;
+          if (!node.db->Get(ReadOptions{}, "ttl-key", &value).ok() ||
+              value != "ttl-value") {
+            return false;
+          }
+        }
+        return true;
+      },
+      std::chrono::seconds(5)));
+
+  ASSERT_TRUE(leader->Propose(raft::EncodeExpireCmd(
+                                 "ttl-key", NowUnixMillis() + 1000))
+                  .ok());
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          int64_t ttl = -2;
+          if (!node.db->TTL(ReadOptions{}, "ttl-key", &ttl).ok() || ttl < 0) {
+            return false;
+          }
+        }
+        return true;
+      },
+      std::chrono::seconds(5)));
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+  for (auto& node : nodes_) {
+    std::string value;
+    EXPECT_TRUE(node.db->Get(ReadOptions{}, "ttl-key", &value).IsNotFound());
+  }
 }
 
 }  // namespace

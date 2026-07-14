@@ -4,6 +4,7 @@
 
 #include "kv/sstable/block_builder.h"
 #include "kv/sstable/footer.h"
+#include "kv/sstable/value_codec.h"
 
 namespace kv {
 
@@ -38,6 +39,12 @@ TableBuilder::~TableBuilder() {
 
 Status TableBuilder::Add(const std::string& key, uint64_t seq, uint8_t type,
                          const std::string& value) {
+  return Add(key, seq, type, 0, value);
+}
+
+Status TableBuilder::Add(const std::string& key, uint64_t seq, uint8_t type,
+                         uint64_t expires_at_ms,
+                         const std::string& value) {
   if (finished_) {
     return Status::AlreadyExists("table builder already finished");
   }
@@ -48,7 +55,7 @@ Status TableBuilder::Add(const std::string& key, uint64_t seq, uint8_t type,
     return Status::InvalidArgument("keys must be added in ascending order");
   }
 
-  data_block_->Add(key, seq, type, value);
+  data_block_->Add(key, seq, type, EncodeSSTValue(value, expires_at_ms));
   filter_builder_.AddKey(key);
   max_seq_ = std::max(max_seq_, seq);
   last_key_ = key;

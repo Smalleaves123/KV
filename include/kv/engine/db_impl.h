@@ -40,6 +40,11 @@ class DBImpl final : public DB, public WriteApplier {
 
   Status Delete(const WriteOptions& options,
                 const Slice& key) override;
+  Status Expire(const WriteOptions& options, const Slice& key,
+                int64_t ttl_seconds) override;
+  Status TTL(const ReadOptions& options, const Slice& key,
+             int64_t* ttl_seconds) override;
+  Status Persist(const WriteOptions& options, const Slice& key) override;
 
   Status Write(const WriteOptions& options, const WriteBatch& batch) override;
   Status BeginTransaction(const TxnOptions& options,
@@ -67,6 +72,10 @@ class DBImpl final : public DB, public WriteApplier {
   Status ApplyPut(const std::string& key,
                   const std::string& value) override;
   Status ApplyDelete(const std::string& key) override;
+  Status ApplyPutWithExpiry(const std::string& key, const std::string& value,
+                            uint64_t expires_at_ms) override;
+  Status ApplyExpireAt(const std::string& key,
+                       uint64_t expires_at_ms) override;
 
   bool is_open() const noexcept;
   uint64_t LatestSequence() const noexcept;
@@ -77,6 +86,9 @@ class DBImpl final : public DB, public WriteApplier {
                   const WriteOptions& options,
                   const Slice& key,
                   const Slice& value);
+  Status ApplyPutWithExpiry(uint64_t seq, const WriteOptions& options,
+                            const Slice& key, const Slice& value,
+                            uint64_t expires_at_ms);
 
   Status ApplyDelete(uint64_t seq,
                      const WriteOptions& options,
@@ -89,13 +101,17 @@ class DBImpl final : public DB, public WriteApplier {
   Status FlushMemTableToSST(std::string* out_file);
   Status GetFromMemTableAt(const Slice& key,
                            uint64_t read_seq,
-                           std::string* value) const;
+                           std::string* value,
+                           uint64_t* expires_at_ms = nullptr,
+                           bool* has_visible_version = nullptr) const;
   Status GetFromSSTFilesAt(const Slice& key,
                            uint64_t read_seq,
-                           std::string* value) const;
+                           std::string* value,
+                           uint64_t* expires_at_ms = nullptr) const;
   Status GetAtSequence(const Slice& key,
                        uint64_t read_seq,
-                       std::string* value) const;
+                       std::string* value,
+                       uint64_t* expires_at_ms = nullptr) const;
   void InvalidateCacheEntry(const std::string& key) const;
   Status LoadSSTFilesFromManifest(uint64_t* max_seq);
   Status LoadSSTFilesFromDir(uint64_t* max_seq);

@@ -43,6 +43,9 @@ Command CommandParser::ParseTokens(const std::vector<std::string>& tokens) {
   else if (head == "GET") cmd.type = CommandType::kGet;
   else if (head == "SET") cmd.type = CommandType::kSet;
   else if (head == "DEL") cmd.type = CommandType::kDel;
+  else if (head == "EXPIRE") cmd.type = CommandType::kExpire;
+  else if (head == "TTL") cmd.type = CommandType::kTTL;
+  else if (head == "PERSIST") cmd.type = CommandType::kPersist;
   else if (head == "MGET") cmd.type = CommandType::kMGet;
   else if (head == "INFO") cmd.type = CommandType::kInfo;
   else if (head == "STATS") cmd.type = CommandType::kStats;

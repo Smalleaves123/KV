@@ -36,6 +36,15 @@ bool ParseSizeT(const std::string& text, size_t* value) {
   return true;
 }
 
+bool ParseInt64(const std::string& text, int64_t* value) {
+  if (value == nullptr || text.empty()) return false;
+  char* end = nullptr;
+  const long long parsed = std::strtoll(text.c_str(), &end, 10);
+  if (end == nullptr || *end != '\0') return false;
+  *value = static_cast<int64_t>(parsed);
+  return true;
+}
+
 std::string NodeToLine(const NodeInfo& node) {
   std::ostringstream oss;
   oss << "id=" << node.id
@@ -200,6 +209,40 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
       Status s = db_->Delete(WriteOptions{}, cmd.args[0]);
       if (!s.ok() && !s.IsNotFound()) return Error(s.ToString());
       return SimpleString("OK");
+    }
+
+    case CommandType::kExpire: {
+      if (cmd.args.size() != 2) {
+        return Error("wrong number of arguments for 'EXPIRE'");
+      }
+      int64_t seconds = 0;
+      if (!ParseInt64(cmd.args[1], &seconds)) {
+        return Error("invalid TTL value for 'EXPIRE'");
+      }
+      Status s = db_->Expire(WriteOptions{}, cmd.args[0], seconds);
+      if (s.ok()) return Integer(1);
+      if (s.IsNotFound()) return Integer(0);
+      return Error(s.ToString());
+    }
+
+    case CommandType::kTTL: {
+      if (cmd.args.size() != 1) {
+        return Error("wrong number of arguments for 'TTL'");
+      }
+      int64_t seconds = -2;
+      Status s = db_->TTL(ReadOptions{}, cmd.args[0], &seconds);
+      if (!s.ok()) return Error(s.ToString());
+      return Integer(seconds);
+    }
+
+    case CommandType::kPersist: {
+      if (cmd.args.size() != 1) {
+        return Error("wrong number of arguments for 'PERSIST'");
+      }
+      Status s = db_->Persist(WriteOptions{}, cmd.args[0]);
+      if (s.ok()) return Integer(1);
+      if (s.IsNotFound()) return Integer(0);
+      return Error(s.ToString());
     }
 
     case CommandType::kMGet: {

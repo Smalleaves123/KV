@@ -29,6 +29,15 @@ engine into a more complete storage-system project.
 
 ## Storage Engine
 
+### Data TTL
+
+- `DB::Expire`, `DB::TTL`, and `DB::Persist` are implemented for local and
+  Raft-backed DB access.
+- TTL is persisted through WAL replay and compatible SST value envelopes.
+- Reads, snapshots, iterators, scans, and compaction preserve TTL semantics.
+- A future background expiry reaper can add physical tombstone cleanup without
+  changing the logical read behavior.
+
 ### WAL
 
 - WAL segment rotation.

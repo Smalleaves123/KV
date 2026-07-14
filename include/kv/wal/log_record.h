@@ -12,6 +12,7 @@ namespace kv {
 enum class LogRecordType : uint8_t {
   kPut = 0,
   kDelete = 1,
+  kPutWithTTL = 2,
 };
 
 struct LogRecord {
@@ -19,6 +20,7 @@ struct LogRecord {
   uint64_t seq = 0;
   std::string key;
   std::string value;
+  uint64_t expires_at_ms = 0;
 };
 
 class LogRecordCodec {
@@ -37,4 +39,4 @@ class LogRecordCodec {
   static uint32_t ComputeChecksum(const char* data, size_t size);
 };
 
-}  
+}

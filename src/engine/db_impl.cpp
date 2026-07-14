@@ -16,11 +16,13 @@
 #include <vector>
 
 #include "kv/engine/recovery.h"
+#include "kv/common/time.h"
 #include "kv/sstable/block.h"
 #include "kv/sstable/block_iterator.h"
 #include "kv/sstable/table_builder.h"
 #include "kv/sstable/table_cache.h"
 #include "kv/sstable/table_reader.h"
+#include "kv/sstable/value_codec.h"
 #include "kv/table/bloom_filter.h"
 #include "kv/table/table_index.h"
 
@@ -49,6 +51,7 @@ Status RequireOpen(bool is_open) {
 struct CompactionEntry {
   uint64_t seq = 0;
   uint8_t type = 0;  // 0 = value, 1 = deletion
+  uint64_t expires_at_ms = 0;
   std::string value;
 };
 
@@ -217,6 +220,40 @@ Status DBImpl::ApplyDelete(const std::string& key) {
   return MaybeFlushMemTable();
 }
 
+Status DBImpl::ApplyPutWithExpiry(const std::string& key,
+                                  const std::string& value,
+                                  uint64_t expires_at_ms) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) return open_status;
+  Status s = ValidateKey(Slice(key));
+  if (!s.ok()) return s;
+  s = ApplyPutWithExpiry(next_seq_, WriteOptions{}, Slice(key), Slice(value),
+                         expires_at_ms);
+  if (!s.ok()) return s;
+  ++next_seq_;
+  return MaybeFlushMemTable();
+}
+
+Status DBImpl::ApplyExpireAt(const std::string& key, uint64_t expires_at_ms) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) return open_status;
+  Status s = ValidateKey(Slice(key));
+  if (!s.ok()) return s;
+
+  std::string value;
+  s = GetAtSequence(Slice(key), std::numeric_limits<uint64_t>::max(), &value);
+  if (!s.ok()) return s;
+  s = ApplyPutWithExpiry(next_seq_, WriteOptions{}, Slice(key), Slice(value),
+                         expires_at_ms);
+  if (!s.ok()) return s;
+  ++next_seq_;
+  return MaybeFlushMemTable();
+}
+
 Status DBImpl::Get(const ReadOptions& options,
                    const Slice& key,
                    std::string* value) {
@@ -243,11 +280,17 @@ Status DBImpl::Get(const ReadOptions& options,
 
   const uint64_t read_seq = ResolveReadSequence(options);
 
-  Status s = GetFromMemTableAt(key, read_seq, value);
+  uint64_t mem_expires_at_ms = 0;
+  bool mem_has_visible_version = false;
+  Status s = GetFromMemTableAt(key, read_seq, value, &mem_expires_at_ms,
+                               &mem_has_visible_version);
   if (s.ok()) {
     return s;
   }
   if (!s.IsNotFound()) {
+    return s;
+  }
+  if (mem_has_visible_version) {
     return s;
   }
 
@@ -281,6 +324,96 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
   }
 
   return Status::OK();
+}
+
+Status DBImpl::Expire(const WriteOptions& options, const Slice& key,
+                      int64_t ttl_seconds) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) return open_status;
+  Status validate_status = ValidateKey(key);
+  if (!validate_status.ok()) return validate_status;
+
+  std::string value;
+  Status s = GetAtSequence(key, std::numeric_limits<uint64_t>::max(), &value);
+  if (!s.ok()) return s;
+
+  const uint64_t seq = next_seq_;
+  if (ttl_seconds <= 0) {
+    s = ApplyDelete(seq, options, key);
+  } else {
+    if (static_cast<uint64_t>(ttl_seconds) >
+        std::numeric_limits<uint64_t>::max() / 1000ULL) {
+      return Status::InvalidArgument("ttl is too large");
+    }
+    const uint64_t ttl_ms = static_cast<uint64_t>(ttl_seconds) * 1000ULL;
+    const uint64_t now_ms = NowUnixMillis();
+    if (ttl_ms > std::numeric_limits<uint64_t>::max() - now_ms) {
+      return Status::InvalidArgument("ttl is too large");
+    }
+    s = ApplyPutWithExpiry(seq, options, key, Slice(value), now_ms + ttl_ms);
+  }
+  if (!s.ok()) return s;
+
+  ++next_seq_;
+  return MaybeFlushMemTable();
+}
+
+Status DBImpl::TTL(const ReadOptions& options, const Slice& key,
+                   int64_t* ttl_seconds) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) return open_status;
+  if (ttl_seconds == nullptr) {
+    return Status::InvalidArgument("ttl output pointer is null");
+  }
+  Status validate_status = ValidateKey(key);
+  if (!validate_status.ok()) return validate_status;
+  Status snapshot_status = ValidateSnapshot(options.snapshot);
+  if (!snapshot_status.ok()) return snapshot_status;
+
+  std::string value;
+  uint64_t expires_at_ms = 0;
+  const uint64_t read_seq = ResolveReadSequence(options);
+  Status s = GetAtSequence(key, read_seq, &value, &expires_at_ms);
+  if (!s.ok()) {
+    if (s.IsNotFound()) *ttl_seconds = -2;
+    return s.IsNotFound() ? Status::OK() : s;
+  }
+
+  if (expires_at_ms == 0) {
+    *ttl_seconds = -1;
+    return Status::OK();
+  }
+
+  const uint64_t now_ms = NowUnixMillis();
+  *ttl_seconds = IsExpired(expires_at_ms, now_ms)
+                     ? -2
+                     : static_cast<int64_t>((expires_at_ms - now_ms) / 1000ULL);
+  return Status::OK();
+}
+
+Status DBImpl::Persist(const WriteOptions& options, const Slice& key) {
+  std::lock_guard<std::mutex> lk(mu_);
+
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) return open_status;
+  Status validate_status = ValidateKey(key);
+  if (!validate_status.ok()) return validate_status;
+
+  std::string value;
+  uint64_t expires_at_ms = 0;
+  Status s = GetAtSequence(key, std::numeric_limits<uint64_t>::max(), &value,
+                           &expires_at_ms);
+  if (!s.ok()) return s;
+  if (expires_at_ms == 0) return Status::OK();
+
+  s = ApplyPutWithExpiry(next_seq_, options, key, Slice(value), 0);
+  if (!s.ok()) return s;
+  ++next_seq_;
+  return MaybeFlushMemTable();
 }
 
 Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
@@ -571,6 +704,25 @@ Status DBImpl::ApplyPut(uint64_t seq,
   return Status::OK();
 }
 
+Status DBImpl::ApplyPutWithExpiry(uint64_t seq, const WriteOptions& options,
+                                  const Slice& key, const Slice& value,
+                                  uint64_t expires_at_ms) {
+  if (expires_at_ms == 0) {
+    return ApplyPut(seq, options, key, value);
+  }
+
+  Status s = wal_writer_.AppendPutWithTTL(seq, key, value, expires_at_ms);
+  if (!s.ok()) return s;
+  s = memtable_.Put(seq, key, value, expires_at_ms);
+  if (!s.ok()) return s;
+  InvalidateCacheEntry(key.ToString());
+  latest_key_seq_[key.ToString()] = seq;
+  if (ShouldSync(options)) {
+    return wal_writer_.Sync();
+  }
+  return Status::OK();
+}
+
 Status DBImpl::ApplyDelete(uint64_t seq,
                            const WriteOptions& options,
                            const Slice& key) {
@@ -686,7 +838,8 @@ Status DBImpl::FlushMemTableToSST(std::string* out_file) {
     max_flushed_seq = std::max(max_flushed_seq, entry.seq);
 
     uint8_t type = (entry.type == RecordType::kDeletion) ? 1 : 0;
-    Status s = builder.Add(entry.key, entry.seq, type, entry.value);
+    Status s = builder.Add(entry.key, entry.seq, type, entry.expires_at_ms,
+                           entry.value);
     if (!s.ok()) {
       return s;
     }
@@ -720,8 +873,11 @@ Status DBImpl::FlushMemTableToSST(std::string* out_file) {
 
 Status DBImpl::GetFromMemTableAt(const Slice& key,
                                  uint64_t read_seq,
-                                 std::string* value) const {
+                                 std::string* value,
+                                 uint64_t* expires_at_ms,
+                                 bool* has_visible_version) const {
   const std::string target = key.ToString();
+  if (has_visible_version != nullptr) *has_visible_version = false;
   auto it = memtable_.NewIterator();
   it.Seek(key);
 
@@ -732,8 +888,15 @@ Status DBImpl::GetFromMemTableAt(const Slice& key,
     }
 
     if (entry.seq <= read_seq) {
+      if (has_visible_version != nullptr) *has_visible_version = true;
       if (entry.type == RecordType::kDeletion) {
         return Status::NotFound("key deleted");
+      }
+      if (expires_at_ms != nullptr) {
+        *expires_at_ms = entry.expires_at_ms;
+      }
+      if (IsExpired(entry.expires_at_ms, NowUnixMillis())) {
+        return Status::NotFound("key expired");
       }
       *value = entry.value;
       return Status::OK();
@@ -747,7 +910,8 @@ Status DBImpl::GetFromMemTableAt(const Slice& key,
 
 Status DBImpl::GetFromSSTFilesAt(const Slice& key,
                                  uint64_t read_seq,
-                                 std::string* value) const {
+                                 std::string* value,
+                                 uint64_t* expires_at_ms) const {
   const std::string target = key.ToString();
   const bool allow_cache =
       cache_ != nullptr && read_seq == std::numeric_limits<uint64_t>::max();
@@ -755,6 +919,7 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
   // Check in-memory key-value cache first
   if (allow_cache) {
     if (cache_->Get(target, value)) {
+      if (expires_at_ms != nullptr) *expires_at_ms = 0;
       return Status::OK();
     }
   }
@@ -771,8 +936,10 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
     }
 
     uint8_t entry_type = 0;
+    uint64_t entry_expires_at_ms = 0;
     TableReadStatsDelta stats_delta;
-    s = reader->Get(target, read_seq, &entry_type, value, &stats_delta);
+    s = reader->Get(target, read_seq, &entry_type, value,
+                    &entry_expires_at_ms, &stats_delta);
     read_path_stats_.bloom_queries += stats_delta.bloom_queries;
     read_path_stats_.bloom_negatives += stats_delta.bloom_negatives;
     if (s.ok()) {
@@ -780,8 +947,14 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
         // deletion tombstone
         return Status::NotFound("key deleted");
       }
+      if (expires_at_ms != nullptr) *expires_at_ms = entry_expires_at_ms;
+      if (IsExpired(entry_expires_at_ms, NowUnixMillis())) {
+        return Status::NotFound("key expired");
+      }
       if (allow_cache) {
-        cache_->Put(target, *value);
+        if (entry_expires_at_ms == 0) {
+          cache_->Put(target, *value);
+        }
       }
       return Status::OK();
     }
@@ -799,7 +972,8 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
 
 Status DBImpl::GetAtSequence(const Slice& key,
                              uint64_t read_seq,
-                             std::string* value) const {
+                             std::string* value,
+                             uint64_t* expires_at_ms) const {
   Status validate_status = ValidateKey(key);
   if (!validate_status.ok()) {
     return validate_status;
@@ -808,14 +982,23 @@ Status DBImpl::GetAtSequence(const Slice& key,
     return Status::InvalidArgument("value output pointer is null");
   }
 
-  Status s = GetFromMemTableAt(key, read_seq, value);
+  uint64_t local_expires_at_ms = 0;
+  uint64_t* resolved_expires_at_ms =
+      expires_at_ms == nullptr ? &local_expires_at_ms : expires_at_ms;
+  *resolved_expires_at_ms = 0;
+  bool mem_has_visible_version = false;
+  Status s = GetFromMemTableAt(key, read_seq, value, resolved_expires_at_ms,
+                               &mem_has_visible_version);
   if (s.ok()) {
     return s;
   }
   if (!s.IsNotFound()) {
     return s;
   }
-  return GetFromSSTFilesAt(key, read_seq, value);
+  if (mem_has_visible_version) {
+    return s;
+  }
+  return GetFromSSTFilesAt(key, read_seq, value, expires_at_ms);
 }
 
 Status DBImpl::RebuildLatestKeySeqIndex() {
@@ -1168,7 +1351,8 @@ Status DBImpl::CompactSSTFilesLocked() {
           CompactionEntry entry;
           entry.seq = seq;
           entry.type = type;
-          entry.value = std::string(iter.value());
+          DecodeSSTValue(std::string(iter.value()), &entry.value,
+                         &entry.expires_at_ms);
           latest[k] = std::move(entry);
         }
       }
@@ -1191,7 +1375,8 @@ Status DBImpl::CompactSSTFilesLocked() {
 
   TableBuilder builder(sst_path);
   for (const auto& [key, entry] : latest) {
-    Status s = builder.Add(key, entry.seq, entry.type, entry.value);
+    Status s = builder.Add(key, entry.seq, entry.type, entry.expires_at_ms,
+                           entry.value);
     if (!s.ok()) {
       return s;
     }

@@ -35,6 +35,9 @@ Status Recovery::ReplayWAL(const std::string& wal_path,
     if (s.ok()) {
       if (record.type == LogRecordType::kPut) {
         s = memtable->Put(record.seq, record.key, record.value);
+      } else if (record.type == LogRecordType::kPutWithTTL) {
+        s = memtable->Put(record.seq, record.key, record.value,
+                          record.expires_at_ms);
       } else if (record.type == LogRecordType::kDelete) {
         s = memtable->Delete(record.seq, record.key);
       } else {

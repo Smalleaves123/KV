@@ -48,6 +48,7 @@ add_library(kv
   sstable/table_builder.cpp
   sstable/table_reader.cpp
   sstable/table_cache.cpp
+  sstable/value_codec.cpp
   table/bloom_filter.cpp
   raft/raft_log.cpp
   raft/raft_node.cpp

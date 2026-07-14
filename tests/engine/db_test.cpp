@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#include <chrono>
 #include <thread>
 #include <vector>
 
@@ -89,6 +90,68 @@ TEST(DBTest, PutGetDeleteWorks) {
   EXPECT_TRUE(s.IsNotFound());
 
   EXPECT_TRUE(db->Close().ok());
+}
+
+TEST(DBTest, DataTTLSupportsSnapshotsAndSSTRecovery) {
+  DBOptions options = MakeDBOptions("data_ttl");
+  options.memtable_write_buffer_size = 1;
+  options.auto_compaction_enabled = false;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "session", "value").ok());
+
+    const Snapshot* snapshot = db->GetSnapshot();
+    ASSERT_NE(snapshot, nullptr);
+    ASSERT_TRUE(db->Expire(WriteOptions{}, "session", 2).ok());
+
+    int64_t ttl = -2;
+    ASSERT_TRUE(db->TTL(ReadOptions{}, "session", &ttl).ok());
+    EXPECT_GE(ttl, 1);
+    EXPECT_LE(ttl, 2);
+
+    ReadOptions snapshot_options;
+    snapshot_options.snapshot = snapshot;
+    std::string value;
+    ASSERT_TRUE(db->Get(snapshot_options, "session", &value).ok());
+    EXPECT_EQ(value, "value");
+    ASSERT_TRUE(db->TTL(snapshot_options, "session", &ttl).ok());
+    EXPECT_EQ(ttl, -1);
+
+    ASSERT_TRUE(db->Persist(WriteOptions{}, "session").ok());
+    ASSERT_TRUE(db->TTL(ReadOptions{}, "session", &ttl).ok());
+    EXPECT_EQ(ttl, -1);
+    ASSERT_TRUE(db->ReleaseSnapshot(snapshot).ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  RemovePathIfExists(options.wal_path);
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "expiring", "value").ok());
+    ASSERT_TRUE(db->Expire(WriteOptions{}, "expiring", 1).ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+  RemovePathIfExists(options.wal_path);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    int64_t ttl = -2;
+    ASSERT_TRUE(db->TTL(ReadOptions{}, "expiring", &ttl).ok());
+    EXPECT_GE(ttl, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    std::string value;
+    Status s = db->Get(ReadOptions{}, "expiring", &value);
+    EXPECT_TRUE(s.IsNotFound());
+    ASSERT_TRUE(db->TTL(ReadOptions{}, "expiring", &ttl).ok());
+    EXPECT_EQ(ttl, -2);
+  }
 }
 
 TEST(DBTest, ReopenReplaysWAL) {

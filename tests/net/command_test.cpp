@@ -112,6 +112,23 @@ TEST(CommandExecutorTest, SetGetDelFlow) {
   EXPECT_EQ(exec.Execute(get_cmd), "$-1\r\n");
 }
 
+TEST(CommandExecutorTest, DataTTLCommands) {
+  auto db = OpenDBForTest("ttl_commands");
+  CommandExecutor exec(db.get());
+
+  EXPECT_EQ(exec.Execute(Command{CommandType::kSet, {"key", "value"}, ""}),
+            "+OK\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kExpire, {"key", "2"}, ""}),
+            ":1\r\n");
+  const std::string ttl =
+      exec.Execute(Command{CommandType::kTTL, {"key"}, ""});
+  EXPECT_TRUE(ttl == ":1\r\n" || ttl == ":2\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kPersist, {"key"}, ""}),
+            ":1\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kTTL, {"key"}, ""}),
+            ":-1\r\n");
+}
+
 TEST(CommandExecutorTest, MGet) {
   auto db = OpenDBForTest("mget");
   CommandExecutor exec(db.get());
