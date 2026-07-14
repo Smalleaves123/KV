@@ -17,6 +17,9 @@ Server::Server()
       total_connections_(0),
       active_connections_(0),
       total_requests_(0),
+      request_errors_(0),
+      response_bytes_(0),
+      request_duration_us_(0),
       txn_begin_(0),
       txn_commit_(0),
       txn_abort_(0),
@@ -88,6 +91,9 @@ ServerStats Server::GetStats() const noexcept {
   stats.total_connections = total_connections_.load();
   stats.active_connections = active_connections_.load();
   stats.total_requests = total_requests_.load();
+  stats.request_errors = request_errors_.load();
+  stats.response_bytes = response_bytes_.load();
+  stats.request_duration_us = request_duration_us_.load();
   stats.txn_begin = txn_begin_.load();
   stats.txn_commit = txn_commit_.load();
   stats.txn_abort = txn_abort_.load();
@@ -162,6 +168,9 @@ void Server::AcceptLoop(DB* db, ClusterManager* cluster_manager) {
       HandleClient(client_fd, db, cluster_manager,
                    &running_,
                    &total_requests_,
+                   &request_errors_,
+                   &response_bytes_,
+                   &request_duration_us_,
                    &txn_begin_,
                    &txn_commit_,
                    &txn_abort_,
@@ -176,6 +185,9 @@ void Server::HandleClient(platform::SocketHandle client_fd,
                           ClusterManager* cluster_manager,
                           std::atomic<bool>* running,
                           std::atomic<uint64_t>* total_requests,
+                          std::atomic<uint64_t>* request_errors,
+                          std::atomic<uint64_t>* response_bytes,
+                          std::atomic<uint64_t>* request_duration_us,
                           std::atomic<uint64_t>* txn_begin,
                           std::atomic<uint64_t>* txn_commit,
                           std::atomic<uint64_t>* txn_abort,
@@ -194,6 +206,7 @@ void Server::HandleClient(platform::SocketHandle client_fd,
         break;
       }
       if (s.IsInvalidArgument()) {
+        request_errors->fetch_add(1);
         (void)conn.WriteAll(kv::net::protocol::Error(s.ToString()));
         continue;
       }
@@ -205,7 +218,16 @@ void Server::HandleClient(platform::SocketHandle client_fd,
 
     total_requests->fetch_add(1);
 
+    const auto request_started = std::chrono::steady_clock::now();
     const std::string resp = session.HandleTokens(tokens);
+    const auto request_elapsed = std::chrono::duration_cast<
+        std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                   request_started);
+    request_duration_us->fetch_add(
+        static_cast<uint64_t>(request_elapsed.count()));
+    if (!resp.empty() && resp.front() == '-') {
+      request_errors->fetch_add(1);
+    }
     switch (session.LastTxnEvent()) {
       case TxnEvent::kBegin:
         txn_begin->fetch_add(1);
@@ -228,6 +250,7 @@ void Server::HandleClient(platform::SocketHandle client_fd,
     if (!s.ok()) {
       break;
     }
+    response_bytes->fetch_add(static_cast<uint64_t>(resp.size()));
   }
 
   (void)conn.Close();

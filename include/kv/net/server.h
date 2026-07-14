@@ -20,6 +20,9 @@ struct ServerStats {
   uint64_t total_connections = 0;
   uint64_t active_connections = 0;
   uint64_t total_requests = 0;
+  uint64_t request_errors = 0;
+  uint64_t response_bytes = 0;
+  uint64_t request_duration_us = 0;
   uint64_t txn_begin = 0;
   uint64_t txn_commit = 0;
   uint64_t txn_abort = 0;
@@ -49,6 +52,9 @@ class Server {
                            ClusterManager* cluster_manager,
                            std::atomic<bool>* running,
                            std::atomic<uint64_t>* total_requests,
+                           std::atomic<uint64_t>* request_errors,
+                           std::atomic<uint64_t>* response_bytes,
+                           std::atomic<uint64_t>* request_duration_us,
                            std::atomic<uint64_t>* txn_begin,
                            std::atomic<uint64_t>* txn_commit,
                            std::atomic<uint64_t>* txn_abort,
@@ -61,6 +67,9 @@ class Server {
   std::atomic<uint64_t> total_connections_;
   std::atomic<uint64_t> active_connections_;
   std::atomic<uint64_t> total_requests_;
+  std::atomic<uint64_t> request_errors_;
+  std::atomic<uint64_t> response_bytes_;
+  std::atomic<uint64_t> request_duration_us_;
   std::atomic<uint64_t> txn_begin_;
   std::atomic<uint64_t> txn_commit_;
   std::atomic<uint64_t> txn_abort_;

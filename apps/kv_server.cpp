@@ -273,6 +273,9 @@ int main(int argc, char** argv) {
                 << " active_connections=" << stats.active_connections
                 << " total_connections=" << stats.total_connections
                 << " total_requests=" << stats.total_requests
+                << " request_errors=" << stats.request_errors
+                << " response_bytes=" << stats.response_bytes
+                << " request_duration_us=" << stats.request_duration_us
                 << " txn_begin=" << stats.txn_begin
                 << " txn_commit=" << stats.txn_commit
                 << " txn_abort=" << stats.txn_abort

@@ -265,7 +265,8 @@ When `server.metrics_port` or `KV_METRICS_PORT` is a non-zero port,
 
 The monitoring listener is independent from the command protocol and binds to
 loopback by default. It exposes connection, request, transaction, cache,
-Bloom-filter, table-cache, and compaction metrics.
+Bloom-filter, table-cache, compaction, request error, response traffic, and
+request duration metrics.
 
 ## Raft Mode
 

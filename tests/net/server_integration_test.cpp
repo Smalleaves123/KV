@@ -285,6 +285,8 @@ TEST_F(ServerIntegrationTest, EndToEndCommandFlow) {
   EXPECT_GE(stats.total_connections, 1U);
   EXPECT_GE(stats.active_connections, 1U);
   EXPECT_GE(stats.total_requests, 8U);
+  EXPECT_GE(stats.request_errors, 1U);
+  EXPECT_GT(stats.response_bytes, 0U);
   EXPECT_GE(stats.txn_begin, 1U);
   EXPECT_GE(stats.txn_commit, 1U);
 

@@ -120,6 +120,12 @@ TEST_F(MonitoringServerTest, HealthReadinessAndMetricsEndpoints) {
   EXPECT_NE(metrics.find("200 OK"), std::string::npos);
   EXPECT_NE(metrics.find("kv_server_up 1"), std::string::npos);
   EXPECT_NE(metrics.find("kv_server_requests_total"), std::string::npos);
+  EXPECT_NE(metrics.find("kv_server_request_errors_total"),
+           std::string::npos);
+  EXPECT_NE(metrics.find("kv_server_response_bytes_total"),
+           std::string::npos);
+  EXPECT_NE(metrics.find("kv_server_request_duration_microseconds_total"),
+           std::string::npos);
   EXPECT_NE(metrics.find("kv_db_up 1"), std::string::npos);
   EXPECT_NE(metrics.find("kv_db_compaction_attempts_total"),
            std::string::npos);
