@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -8,6 +9,7 @@
 #include "kv/common/socket_compat.h"
 #include "kv/common/status.h"
 #include "kv/concurrency/thread_pool.h"
+#include "kv/net/command.h"
 
 namespace kv {
 class DB;
@@ -27,6 +29,8 @@ struct ServerStats {
   uint64_t txn_commit = 0;
   uint64_t txn_abort = 0;
   uint64_t txn_conflict = 0;
+  std::array<uint64_t, kCommandTypeCount> command_requests{};
+  std::array<uint64_t, kCommandTypeCount> command_errors{};
 };
 
 class Server {
@@ -55,6 +59,10 @@ class Server {
                            std::atomic<uint64_t>* request_errors,
                            std::atomic<uint64_t>* response_bytes,
                            std::atomic<uint64_t>* request_duration_us,
+                           std::array<std::atomic<uint64_t>,
+                                      kCommandTypeCount>* command_requests,
+                           std::array<std::atomic<uint64_t>,
+                                      kCommandTypeCount>* command_errors,
                            std::atomic<uint64_t>* txn_begin,
                            std::atomic<uint64_t>* txn_commit,
                            std::atomic<uint64_t>* txn_abort,
@@ -70,6 +78,8 @@ class Server {
   std::atomic<uint64_t> request_errors_;
   std::atomic<uint64_t> response_bytes_;
   std::atomic<uint64_t> request_duration_us_;
+  std::array<std::atomic<uint64_t>, kCommandTypeCount> command_requests_;
+  std::array<std::atomic<uint64_t>, kCommandTypeCount> command_errors_;
   std::atomic<uint64_t> txn_begin_;
   std::atomic<uint64_t> txn_commit_;
   std::atomic<uint64_t> txn_abort_;

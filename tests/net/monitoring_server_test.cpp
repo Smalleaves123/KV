@@ -126,6 +126,13 @@ TEST_F(MonitoringServerTest, HealthReadinessAndMetricsEndpoints) {
            std::string::npos);
   EXPECT_NE(metrics.find("kv_server_request_duration_microseconds_total"),
            std::string::npos);
+  EXPECT_NE(metrics.find("kv_server_commands_total{command=\"PING\"}"),
+            std::string::npos);
+  EXPECT_NE(metrics.find("kv_server_commands_total{command=\"INVALID\"}"),
+            std::string::npos);
+  EXPECT_NE(
+      metrics.find("kv_server_command_errors_total{command=\"GET\"}"),
+      std::string::npos);
   EXPECT_NE(metrics.find("kv_db_up 1"), std::string::npos);
   EXPECT_NE(metrics.find("kv_db_compaction_attempts_total"),
            std::string::npos);

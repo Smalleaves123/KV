@@ -5,6 +5,7 @@
 #include "kv/cluster/cluster_manager.h"
 #include "kv/engine/db.h"
 #include "kv/net/connection.h"
+#include "kv/net/command_parser.h"
 #include "kv/net/protocol.h"
 #include "kv/net/session.h"
 
@@ -20,13 +21,19 @@ Server::Server()
       request_errors_(0),
       response_bytes_(0),
       request_duration_us_(0),
+      command_requests_(),
+      command_errors_(),
       txn_begin_(0),
       txn_commit_(0),
       txn_abort_(0),
       txn_conflict_(0),
       accept_thread_(),
       pool_(std::make_unique<ThreadPool>(0)),
-      socket_runtime_() {}
+      socket_runtime_() {
+  // Explicitly initialize atomic arrays for C++17 toolchain portability.
+  for (auto& counter : command_requests_) counter.store(0);
+  for (auto& counter : command_errors_) counter.store(0);
+}
 
 Server::~Server() {
   (void)Stop();
@@ -98,6 +105,10 @@ ServerStats Server::GetStats() const noexcept {
   stats.txn_commit = txn_commit_.load();
   stats.txn_abort = txn_abort_.load();
   stats.txn_conflict = txn_conflict_.load();
+  for (size_t i = 0; i < kCommandTypeCount; ++i) {
+    stats.command_requests[i] = command_requests_[i].load();
+    stats.command_errors[i] = command_errors_[i].load();
+  }
   return stats;
 }
 
@@ -171,6 +182,8 @@ void Server::AcceptLoop(DB* db, ClusterManager* cluster_manager) {
                    &request_errors_,
                    &response_bytes_,
                    &request_duration_us_,
+                   &command_requests_,
+                   &command_errors_,
                    &txn_begin_,
                    &txn_commit_,
                    &txn_abort_,
@@ -188,6 +201,10 @@ void Server::HandleClient(platform::SocketHandle client_fd,
                           std::atomic<uint64_t>* request_errors,
                           std::atomic<uint64_t>* response_bytes,
                           std::atomic<uint64_t>* request_duration_us,
+                          std::array<std::atomic<uint64_t>,
+                                     kCommandTypeCount>* command_requests,
+                          std::array<std::atomic<uint64_t>,
+                                     kCommandTypeCount>* command_errors,
                           std::atomic<uint64_t>* txn_begin,
                           std::atomic<uint64_t>* txn_commit,
                           std::atomic<uint64_t>* txn_abort,
@@ -218,6 +235,12 @@ void Server::HandleClient(platform::SocketHandle client_fd,
 
     total_requests->fetch_add(1);
 
+    const Command command = CommandParser::ParseTokens(tokens);
+    const size_t command_index = static_cast<size_t>(command.type);
+    if (command_index < kCommandTypeCount) {
+      (*command_requests)[command_index].fetch_add(1);
+    }
+
     const auto request_started = std::chrono::steady_clock::now();
     const std::string resp = session.HandleTokens(tokens);
     const auto request_elapsed = std::chrono::duration_cast<
@@ -227,6 +250,9 @@ void Server::HandleClient(platform::SocketHandle client_fd,
         static_cast<uint64_t>(request_elapsed.count()));
     if (!resp.empty() && resp.front() == '-') {
       request_errors->fetch_add(1);
+      if (command_index < kCommandTypeCount) {
+        (*command_errors)[command_index].fetch_add(1);
+      }
     }
     switch (session.LastTxnEvent()) {
       case TxnEvent::kBegin:

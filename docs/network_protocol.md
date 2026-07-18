@@ -266,7 +266,10 @@ When `server.metrics_port` or `KV_METRICS_PORT` is a non-zero port,
 The monitoring listener is independent from the command protocol and binds to
 loopback by default. It exposes connection, request, transaction, cache,
 Bloom-filter, table-cache, compaction, request error, response traffic, and
-request duration metrics.
+request duration metrics. Request totals and errors are also grouped by the
+fixed `command` label (`INVALID`, `PING`, `GET`, `SET`, `DEL`, `EXPIRE`,
+`TTL`, `PERSIST`, `MGET`, `INFO`, `STATS`, `CLUSTER`, `BEGIN`, `EXEC`,
+`ABORT`, or `SCAN`) to keep Prometheus label cardinality bounded.
 
 ## Raft Mode
 

@@ -108,6 +108,8 @@ Existing helper data types include counter, hash, and list. Useful additions:
   available through the optional monitoring port.
 - Request errors, response bytes, and cumulative request duration are exposed
   for service-quality dashboards.
+- Request totals and errors are grouped by a fixed command label for
+  low-cardinality Prometheus dashboards.
 - Structured logging.
 - Metrics endpoint.
 - Per-operation latency histograms.

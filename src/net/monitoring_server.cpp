@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "kv/engine/db.h"
+#include "kv/net/command.h"
 #include "kv/net/server.h"
 
 namespace kv::net {
@@ -47,6 +48,44 @@ bool ParseRequestPath(const std::string& request, std::string* path) {
 }
 
 std::string BoolJson(bool value) { return value ? "true" : "false"; }
+
+const char* CommandMetricName(CommandType type) {
+  switch (type) {
+    case CommandType::kPing:
+      return "PING";
+    case CommandType::kGet:
+      return "GET";
+    case CommandType::kSet:
+      return "SET";
+    case CommandType::kDel:
+      return "DEL";
+    case CommandType::kExpire:
+      return "EXPIRE";
+    case CommandType::kTTL:
+      return "TTL";
+    case CommandType::kPersist:
+      return "PERSIST";
+    case CommandType::kMGet:
+      return "MGET";
+    case CommandType::kInfo:
+      return "INFO";
+    case CommandType::kStats:
+      return "STATS";
+    case CommandType::kCluster:
+      return "CLUSTER";
+    case CommandType::kBegin:
+      return "BEGIN";
+    case CommandType::kExec:
+      return "EXEC";
+    case CommandType::kAbort:
+      return "ABORT";
+    case CommandType::kScan:
+      return "SCAN";
+    case CommandType::kInvalid:
+      return "INVALID";
+  }
+  return "INVALID";
+}
 
 }  // namespace
 
@@ -180,7 +219,23 @@ std::string MonitoringServer::RenderMetrics(const Server& server,
       << server_stats.txn_abort << "\n"
       << "kv_server_transactions_total{state=\"conflict\"} "
       << server_stats.txn_conflict << "\n"
-      << "# HELP kv_db_up Whether DB statistics can be collected.\n"
+      << "# HELP kv_server_commands_total Requests by command.\n"
+      << "# TYPE kv_server_commands_total counter\n";
+  for (size_t i = 0; i < kCommandTypeCount; ++i) {
+    const auto type = static_cast<CommandType>(i);
+    out << "kv_server_commands_total{command=\""
+        << CommandMetricName(type) << "\"} " << server_stats.command_requests[i]
+        << "\n";
+  }
+  out << "# HELP kv_server_command_errors_total Errors by command.\n"
+      << "# TYPE kv_server_command_errors_total counter\n";
+  for (size_t i = 0; i < kCommandTypeCount; ++i) {
+    const auto type = static_cast<CommandType>(i);
+    out << "kv_server_command_errors_total{command=\""
+        << CommandMetricName(type) << "\"} " << server_stats.command_errors[i]
+        << "\n";
+  }
+  out << "# HELP kv_db_up Whether DB statistics can be collected.\n"
       << "# TYPE kv_db_up gauge\n"
       << "kv_db_up " << (db.IsOpen() && cache_ok && read_ok && compaction_ok ? 1 : 0)
       << "\n";

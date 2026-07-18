@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,9 @@ enum class CommandType {
   kAbort,
   kScan,
 };
+
+constexpr size_t kCommandTypeCount =
+    static_cast<size_t>(CommandType::kScan) + 1;
 
 struct Command {
   CommandType type = CommandType::kInvalid;

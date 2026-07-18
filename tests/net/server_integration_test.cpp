@@ -287,6 +287,14 @@ TEST_F(ServerIntegrationTest, EndToEndCommandFlow) {
   EXPECT_GE(stats.total_requests, 8U);
   EXPECT_GE(stats.request_errors, 1U);
   EXPECT_GT(stats.response_bytes, 0U);
+  EXPECT_GE(stats.command_requests[static_cast<size_t>(CommandType::kPing)],
+            1U);
+  EXPECT_GE(stats.command_requests[static_cast<size_t>(CommandType::kGet)],
+            2U);
+  EXPECT_GE(
+      stats.command_requests[static_cast<size_t>(CommandType::kInvalid)], 1U);
+  EXPECT_GE(stats.command_errors[static_cast<size_t>(CommandType::kInvalid)],
+            1U);
   EXPECT_GE(stats.txn_begin, 1U);
   EXPECT_GE(stats.txn_commit, 1U);
 
