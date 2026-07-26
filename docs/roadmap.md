@@ -94,13 +94,15 @@ engine into a more complete storage-system project.
 
 ## Data Types
 
-Existing helper data types include counter, hash, and list. Useful additions:
+The TCP command layer now exposes counter, hash, and list operations. Useful
+additions:
 
 - set;
 - sorted set;
 - bitmap;
 - stream-like append-only list;
 - common TTL behavior across all data types.
+- atomic compound-type operations in Raft mode.
 
 ## Observability
 

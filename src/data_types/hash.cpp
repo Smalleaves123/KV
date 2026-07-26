@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -75,26 +76,41 @@ bool Hash::Decode(const std::string& data,
 
 Status Hash::HSet(DB* db, const Slice& key, const Slice& field,
                   const Slice& value, int* created) {
-  std::string raw;
-  Status s = db->Get(ReadOptions{}, key, &raw);
+  if (db == nullptr) return Status::InvalidArgument("db is null");
+  constexpr int kMaxAttempts = 8;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    std::unique_ptr<Transaction> txn;
+    Status s = db->BeginTransaction(TxnOptions{}, &txn);
+    if (!s.ok()) return s;
 
-  std::map<std::string, std::string> fields;
-  if (s.ok()) {
-    if (!Decode(raw, &fields)) {
-      return Status::Corruption("hash encoding corrupted");
+    std::string raw;
+    s = txn->Get(key, &raw);
+    std::map<std::string, std::string> fields;
+    if (s.ok()) {
+      if (!Decode(raw, &fields)) {
+        (void)txn->Rollback();
+        return Status::Corruption("hash encoding corrupted");
+      }
+    } else if (!s.IsNotFound()) {
+      (void)txn->Rollback();
+      return s;
     }
-  } else if (!s.IsNotFound()) {
-    return s;
+
+    bool is_new = fields.find(field.ToString()) == fields.end();
+    fields[field.ToString()] = value.ToString();
+    s = txn->Put(key, Encode(fields));
+    if (!s.ok()) {
+      (void)txn->Rollback();
+      return s;
+    }
+    s = txn->Commit();
+    if (s.ok()) {
+      if (created) *created = is_new ? 1 : 0;
+      return Status::OK();
+    }
+    if (!s.IsAlreadyExists()) return s;
   }
-
-  bool is_new = fields.find(field.ToString()) == fields.end();
-  fields[field.ToString()] = value.ToString();
-
-  s = db->Put(WriteOptions{}, key, Encode(fields));
-  if (!s.ok()) return s;
-
-  if (created) *created = is_new ? 1 : 0;
-  return Status::OK();
+  return Status::AlreadyExists("hash update conflict");
 }
 
 Status Hash::HGet(DB* db, const Slice& key, const Slice& field,
@@ -118,37 +134,51 @@ Status Hash::HGet(DB* db, const Slice& key, const Slice& field,
 
 Status Hash::HDel(DB* db, const Slice& key, const Slice& field,
                   int* deleted) {
-  std::string raw;
-  Status s = db->Get(ReadOptions{}, key, &raw);
-  if (s.IsNotFound()) {
-    if (deleted) *deleted = 0;
-    return Status::OK();
+  if (db == nullptr) return Status::InvalidArgument("db is null");
+  constexpr int kMaxAttempts = 8;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    std::unique_ptr<Transaction> txn;
+    Status s = db->BeginTransaction(TxnOptions{}, &txn);
+    if (!s.ok()) return s;
+
+    std::string raw;
+    s = txn->Get(key, &raw);
+    if (s.IsNotFound()) {
+      (void)txn->Rollback();
+      if (deleted) *deleted = 0;
+      return Status::OK();
+    }
+    if (!s.ok()) {
+      (void)txn->Rollback();
+      return s;
+    }
+
+    std::map<std::string, std::string> fields;
+    if (!Decode(raw, &fields)) {
+      (void)txn->Rollback();
+      return Status::Corruption("hash encoding corrupted");
+    }
+    auto it = fields.find(field.ToString());
+    if (it == fields.end()) {
+      (void)txn->Rollback();
+      if (deleted) *deleted = 0;
+      return Status::OK();
+    }
+
+    fields.erase(it);
+    s = fields.empty() ? txn->Delete(key) : txn->Put(key, Encode(fields));
+    if (!s.ok()) {
+      (void)txn->Rollback();
+      return s;
+    }
+    s = txn->Commit();
+    if (s.ok()) {
+      if (deleted) *deleted = 1;
+      return Status::OK();
+    }
+    if (!s.IsAlreadyExists()) return s;
   }
-  if (!s.ok()) return s;
-
-  std::map<std::string, std::string> fields;
-  if (!Decode(raw, &fields)) {
-    return Status::Corruption("hash encoding corrupted");
-  }
-
-  auto it = fields.find(field.ToString());
-  if (it == fields.end()) {
-    if (deleted) *deleted = 0;
-    return Status::OK();
-  }
-
-  fields.erase(it);
-
-  if (fields.empty()) {
-    // 没有字段了，直接删掉整个 key
-    s = db->Delete(WriteOptions{}, key);
-  } else {
-    s = db->Put(WriteOptions{}, key, Encode(fields));
-  }
-  if (!s.ok()) return s;
-
-  if (deleted) *deleted = 1;
-  return Status::OK();
+  return Status::AlreadyExists("hash update conflict");
 }
 
 Status Hash::HExists(DB* db, const Slice& key, const Slice& field,

@@ -141,6 +141,50 @@ TEST(CommandExecutorTest, MGet) {
   EXPECT_EQ(resp, "*3\r\n$2\r\nv1\r\n$-1\r\n$2\r\nv3\r\n");
 }
 
+TEST(CommandExecutorTest, DataTypeCommands) {
+  auto db = OpenDBForTest("data_type_commands");
+  CommandExecutor exec(db.get());
+
+  EXPECT_EQ(exec.Execute(Command{CommandType::kIncr, {"hits"}, ""}),
+            ":1\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kIncrBy, {"hits", "4"}, ""}),
+            ":5\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kDecrBy, {"hits", "2"}, ""}),
+            ":3\r\n");
+
+  EXPECT_EQ(exec.Execute(Command{CommandType::kHSet, {"user", "name", "Alice"}, ""}),
+            ":1\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kHSet, {"user", "name", "Bob"}, ""}),
+            ":0\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kHSet, {"user", "age", "30"}, ""}),
+            ":1\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kHGet, {"user", "name"}, ""}),
+            "$3\r\nBob\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kHExists, {"user", "missing"}, ""}),
+            ":0\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kHLen, {"user"}, ""}),
+            ":2\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kHGetAll, {"user"}, ""}),
+            "*4\r\n$3\r\nage\r\n$2\r\n30\r\n$4\r\nname\r\n$3\r\nBob\r\n");
+
+  EXPECT_EQ(exec.Execute(Command{CommandType::kRPush, {"queue", "a"}, ""}),
+            ":1\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kRPush, {"queue", "b"}, ""}),
+            ":2\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kLPush, {"queue", "c"}, ""}),
+            ":3\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kLRange, {"queue", "0", "-1"}, ""}),
+            "*3\r\n$1\r\nc\r\n$1\r\na\r\n$1\r\nb\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kLIndex, {"queue", "9"}, ""}),
+            "$-1\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kLPop, {"queue"}, ""}),
+            "$1\r\nc\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kRPop, {"queue"}, ""}),
+            "$1\r\nb\r\n");
+  EXPECT_EQ(exec.Execute(Command{CommandType::kLLen, {"queue"}, ""}),
+            ":1\r\n");
+}
+
 TEST(CommandExecutorTest, InvalidCommand) {
   auto db = OpenDBForTest("invalid_cmd");
   CommandExecutor exec(db.get());
@@ -302,6 +346,17 @@ TEST(SessionTest, HandleLineParsesAndExecutes) {
   EXPECT_EQ(session.HandleLine("GET a"), "$1\r\n1\r\n");
   EXPECT_EQ(session.HandleLine("GET missing"), "$-1\r\n");
   EXPECT_EQ(session.HandleLine("PING"), "+PONG\r\n");
+}
+
+TEST(SessionTest, DataTypeCommandsWorkThroughSession) {
+  auto db = OpenDBForTest("session_data_types");
+  Session session(db.get());
+
+  EXPECT_EQ(session.HandleLine("INCR visits"), ":1\r\n");
+  EXPECT_EQ(session.HandleLine("HSET profile name Alice"), ":1\r\n");
+  EXPECT_EQ(session.HandleLine("HGET profile name"), "$5\r\nAlice\r\n");
+  EXPECT_EQ(session.HandleLine("RPUSH queue task"), ":1\r\n");
+  EXPECT_EQ(session.HandleLine("LPOP queue"), "$4\r\ntask\r\n");
 }
 
 TEST(SessionTest, ClusterCommandsRequireClusterManagerForClusterFeatures) {

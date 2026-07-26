@@ -81,6 +81,44 @@ const char* CommandMetricName(CommandType type) {
       return "ABORT";
     case CommandType::kScan:
       return "SCAN";
+    case CommandType::kIncr:
+      return "INCR";
+    case CommandType::kIncrBy:
+      return "INCRBY";
+    case CommandType::kDecr:
+      return "DECR";
+    case CommandType::kDecrBy:
+      return "DECRBY";
+    case CommandType::kHSet:
+      return "HSET";
+    case CommandType::kHGet:
+      return "HGET";
+    case CommandType::kHDel:
+      return "HDEL";
+    case CommandType::kHExists:
+      return "HEXISTS";
+    case CommandType::kHLen:
+      return "HLEN";
+    case CommandType::kHGetAll:
+      return "HGETALL";
+    case CommandType::kHKeys:
+      return "HKEYS";
+    case CommandType::kHVals:
+      return "HVALS";
+    case CommandType::kLPush:
+      return "LPUSH";
+    case CommandType::kRPush:
+      return "RPUSH";
+    case CommandType::kLPop:
+      return "LPOP";
+    case CommandType::kRPop:
+      return "RPOP";
+    case CommandType::kLLen:
+      return "LLEN";
+    case CommandType::kLIndex:
+      return "LINDEX";
+    case CommandType::kLRange:
+      return "LRANGE";
     case CommandType::kInvalid:
       return "INVALID";
   }

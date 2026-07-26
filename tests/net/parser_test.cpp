@@ -36,6 +36,19 @@ TEST(CommandParserTest, ParsesTTLCommands) {
             CommandType::kPersist);
 }
 
+TEST(CommandParserTest, ParsesDataTypeCommands) {
+  EXPECT_EQ(CommandParser::ParseLine("INCR hits").type,
+            CommandType::kIncr);
+  EXPECT_EQ(CommandParser::ParseLine("HSET user name Alice").type,
+            CommandType::kHSet);
+  EXPECT_EQ(CommandParser::ParseLine("HGETALL user").type,
+            CommandType::kHGetAll);
+  EXPECT_EQ(CommandParser::ParseLine("LPUSH queue item").type,
+            CommandType::kLPush);
+  EXPECT_EQ(CommandParser::ParseLine("LRANGE queue 0 -1").type,
+            CommandType::kLRange);
+}
+
 TEST(CommandParserTest, UnknownCommandIsInvalid) {
   Command cmd = CommandParser::ParseLine("NOOP a b");
   EXPECT_EQ(cmd.type, CommandType::kInvalid);

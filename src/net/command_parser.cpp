@@ -54,6 +54,25 @@ Command CommandParser::ParseTokens(const std::vector<std::string>& tokens) {
   else if (head == "EXEC") cmd.type = CommandType::kExec;
   else if (head == "ABORT") cmd.type = CommandType::kAbort;
   else if (head == "SCAN") cmd.type = CommandType::kScan;
+  else if (head == "INCR") cmd.type = CommandType::kIncr;
+  else if (head == "INCRBY") cmd.type = CommandType::kIncrBy;
+  else if (head == "DECR") cmd.type = CommandType::kDecr;
+  else if (head == "DECRBY") cmd.type = CommandType::kDecrBy;
+  else if (head == "HSET") cmd.type = CommandType::kHSet;
+  else if (head == "HGET") cmd.type = CommandType::kHGet;
+  else if (head == "HDEL") cmd.type = CommandType::kHDel;
+  else if (head == "HEXISTS") cmd.type = CommandType::kHExists;
+  else if (head == "HLEN") cmd.type = CommandType::kHLen;
+  else if (head == "HGETALL") cmd.type = CommandType::kHGetAll;
+  else if (head == "HKEYS") cmd.type = CommandType::kHKeys;
+  else if (head == "HVALS") cmd.type = CommandType::kHVals;
+  else if (head == "LPUSH") cmd.type = CommandType::kLPush;
+  else if (head == "RPUSH") cmd.type = CommandType::kRPush;
+  else if (head == "LPOP") cmd.type = CommandType::kLPop;
+  else if (head == "RPOP") cmd.type = CommandType::kRPop;
+  else if (head == "LLEN") cmd.type = CommandType::kLLen;
+  else if (head == "LINDEX") cmd.type = CommandType::kLIndex;
+  else if (head == "LRANGE") cmd.type = CommandType::kLRange;
   else cmd.type = CommandType::kInvalid;
 
   return cmd;

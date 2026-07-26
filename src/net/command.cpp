@@ -2,11 +2,15 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "kv/cluster/cluster_manager.h"
+#include "kv/data_types/counter.h"
+#include "kv/data_types/hash.h"
+#include "kv/data_types/list.h"
 #include "kv/engine/write_batch.h"
 #include "kv/net/protocol.h"
 
@@ -460,6 +464,194 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
       }
 
       return protocol::Array(items);
+    }
+
+    case CommandType::kIncr:
+    case CommandType::kIncrBy:
+    case CommandType::kDecr:
+    case CommandType::kDecrBy: {
+      const bool has_delta = cmd.type == CommandType::kIncrBy ||
+                             cmd.type == CommandType::kDecrBy;
+      if ((has_delta && cmd.args.size() != 2) ||
+          (!has_delta && cmd.args.size() != 1)) {
+        return Error("wrong number of arguments for counter command");
+      }
+
+      int64_t value = 0;
+      Status s;
+      if (cmd.type == CommandType::kIncr) {
+        s = Counter::Incr(db_, cmd.args[0], &value);
+      } else if (cmd.type == CommandType::kIncrBy) {
+        int64_t delta = 0;
+        if (!ParseInt64(cmd.args[1], &delta)) {
+          return Error("invalid integer value for 'INCRBY'");
+        }
+        s = Counter::IncrBy(db_, cmd.args[0], delta, &value);
+      } else if (cmd.type == CommandType::kDecr) {
+        s = Counter::Decr(db_, cmd.args[0], &value);
+      } else {
+        int64_t delta = 0;
+        if (!ParseInt64(cmd.args[1], &delta)) {
+          return Error("invalid integer value for 'DECRBY'");
+        }
+        s = Counter::DecrBy(db_, cmd.args[0], delta, &value);
+      }
+      if (!s.ok()) return Error(s.ToString());
+      return Integer(value);
+    }
+
+    case CommandType::kHSet: {
+      if (cmd.args.size() != 3) {
+        return Error("wrong number of arguments for 'HSET'");
+      }
+      int created = 0;
+      Status s = Hash::HSet(db_, cmd.args[0], cmd.args[1], cmd.args[2], &created);
+      if (!s.ok()) return Error(s.ToString());
+      return Integer(created);
+    }
+
+    case CommandType::kHGet: {
+      if (cmd.args.size() != 2) {
+        return Error("wrong number of arguments for 'HGET'");
+      }
+      std::string value;
+      Status s = Hash::HGet(db_, cmd.args[0], cmd.args[1], &value);
+      if (s.ok()) return BulkString(value);
+      if (s.IsNotFound()) return Nil();
+      return Error(s.ToString());
+    }
+
+    case CommandType::kHDel: {
+      if (cmd.args.size() != 2) {
+        return Error("wrong number of arguments for 'HDEL'");
+      }
+      int deleted = 0;
+      Status s = Hash::HDel(db_, cmd.args[0], cmd.args[1], &deleted);
+      if (!s.ok()) return Error(s.ToString());
+      return Integer(deleted);
+    }
+
+    case CommandType::kHExists: {
+      if (cmd.args.size() != 2) {
+        return Error("wrong number of arguments for 'HEXISTS'");
+      }
+      bool exists = false;
+      Status s = Hash::HExists(db_, cmd.args[0], cmd.args[1], &exists);
+      if (!s.ok()) return Error(s.ToString());
+      return Integer(exists ? 1 : 0);
+    }
+
+    case CommandType::kHLen: {
+      if (cmd.args.size() != 1) {
+        return Error("wrong number of arguments for 'HLEN'");
+      }
+      size_t length = 0;
+      Status s = Hash::HLen(db_, cmd.args[0], &length);
+      if (!s.ok()) return Error(s.ToString());
+      return Integer(static_cast<int64_t>(length));
+    }
+
+    case CommandType::kHGetAll: {
+      if (cmd.args.size() != 1) {
+        return Error("wrong number of arguments for 'HGETALL'");
+      }
+      std::map<std::string, std::string> fields;
+      Status s = Hash::HGetAll(db_, cmd.args[0], &fields);
+      if (!s.ok()) return Error(s.ToString());
+      std::vector<std::string> items;
+      items.reserve(fields.size() * 2);
+      for (const auto& [field, value] : fields) {
+        items.push_back(BulkString(field));
+        items.push_back(BulkString(value));
+      }
+      return Array(items);
+    }
+
+    case CommandType::kHKeys:
+    case CommandType::kHVals: {
+      if (cmd.args.size() != 1) {
+        return Error("wrong number of arguments for hash collection command");
+      }
+      std::vector<std::string> values;
+      Status s = cmd.type == CommandType::kHKeys
+                     ? Hash::HKeys(db_, cmd.args[0], &values)
+                     : Hash::HVals(db_, cmd.args[0], &values);
+      if (!s.ok()) return Error(s.ToString());
+      std::vector<std::string> items;
+      items.reserve(values.size());
+      for (const auto& value : values) items.push_back(BulkString(value));
+      return Array(items);
+    }
+
+    case CommandType::kLPush:
+    case CommandType::kRPush: {
+      if (cmd.args.size() != 2) {
+        return Error("wrong number of arguments for list push command");
+      }
+      size_t length = 0;
+      Status s = cmd.type == CommandType::kLPush
+                     ? List::LPush(db_, cmd.args[0], cmd.args[1], &length)
+                     : List::RPush(db_, cmd.args[0], cmd.args[1], &length);
+      if (!s.ok()) return Error(s.ToString());
+      return Integer(static_cast<int64_t>(length));
+    }
+
+    case CommandType::kLPop:
+    case CommandType::kRPop: {
+      if (cmd.args.size() != 1) {
+        return Error("wrong number of arguments for list pop command");
+      }
+      std::string value;
+      Status s = cmd.type == CommandType::kLPop
+                     ? List::LPop(db_, cmd.args[0], &value)
+                     : List::RPop(db_, cmd.args[0], &value);
+      if (s.ok()) return BulkString(value);
+      if (s.IsNotFound()) return Nil();
+      return Error(s.ToString());
+    }
+
+    case CommandType::kLLen: {
+      if (cmd.args.size() != 1) {
+        return Error("wrong number of arguments for 'LLEN'");
+      }
+      size_t length = 0;
+      Status s = List::LLen(db_, cmd.args[0], &length);
+      if (!s.ok()) return Error(s.ToString());
+      return Integer(static_cast<int64_t>(length));
+    }
+
+    case CommandType::kLIndex: {
+      if (cmd.args.size() != 2) {
+        return Error("wrong number of arguments for 'LINDEX'");
+      }
+      int64_t index = 0;
+      if (!ParseInt64(cmd.args[1], &index)) {
+        return Error("invalid integer value for 'LINDEX'");
+      }
+      std::string value;
+      Status s = List::LIndex(db_, cmd.args[0], index, &value);
+      if (s.ok()) return BulkString(value);
+      if (s.IsNotFound()) return Nil();
+      return Error(s.ToString());
+    }
+
+    case CommandType::kLRange: {
+      if (cmd.args.size() != 3) {
+        return Error("wrong number of arguments for 'LRANGE'");
+      }
+      int64_t start = 0;
+      int64_t stop = 0;
+      if (!ParseInt64(cmd.args[1], &start) ||
+          !ParseInt64(cmd.args[2], &stop)) {
+        return Error("invalid integer value for 'LRANGE'");
+      }
+      std::vector<std::string> values;
+      Status s = List::LRange(db_, cmd.args[0], start, stop, &values);
+      if (!s.ok()) return Error(s.ToString());
+      std::vector<std::string> items;
+      items.reserve(values.size());
+      for (const auto& value : values) items.push_back(BulkString(value));
+      return Array(items);
     }
 
     case CommandType::kBegin:

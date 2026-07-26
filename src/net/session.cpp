@@ -59,6 +59,25 @@ std::string Session::HandleCommand(const Command& cmd) {
     case CommandType::kStats:
     case CommandType::kCluster:
     case CommandType::kScan:
+    case CommandType::kIncr:
+    case CommandType::kIncrBy:
+    case CommandType::kDecr:
+    case CommandType::kDecrBy:
+    case CommandType::kHSet:
+    case CommandType::kHGet:
+    case CommandType::kHDel:
+    case CommandType::kHExists:
+    case CommandType::kHLen:
+    case CommandType::kHGetAll:
+    case CommandType::kHKeys:
+    case CommandType::kHVals:
+    case CommandType::kLPush:
+    case CommandType::kRPush:
+    case CommandType::kLPop:
+    case CommandType::kRPop:
+    case CommandType::kLLen:
+    case CommandType::kLIndex:
+    case CommandType::kLRange:
       if (active_txn_ != nullptr) {
         return HandleDataCommandInTxn(cmd);
       }

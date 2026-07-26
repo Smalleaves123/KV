@@ -144,6 +144,51 @@ MGET key1 key2 key3
 
 Returns a RESP array with one item per key. Missing keys are nil.
 
+### Counters
+
+```text
+INCR key
+INCRBY key delta
+DECR key
+DECRBY key delta
+```
+
+Counter commands return the new integer value. A missing key starts at zero,
+and a non-integer existing value returns an error.
+
+### Hashes
+
+```text
+HSET key field value
+HGET key field
+HDEL key field
+HEXISTS key field
+HLEN key
+HGETALL key
+HKEYS key
+HVALS key
+```
+
+`HSET` returns `:1` for a new field and `:0` for an overwrite. `HDEL` and
+`HEXISTS` return `:1` or `:0`; missing `HGET` fields return nil. `HGETALL`
+returns alternating field and value bulk strings.
+
+### Lists
+
+```text
+LPUSH key value
+RPUSH key value
+LPOP key
+RPOP key
+LLEN key
+LINDEX key index
+LRANGE key start stop
+```
+
+Push commands return the new length. Pop and index commands return a bulk
+string or nil when the list/element is missing. `LRANGE` returns an array of
+bulk strings and supports negative indexes.
+
 ### BEGIN
 
 Starts a transaction inside the current connection session.
@@ -237,6 +282,7 @@ Inside a transaction:
 - `SET` and `DEL` are staged.
 - `GET` sees staged writes first.
 - TTL commands are currently not staged inside transactions.
+- Counter, Hash, and List commands are not staged inside transactions.
 - `EXEC` validates and commits.
 - `ABORT` discards staged writes.
 
@@ -268,8 +314,9 @@ loopback by default. It exposes connection, request, transaction, cache,
 Bloom-filter, table-cache, compaction, request error, response traffic, and
 request duration metrics. Request totals and errors are also grouped by the
 fixed `command` label (`INVALID`, `PING`, `GET`, `SET`, `DEL`, `EXPIRE`,
-`TTL`, `PERSIST`, `MGET`, `INFO`, `STATS`, `CLUSTER`, `BEGIN`, `EXEC`,
-`ABORT`, or `SCAN`) to keep Prometheus label cardinality bounded.
+  `TTL`, `PERSIST`, `MGET`, `INFO`, `STATS`, `CLUSTER`, `BEGIN`, `EXEC`,
+  `ABORT`, `SCAN`, and the counter/hash/list commands) to keep Prometheus
+  label cardinality bounded.
 
 ## Raft Mode
 
@@ -281,6 +328,8 @@ When Raft is enabled:
   not independently choose different deadlines;
 - reads require the node to be leader and pass a linearizable read barrier;
 - write batches and transactions are not supported by the Raft wrapper.
+- Counter, Hash, and List commands require local transactions and are not
+  supported in Raft mode.
 
 Non-leader nodes return an error containing the known leader id.
 

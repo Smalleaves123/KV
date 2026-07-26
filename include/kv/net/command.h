@@ -29,10 +29,29 @@ enum class CommandType {
   kExec,
   kAbort,
   kScan,
+  kIncr,
+  kIncrBy,
+  kDecr,
+  kDecrBy,
+  kHSet,
+  kHGet,
+  kHDel,
+  kHExists,
+  kHLen,
+  kHGetAll,
+  kHKeys,
+  kHVals,
+  kLPush,
+  kRPush,
+  kLPop,
+  kRPop,
+  kLLen,
+  kLIndex,
+  kLRange,
 };
 
 constexpr size_t kCommandTypeCount =
-    static_cast<size_t>(CommandType::kScan) + 1;
+    static_cast<size_t>(CommandType::kLRange) + 1;
 
 struct Command {
   CommandType type = CommandType::kInvalid;

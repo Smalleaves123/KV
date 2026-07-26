@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -82,71 +83,131 @@ static Status LoadList(DB* db, const Slice& key,
   return Status::OK();
 }
 
-// 将列表编码后写入 DB
-static Status StoreList(DB* db, const Slice& key,
-                        const std::vector<std::string>& elems) {
-  if (elems.empty()) {
-    return db->Delete(WriteOptions{}, key);
+static Status LoadList(Transaction* txn, const Slice& key,
+                       std::vector<std::string>* elems) {
+  std::string raw;
+  Status s = txn->Get(key, &raw);
+  if (s.IsNotFound()) {
+    elems->clear();
+    return Status::OK();
   }
-  return db->Put(WriteOptions{}, key, List::Encode(elems));
+  if (!s.ok()) return s;
+  if (!List::Decode(raw, elems)) {
+    return Status::Corruption("list encoding corrupted");
+  }
+  return Status::OK();
+}
+
+static Status StoreList(Transaction* txn, const Slice& key,
+                        const std::vector<std::string>& elems) {
+  if (elems.empty()) return txn->Delete(key);
+  return txn->Put(key, List::Encode(elems));
 }
 
 // ── 公共接口 ──────────────────────────────────────
 
 Status List::LPush(DB* db, const Slice& key, const Slice& value,
                    size_t* new_len) {
-  std::vector<std::string> elems;
-  Status s = LoadList(db, key, &elems);
-  if (!s.ok()) return s;
-
-  elems.insert(elems.begin(), value.ToString());
-  s = StoreList(db, key, elems);
-  if (!s.ok()) return s;
-
-  if (new_len) *new_len = elems.size();
-  return Status::OK();
+  if (db == nullptr) return Status::InvalidArgument("db is null");
+  constexpr int kMaxAttempts = 8;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    std::unique_ptr<Transaction> txn;
+    Status s = db->BeginTransaction(TxnOptions{}, &txn);
+    if (!s.ok()) return s;
+    std::vector<std::string> elems;
+    s = LoadList(txn.get(), key, &elems);
+    if (!s.ok()) return s;
+    elems.insert(elems.begin(), value.ToString());
+    s = StoreList(txn.get(), key, elems);
+    if (!s.ok()) return s;
+    s = txn->Commit();
+    if (s.ok()) {
+      if (new_len) *new_len = elems.size();
+      return Status::OK();
+    }
+    if (!s.IsAlreadyExists()) return s;
+  }
+  return Status::AlreadyExists("list update conflict");
 }
 
 Status List::RPush(DB* db, const Slice& key, const Slice& value,
                    size_t* new_len) {
-  std::vector<std::string> elems;
-  Status s = LoadList(db, key, &elems);
-  if (!s.ok()) return s;
-
-  elems.push_back(value.ToString());
-  s = StoreList(db, key, elems);
-  if (!s.ok()) return s;
-
-  if (new_len) *new_len = elems.size();
-  return Status::OK();
+  if (db == nullptr) return Status::InvalidArgument("db is null");
+  constexpr int kMaxAttempts = 8;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    std::unique_ptr<Transaction> txn;
+    Status s = db->BeginTransaction(TxnOptions{}, &txn);
+    if (!s.ok()) return s;
+    std::vector<std::string> elems;
+    s = LoadList(txn.get(), key, &elems);
+    if (!s.ok()) return s;
+    elems.push_back(value.ToString());
+    s = StoreList(txn.get(), key, elems);
+    if (!s.ok()) return s;
+    s = txn->Commit();
+    if (s.ok()) {
+      if (new_len) *new_len = elems.size();
+      return Status::OK();
+    }
+    if (!s.IsAlreadyExists()) return s;
+  }
+  return Status::AlreadyExists("list update conflict");
 }
 
 Status List::LPop(DB* db, const Slice& key, std::string* value) {
-  std::vector<std::string> elems;
-  Status s = LoadList(db, key, &elems);
-  if (!s.ok()) return s;
-
-  if (elems.empty()) {
-    return Status::NotFound("list is empty");
+  if (db == nullptr) return Status::InvalidArgument("db is null");
+  constexpr int kMaxAttempts = 8;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    std::unique_ptr<Transaction> txn;
+    Status s = db->BeginTransaction(TxnOptions{}, &txn);
+    if (!s.ok()) return s;
+    std::vector<std::string> elems;
+    s = LoadList(txn.get(), key, &elems);
+    if (!s.ok()) return s;
+    if (elems.empty()) {
+      (void)txn->Rollback();
+      return Status::NotFound("list is empty");
+    }
+    const std::string popped = elems.front();
+    elems.erase(elems.begin());
+    s = StoreList(txn.get(), key, elems);
+    if (!s.ok()) return s;
+    s = txn->Commit();
+    if (s.ok()) {
+      if (value) *value = popped;
+      return Status::OK();
+    }
+    if (!s.IsAlreadyExists()) return s;
   }
-
-  if (value) *value = elems.front();
-  elems.erase(elems.begin());
-  return StoreList(db, key, elems);
+  return Status::AlreadyExists("list update conflict");
 }
 
 Status List::RPop(DB* db, const Slice& key, std::string* value) {
-  std::vector<std::string> elems;
-  Status s = LoadList(db, key, &elems);
-  if (!s.ok()) return s;
-
-  if (elems.empty()) {
-    return Status::NotFound("list is empty");
+  if (db == nullptr) return Status::InvalidArgument("db is null");
+  constexpr int kMaxAttempts = 8;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    std::unique_ptr<Transaction> txn;
+    Status s = db->BeginTransaction(TxnOptions{}, &txn);
+    if (!s.ok()) return s;
+    std::vector<std::string> elems;
+    s = LoadList(txn.get(), key, &elems);
+    if (!s.ok()) return s;
+    if (elems.empty()) {
+      (void)txn->Rollback();
+      return Status::NotFound("list is empty");
+    }
+    const std::string popped = elems.back();
+    elems.pop_back();
+    s = StoreList(txn.get(), key, elems);
+    if (!s.ok()) return s;
+    s = txn->Commit();
+    if (s.ok()) {
+      if (value) *value = popped;
+      return Status::OK();
+    }
+    if (!s.IsAlreadyExists()) return s;
   }
-
-  if (value) *value = elems.back();
-  elems.pop_back();
-  return StoreList(db, key, elems);
+  return Status::AlreadyExists("list update conflict");
 }
 
 Status List::LLen(DB* db, const Slice& key, size_t* len) {
@@ -158,12 +219,9 @@ Status List::LLen(DB* db, const Slice& key, size_t* len) {
   return Status::OK();
 }
 
-// 负索引转换：-1 → size-1
+// Convert a negative index without clamping positive out-of-range indexes.
 static int64_t NormalizeIndex(int64_t idx, int64_t size) {
-  if (idx < 0) idx += size;
-  if (idx < 0) idx = 0;
-  if (idx >= size) idx = size - 1;
-  return idx;
+  return idx < 0 ? idx + size : idx;
 }
 
 Status List::LIndex(DB* db, const Slice& key, int64_t index,
@@ -200,8 +258,10 @@ Status List::LRange(DB* db, const Slice& key, int64_t start,
 
   int64_t s_idx = NormalizeIndex(start, size);
   int64_t e_idx = NormalizeIndex(stop, size);
+  if (s_idx < 0) s_idx = 0;
+  if (e_idx >= size) e_idx = size - 1;
 
-  if (s_idx > e_idx) {
+  if (start >= size || stop < -size || s_idx > e_idx) {
     values->clear();
     return Status::OK();
   }

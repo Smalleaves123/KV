@@ -225,6 +225,23 @@ SET key value
 GET key
 DEL key
 MGET key1 key2 key3
+INCR key
+INCRBY key delta
+DECR key
+DECRBY key delta
+HSET key field value
+HGET key field
+HDEL key field
+HEXISTS key field
+HLEN key
+HGETALL key
+LPUSH key value
+RPUSH key value
+LPOP key
+RPOP key
+LLEN key
+LINDEX key index
+LRANGE key start stop
 BEGIN
 EXEC
 ABORT

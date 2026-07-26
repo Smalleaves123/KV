@@ -116,6 +116,9 @@ TEST_F(ListTest, LIndex) {
 
   ASSERT_TRUE(List::LIndex(db.get(), "q", -2, &value).ok());
   EXPECT_EQ(value, "b");
+
+  EXPECT_TRUE(List::LIndex(db.get(), "q", 3, &value).IsNotFound());
+  EXPECT_TRUE(List::LIndex(db.get(), "q", -4, &value).IsNotFound());
 }
 
 TEST_F(ListTest, LRange) {
@@ -143,6 +146,11 @@ TEST_F(ListTest, LRange) {
   // 全范围
   ASSERT_TRUE(List::LRange(db.get(), "q", 0, -1, &vals).ok());
   EXPECT_EQ(vals.size(), 5u);
+
+  ASSERT_TRUE(List::LRange(db.get(), "q", 10, 20, &vals).ok());
+  EXPECT_TRUE(vals.empty());
+  ASSERT_TRUE(List::LRange(db.get(), "q", -20, -10, &vals).ok());
+  EXPECT_TRUE(vals.empty());
 }
 
 TEST_F(ListTest, QueueFIFO) {
