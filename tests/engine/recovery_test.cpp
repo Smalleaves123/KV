@@ -73,6 +73,22 @@ void TruncateFileTail(const std::string& file_path, uintmax_t bytes_to_remove) {
   ASSERT_FALSE(ec);
 }
 
+void RemoveAllSSTFiles(const std::string& dir_path) {
+  std::error_code ec;
+  if (!std::filesystem::exists(dir_path, ec)) {
+    ASSERT_FALSE(ec);
+    return;
+  }
+
+  for (const auto& entry : std::filesystem::directory_iterator(dir_path, ec)) {
+    ASSERT_FALSE(ec);
+    if (entry.is_regular_file() && entry.path().extension() == ".sst") {
+      std::filesystem::remove(entry.path(), ec);
+      ASSERT_FALSE(ec);
+    }
+  }
+}
+
 TEST(RecoveryTest, ReplayWALRestoresLatestState) {
   const std::string path = MakeRecoveryTestPath("replay_latest_state");
   RemoveIfExists(path);
@@ -278,6 +294,28 @@ TEST(RecoveryTest, DBOpenIgnoresSSTableWithPartialTrailingManifestRecord) {
     ASSERT_TRUE(db->Get(ReadOptions{}, "live", &value).ok());
     EXPECT_EQ(value, "v1");
   }
+}
+
+TEST(RecoveryTest, DBOpenRejectsMissingSSTableReferencedByManifest) {
+  DBOptions options = MakeRecoveryDBOptions("missing_manifest_sstable");
+  RemoveDBFiles(options);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "live", "value").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  RemoveAllSSTFiles(options.sst_dir);
+  RemoveIfExists(options.wal_path);
+
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+
+  std::unique_ptr<DB> db;
+  Status s = DB::Open(reopen_options, &db);
+  EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
 }  // namespace

@@ -1143,6 +1143,14 @@ Status DBImpl::LoadSSTFilesFromManifest(uint64_t* max_seq) {
     if (f.file_number == 0 || f.file_path.empty()) {
       return Status::Corruption("invalid manifest add-file record");
     }
+    std::error_code ec;
+    if (!std::filesystem::exists(f.file_path, ec)) {
+      if (ec) {
+        return Status::IOError("failed to query sst file: " + f.file_path);
+      }
+      return Status::Corruption("manifest references missing sst file: " +
+                                f.file_path);
+    }
     sst_files_.push_back(f.file_path);
     max_file_number = std::max(max_file_number, f.file_number);
     *max_seq = std::max(*max_seq, f.max_seq);
