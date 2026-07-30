@@ -875,6 +875,20 @@ Status DBImpl::FlushMemTableToSST(std::string* out_file) {
     if (!s.ok()) {
       return s;
     }
+    s = testing::MaybeInjectFailure(
+        testing::FailurePoint::kAfterManifestAppendBeforeSync);
+    if (!s.ok()) {
+      return s;
+    }
+    s = manifest_.Sync();
+    if (!s.ok()) {
+      return s;
+    }
+    s = testing::MaybeInjectFailure(
+        testing::FailurePoint::kAfterManifestSyncBeforeWALCleanup);
+    if (!s.ok()) {
+      return s;
+    }
   }
 
   *out_file = sst_path;
@@ -1415,6 +1429,10 @@ Status DBImpl::CompactSSTFilesLocked() {
     if (!s.ok()) {
       return s;
     }
+    s = manifest_.Sync();
+    if (!s.ok()) {
+      return s;
+    }
 
     for (const auto& old_file : old_files) {
       // Parse file number from path
@@ -1432,6 +1450,10 @@ Status DBImpl::CompactSSTFilesLocked() {
         old_number = old_number * 10 + static_cast<uint64_t>(c - '0');
       }
       s = manifest_.RemoveFile(old_number);
+      if (!s.ok()) {
+        return s;
+      }
+      s = manifest_.Sync();
       if (!s.ok()) {
         return s;
       }

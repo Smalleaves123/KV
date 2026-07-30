@@ -57,6 +57,30 @@ TEST(ManifestTest, OpenAndAppendAndRecover) {
   EXPECT_EQ(files[1].max_seq, 160U);
 }
 
+TEST(ManifestTest, SyncPersistsAppendedRecord) {
+  const std::string path = MakeManifestPath("sync_appended_record");
+  RemovePathIfExists(path);
+
+  ManifestFileMeta file;
+  file.file_number = 1;
+  file.file_path = "test_tmp/db/sst/00000000000000000001.sst";
+  file.max_seq = 100;
+
+  Manifest manifest;
+  ASSERT_TRUE(manifest.Open(path, true).ok());
+  ASSERT_TRUE(manifest.AddFile(file).ok());
+  ASSERT_TRUE(manifest.Sync().ok());
+  ASSERT_TRUE(manifest.Close().ok());
+
+  ASSERT_TRUE(manifest.Open(path, false).ok());
+  std::vector<ManifestFileMeta> files;
+  ASSERT_TRUE(manifest.Recover(&files).ok());
+  ASSERT_EQ(files.size(), 1U);
+  EXPECT_EQ(files[0].file_number, file.file_number);
+  EXPECT_EQ(files[0].file_path, file.file_path);
+  EXPECT_EQ(files[0].max_seq, file.max_seq);
+}
+
 TEST(ManifestTest, OpenMissingFileWithoutCreateFails) {
   const std::string path = MakeManifestPath("missing_open_fail");
   RemovePathIfExists(path);

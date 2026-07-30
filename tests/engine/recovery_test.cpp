@@ -268,6 +268,85 @@ TEST(RecoveryTest, InjectedFlushFailureLeavesOrphanSSTableOutOfRecovery) {
   }
 }
 
+TEST(RecoveryTest, ManifestAppendFailureCanDiscardUndurableManifestTail) {
+  DBOptions options = MakeRecoveryDBOptions("manifest_append_before_sync");
+  RemoveDBFiles(options);
+  testing::ClearFailureInjection();
+
+  uintmax_t durable_manifest_size = 0;
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "live", "v1").ok());
+    ASSERT_TRUE(db->Close().ok());
+
+    std::error_code ec;
+    durable_manifest_size = std::filesystem::file_size(options.manifest_path, ec);
+    ASSERT_FALSE(ec);
+  }
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    testing::InjectFailure(
+        testing::FailurePoint::kAfterManifestAppendBeforeSync,
+        Status::IOError("injected failure before manifest sync"));
+    Status s = db->Put(WriteOptions{}, "live", "v2");
+    EXPECT_TRUE(s.IsIOError()) << s.ToString();
+    testing::ClearFailureInjection();
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  // Model a crash that loses the manifest record written after the last fsync.
+  std::error_code ec;
+  std::filesystem::resize_file(options.manifest_path, durable_manifest_size, ec);
+  ASSERT_FALSE(ec);
+  RemoveIfExists(options.wal_path);
+
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "live", &value).ok());
+  EXPECT_EQ(value, "v1");
+}
+
+TEST(RecoveryTest, ManifestSyncBeforeWALCleanupRecoversFromSSTAndWAL) {
+  DBOptions options = MakeRecoveryDBOptions("manifest_sync_before_wal_cleanup");
+  RemoveDBFiles(options);
+  testing::ClearFailureInjection();
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    testing::InjectFailure(
+        testing::FailurePoint::kAfterManifestSyncBeforeWALCleanup,
+        Status::IOError("injected failure after manifest sync"));
+    Status s = db->Put(WriteOptions{}, "live", "v1");
+    EXPECT_TRUE(s.IsIOError()) << s.ToString();
+    testing::ClearFailureInjection();
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "live", &value).ok());
+  EXPECT_EQ(value, "v1");
+  ASSERT_TRUE(db->Put(WriteOptions{}, "after_reopen", "v2").ok());
+  ASSERT_TRUE(db->Close().ok());
+
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+  ASSERT_TRUE(db->Get(ReadOptions{}, "live", &value).ok());
+  EXPECT_EQ(value, "v1");
+  ASSERT_TRUE(db->Get(ReadOptions{}, "after_reopen", &value).ok());
+  EXPECT_EQ(value, "v2");
+}
+
 TEST(RecoveryTest, DBOpenIgnoresSSTableWithPartialTrailingManifestRecord) {
   DBOptions options = MakeRecoveryDBOptions("partial_manifest_tail");
   RemoveDBFiles(options);

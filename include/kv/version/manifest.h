@@ -28,6 +28,8 @@ class Manifest {
 
   Status AddFile(const ManifestFileMeta& file_meta);
   Status RemoveFile(uint64_t file_number);
+  // Flush buffered records and make them durable before dependent files change.
+  Status Sync();
   Status Recover(std::vector<ManifestFileMeta>* files) const;
 
   bool IsOpen() const noexcept;
@@ -36,6 +38,7 @@ class Manifest {
  private:
   std::ofstream append_stream_;
   std::string file_path_;
+  int sync_fd_;
   bool is_open_;
 };
 

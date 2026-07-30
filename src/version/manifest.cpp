@@ -7,6 +7,7 @@
 #include <system_error>
 
 #include "kv/common/encoding.h"
+#include "kv/common/file_compat.h"
 
 namespace kv {
 namespace {
@@ -37,7 +38,8 @@ bool IsTrailingShortRead(const std::ifstream& in) {
 
 }  // namespace
 
-Manifest::Manifest() : append_stream_(), file_path_(), is_open_(false) {}
+Manifest::Manifest()
+    : append_stream_(), file_path_(), sync_fd_(-1), is_open_(false) {}
 
 Manifest::~Manifest() {
   (void)Close();
@@ -76,6 +78,15 @@ Status Manifest::Open(const std::string& file_path, bool create_if_missing) {
     return Status::IOError("failed to open manifest file: " + file_path);
   }
 
+  sync_fd_ = platform::OpenSyncFile(file_path, true);
+  if (sync_fd_ < 0) {
+    const std::string err = platform::FileErrorString();
+    append_stream_.close();
+    append_stream_.clear();
+    return Status::IOError("failed to open manifest fd for sync: " + file_path +
+                           ": " + err);
+  }
+
   file_path_ = file_path;
   is_open_ = true;
   return Status::OK();
@@ -83,24 +94,30 @@ Status Manifest::Open(const std::string& file_path, bool create_if_missing) {
 
 Status Manifest::Close() {
   if (!append_stream_.is_open()) {
+    if (sync_fd_ >= 0) {
+      (void)platform::CloseFile(sync_fd_);
+      sync_fd_ = -1;
+    }
     append_stream_.clear();
     is_open_ = false;
     return Status::OK();
   }
 
-  append_stream_.flush();
-  if (!append_stream_) {
-    append_stream_.close();
-    append_stream_.clear();
-    is_open_ = false;
-    return Status::IOError("failed to flush manifest before close");
-  }
+  Status status = Sync();
 
   append_stream_.close();
-  if (append_stream_.fail()) {
+  if (append_stream_.fail() && status.ok()) {
+    status = Status::IOError("failed to close manifest file");
+  }
+  if (sync_fd_ >= 0 && platform::CloseFile(sync_fd_) != 0 && status.ok()) {
+    status = Status::IOError("failed to close manifest sync fd: " +
+                             platform::FileErrorString());
+  }
+  sync_fd_ = -1;
+  if (!status.ok()) {
     append_stream_.clear();
     is_open_ = false;
-    return Status::IOError("failed to close manifest file");
+    return status;
   }
 
   append_stream_.clear();
@@ -135,6 +152,24 @@ Status Manifest::AddFile(const ManifestFileMeta& file_meta) {
   append_stream_.flush();
   if (!append_stream_) {
     return Status::IOError("failed to flush manifest record");
+  }
+
+  return Status::OK();
+}
+
+Status Manifest::Sync() {
+  if (!is_open_ || !append_stream_.is_open()) {
+    return Status::IOError("manifest is not open");
+  }
+
+  append_stream_.flush();
+  if (!append_stream_) {
+    return Status::IOError("failed to flush manifest records");
+  }
+
+  if (sync_fd_ < 0 || platform::SyncFile(sync_fd_) != 0) {
+    return Status::IOError("failed to sync manifest file: " +
+                           platform::FileErrorString());
   }
 
   return Status::OK();

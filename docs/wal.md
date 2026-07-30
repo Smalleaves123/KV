@@ -61,7 +61,10 @@ On open:
    one.
 
 Replay is used together with SST manifest recovery. SST files supply the max
-sequence for flushed data; WAL supplies unflushed data.
+sequence for flushed data; WAL supplies unflushed data. During a flush, the
+SST file is synced before its manifest add-file record is synced. The current
+single WAL remains available after a successful flush, so recovery can safely
+replay records also represented in an SST.
 
 ## Error Handling
 

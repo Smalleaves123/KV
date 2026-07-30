@@ -4,6 +4,7 @@
 
 #include "kv/common/checksum.h"
 #include "kv/common/encoding.h"
+#include "kv/common/file_compat.h"
 #include "kv/sstable/block_builder.h"
 #include "kv/sstable/footer.h"
 #include "kv/sstable/value_codec.h"
@@ -149,7 +150,32 @@ Status TableBuilder::Finish() {
     return Status::IOError("failed to write footer");
   }
 
+  file_.flush();
+  if (!file_) {
+    return Status::IOError("failed to flush table file");
+  }
+
+  const int sync_fd = platform::OpenSyncFile(file_path_, true);
+  if (sync_fd < 0) {
+    return Status::IOError("failed to open table fd for sync: " + file_path_ +
+                           ": " + platform::FileErrorString());
+  }
+  const int sync_result = platform::SyncFile(sync_fd);
+  const std::string sync_error = sync_result == 0 ? "" : platform::FileErrorString();
+  const int close_result = platform::CloseFile(sync_fd);
+  if (sync_result != 0) {
+    return Status::IOError("failed to sync table file: " + file_path_ + ": " +
+                           sync_error);
+  }
+  if (close_result != 0) {
+    return Status::IOError("failed to close table sync fd: " + file_path_ + ": " +
+                           platform::FileErrorString());
+  }
+
   file_.close();
+  if (file_.fail()) {
+    return Status::IOError("failed to close table file");
+  }
   finished_ = true;
   return Status::OK();
 }

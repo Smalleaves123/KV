@@ -7,6 +7,8 @@ namespace testing {
 
 enum class FailurePoint {
   kAfterSSTableWriteBeforeManifest,
+  kAfterManifestAppendBeforeSync,
+  kAfterManifestSyncBeforeWALCleanup,
 };
 
 void InjectFailure(FailurePoint point, const Status& status);
