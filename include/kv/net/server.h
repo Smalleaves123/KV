@@ -16,6 +16,7 @@ namespace kv {
 class DB;
 class ClusterManager;
 class RaftServer;
+struct RaftStats;
 }
 
 namespace kv::net {
@@ -51,6 +52,7 @@ class Server {
   bool IsRunning() const noexcept;
   uint16_t port() const noexcept;
   ServerStats GetStats() const noexcept;
+  bool GetRaftStats(RaftStats* stats) const noexcept;
 
  private:
   Status SetupListenSocket(uint16_t port);

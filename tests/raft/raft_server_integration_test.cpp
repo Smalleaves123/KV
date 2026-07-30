@@ -136,6 +136,10 @@ TEST_F(RaftServerIntegrationTest, LeaderReplicatesCommittedWriteToAllNodes) {
       << "leader was not elected in time";
 
   ASSERT_NE(leader, nullptr);
+  const RaftStats leader_stats = leader->GetStats();
+  EXPECT_TRUE(leader_stats.running);
+  EXPECT_TRUE(leader_stats.is_leader);
+  EXPECT_EQ(leader_stats.leader_id, leader->NodeId());
 
   TestNode* follower = nullptr;
   for (auto& node : nodes_) {

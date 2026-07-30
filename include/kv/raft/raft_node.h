@@ -57,6 +57,7 @@ class RaftNode {
   RaftRole role() const { return role_; }
   uint64_t leader_id() const { return leader_id_; }
   uint64_t commit_index() const { return raft_log_->commit_index(); }
+  uint64_t last_log_index() const { return raft_log_->LastIndex(); }
   void AdvanceApplied(uint64_t index) { raft_log_->AppliedTo(index); }
 
   // 接收上层应用的日志写入请求，返回新日志索引；非 leader 时返回 0。

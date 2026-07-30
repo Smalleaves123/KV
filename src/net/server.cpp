@@ -8,6 +8,7 @@
 #include "kv/net/command_parser.h"
 #include "kv/net/protocol.h"
 #include "kv/net/session.h"
+#include "kv/raft/raft_server.h"
 
 namespace kv::net {
 
@@ -115,6 +116,14 @@ ServerStats Server::GetStats() const noexcept {
     stats.command_errors[i] = command_errors_[i].load();
   }
   return stats;
+}
+
+bool Server::GetRaftStats(RaftStats* stats) const noexcept {
+  if (stats == nullptr || raft_server_ == nullptr) {
+    return false;
+  }
+  *stats = raft_server_->GetStats();
+  return true;
 }
 
 Status Server::SetupListenSocket(uint16_t port) {

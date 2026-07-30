@@ -24,6 +24,17 @@ struct NodeAddress {
   uint16_t port = 0;
 };
 
+struct RaftStats {
+  bool running = false;
+  bool is_leader = false;
+  uint64_t term = 0;
+  uint64_t voted_for = 0;
+  uint64_t leader_id = 0;
+  uint64_t commit_index = 0;
+  uint64_t applied_index = 0;
+  uint64_t last_log_index = 0;
+};
+
 // Raft cluster configuration for a single node.
 struct RaftConfig {
   uint64_t node_id = 1;
@@ -69,6 +80,7 @@ class RaftServer {
   bool IsLeader() const noexcept;
   uint64_t LeaderId() const noexcept;
   std::optional<NodeAddress> GetLeaderAddress() const;
+  RaftStats GetStats() const noexcept;
   uint64_t NodeId() const noexcept;
 
  private:

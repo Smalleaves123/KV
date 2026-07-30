@@ -7,6 +7,7 @@
 #include "kv/engine/db.h"
 #include "kv/net/command.h"
 #include "kv/net/server.h"
+#include "kv/raft/raft_server.h"
 
 namespace kv::net {
 namespace {
@@ -212,6 +213,8 @@ std::string MonitoringServer::RenderMetrics(const Server& server,
   const bool read_ok = db.GetReadPathStats(&read_stats).ok();
   const bool compaction_ok = db.GetCompactionStats(&compaction_stats).ok();
   const bool flush_ok = db.GetFlushStats(&flush_stats).ok();
+  RaftStats raft_stats;
+  const bool raft_ok = server.GetRaftStats(&raft_stats);
 
   std::ostringstream out;
   out << "# HELP kv_server_up Whether the command server is running.\n"
@@ -344,6 +347,25 @@ std::string MonitoringServer::RenderMetrics(const Server& server,
         << "# TYPE kv_db_write_stall_duration_microseconds_total counter\n"
         << "kv_db_write_stall_duration_microseconds_total "
         << flush_stats.write_stall_duration_us << "\n";
+  }
+  if (raft_ok) {
+    out << "# TYPE kv_raft_role gauge\n"
+        << "kv_raft_role{role=\"leader\"} "
+        << (raft_stats.is_leader ? 1 : 0) << "\n"
+        << "kv_raft_role{role=\"follower\"} "
+        << (raft_stats.is_leader ? 0 : 1) << "\n"
+        << "# TYPE kv_raft_term gauge\n"
+        << "kv_raft_term " << raft_stats.term << "\n"
+        << "# TYPE kv_raft_voted_for gauge\n"
+        << "kv_raft_voted_for " << raft_stats.voted_for << "\n"
+        << "# TYPE kv_raft_leader_id gauge\n"
+        << "kv_raft_leader_id " << raft_stats.leader_id << "\n"
+        << "# TYPE kv_raft_commit_index gauge\n"
+        << "kv_raft_commit_index " << raft_stats.commit_index << "\n"
+        << "# TYPE kv_raft_applied_index gauge\n"
+        << "kv_raft_applied_index " << raft_stats.applied_index << "\n"
+        << "# TYPE kv_raft_last_log_index gauge\n"
+        << "kv_raft_last_log_index " << raft_stats.last_log_index << "\n";
   }
   return out.str();
 }

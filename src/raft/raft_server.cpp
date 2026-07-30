@@ -224,6 +224,20 @@ std::optional<NodeAddress> RaftServer::GetLeaderAddress() const {
   return NodeAddress{it->second.host, client_port};
 }
 
+RaftStats RaftServer::GetStats() const noexcept {
+  std::lock_guard<std::mutex> lk(raft_mu_);
+  RaftStats stats;
+  stats.running = running_.load();
+  stats.is_leader = raft_node_->role() == raft::RaftRole::kLeader;
+  stats.term = raft_node_->current_term();
+  stats.voted_for = raft_node_->voted_for();
+  stats.leader_id = raft_node_->leader_id();
+  stats.commit_index = raft_node_->commit_index();
+  stats.applied_index = last_applied_;
+  stats.last_log_index = raft_node_->last_log_index();
+  return stats;
+}
+
 uint64_t RaftServer::NodeId() const noexcept {
   return config_.node_id;
 }
