@@ -844,6 +844,13 @@ Status DBImpl::CloseWAL() {
   return using_segmented_wal_ ? wal_manager_.Close() : wal_writer_.Close();
 }
 
+Status DBImpl::RemoveFlushedWAL(uint64_t max_flushed_seq) {
+  if (!using_segmented_wal_) {
+    return Status::OK();
+  }
+  return wal_manager_.RemoveLogsUpTo(max_flushed_seq);
+}
+
 Status DBImpl::MaybeFlushMemTable() {
   if (options_.memtable_write_buffer_size == 0 || memtable_.Empty()) {
     return Status::OK();
@@ -958,6 +965,10 @@ Status DBImpl::FlushMemTableToSST(std::string* out_file) {
     }
     s = testing::MaybeInjectFailure(
         testing::FailurePoint::kAfterManifestSyncBeforeWALCleanup);
+    if (!s.ok()) {
+      return s;
+    }
+    s = RemoveFlushedWAL(max_flushed_seq);
     if (!s.ok()) {
       return s;
     }

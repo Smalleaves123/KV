@@ -37,6 +37,8 @@ class WALManager {
   Status AppendDelete(uint64_t seq, const std::string& key);
 
   Status Sync();
+  // Deletes closed segments whose complete contents are covered by an SSTable.
+  Status RemoveLogsUpTo(uint64_t max_sequence);
   static Status ListLogs(const std::string& wal_dir,
                          std::vector<std::string>* out);
   Status ListLogs(std::vector<std::string>* out) const;

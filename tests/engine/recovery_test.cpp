@@ -311,6 +311,68 @@ TEST(RecoveryTest, SegmentedWALRecoversWritesDeletesAndTTLAcrossRotations) {
   EXPECT_EQ(value, "v3");
 }
 
+TEST(RecoveryTest, SegmentedWALDeletesOnlyFlushedInactiveSegments) {
+  DBOptions options = MakeRecoveryDBOptions("segmented_wal_cleanup");
+  options.wal_path.clear();
+  options.wal_dir = "test_tmp/recovery_db/segmented_wal_cleanup_wal";
+  options.wal_segment_size_bytes = 1;
+  options.memtable_write_buffer_size = 1;
+  RemoveDBFiles(options);
+  std::error_code ec;
+  std::filesystem::remove_all(options.wal_dir, ec);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "key", "value").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  EXPECT_EQ(CountWALSegments(options.wal_dir), 1U);
+
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "key", &value).ok());
+  EXPECT_EQ(value, "value");
+}
+
+TEST(RecoveryTest, ManifestSyncFailurePreventsSegmentedWALCleanup) {
+  DBOptions options = MakeRecoveryDBOptions("segmented_wal_cleanup_failure");
+  options.wal_path.clear();
+  options.wal_dir =
+      "test_tmp/recovery_db/segmented_wal_cleanup_failure_wal";
+  options.wal_segment_size_bytes = 1;
+  options.memtable_write_buffer_size = 1;
+  RemoveDBFiles(options);
+  std::error_code ec;
+  std::filesystem::remove_all(options.wal_dir, ec);
+  testing::ClearFailureInjection();
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    testing::InjectFailure(
+        testing::FailurePoint::kAfterManifestSyncBeforeWALCleanup,
+        Status::IOError("injected failure before wal cleanup"));
+    Status s = db->Put(WriteOptions{}, "key", "value");
+    EXPECT_TRUE(s.IsIOError()) << s.ToString();
+    testing::ClearFailureInjection();
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  EXPECT_GE(CountWALSegments(options.wal_dir), 2U);
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "key", &value).ok());
+  EXPECT_EQ(value, "value");
+}
+
 TEST(RecoveryTest, DBOpenIgnoresOrphanSSTableWhenManifestExists) {
   DBOptions options = MakeRecoveryDBOptions("orphan_sstable");
   RemoveDBFiles(options);

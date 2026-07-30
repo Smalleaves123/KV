@@ -107,6 +107,7 @@ class DBImpl final : public DB, public WriteApplier {
   Status AppendWALDelete(uint64_t seq, const Slice& key);
   Status SyncWAL();
   Status CloseWAL();
+  Status RemoveFlushedWAL(uint64_t max_flushed_seq);
   Status MaybeFlushMemTable();
   Status FlushMemTableToSST(std::string* out_file);
   Status GetFromMemTableAt(const Slice& key,

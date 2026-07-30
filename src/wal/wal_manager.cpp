@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include "kv/wal/wal_writer.h"
+#include "kv/wal/wal_reader.h"
 
 namespace kv {
 namespace {
@@ -40,6 +41,49 @@ bool ParseLogNumber(const std::filesystem::path& path, uint64_t* number) {
 
   *number = value;
   return true;
+}
+
+Status ReadMaxSequence(const std::string& path, uint64_t* max_sequence) {
+  if (max_sequence == nullptr) {
+    return Status::InvalidArgument("max sequence output is null");
+  }
+  *max_sequence = 0;
+
+  WALReader reader;
+  Status s = reader.Open(path);
+  if (!s.ok()) {
+    return s;
+  }
+
+  while (true) {
+    LogRecord record;
+    s = reader.ReadNext(&record);
+    if (s.IsNotFound()) {
+      break;
+    }
+    if (!s.ok()) {
+      (void)reader.Close();
+      return s;
+    }
+    *max_sequence = std::max(*max_sequence, record.seq);
+  }
+
+  const uint64_t consumed_bytes = reader.offset();
+  s = reader.Close();
+  if (!s.ok()) {
+    return s;
+  }
+
+  std::error_code ec;
+  const auto file_size = std::filesystem::file_size(path, ec);
+  if (ec) {
+    return Status::IOError("failed to query wal segment size: " + path);
+  }
+  if (file_size != consumed_bytes) {
+    return Status::Corruption("truncated closed wal segment: " + path);
+  }
+
+  return Status::OK();
 }
 
 }  // namespace
@@ -174,6 +218,40 @@ Status WALManager::Sync() {
     return Status::IOError("wal manager not open");
   }
   return writer_->Sync();
+}
+
+Status WALManager::RemoveLogsUpTo(uint64_t max_sequence) {
+  if (!open_) {
+    return Status::IOError("wal manager not open");
+  }
+
+  std::vector<std::string> logs;
+  Status s = ListLogs(&logs);
+  if (!s.ok()) {
+    return s;
+  }
+
+  for (const auto& path : logs) {
+    if (std::filesystem::path(path) == std::filesystem::path(active_log_path_)) {
+      continue;
+    }
+
+    uint64_t log_max_sequence = 0;
+    s = ReadMaxSequence(path, &log_max_sequence);
+    if (!s.ok()) {
+      return s;
+    }
+    if (log_max_sequence > max_sequence) {
+      continue;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::remove(path, ec) || ec) {
+      return Status::IOError("failed to remove obsolete wal segment: " + path);
+    }
+  }
+
+  return Status::OK();
 }
 
 Status WALManager::ListLogs(std::vector<std::string>* out) const {
