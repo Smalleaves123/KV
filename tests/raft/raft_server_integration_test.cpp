@@ -152,6 +152,7 @@ TEST_F(RaftServerIntegrationTest, LeaderReplicatesCommittedWriteToAllNodes) {
   EXPECT_TRUE(leader_stats.running);
   EXPECT_TRUE(leader_stats.is_leader);
   EXPECT_EQ(leader_stats.leader_id, leader->NodeId());
+  EXPECT_EQ(leader_stats.peers.size(), 2U);
 
   TestNode* follower = nullptr;
   for (auto& node : nodes_) {

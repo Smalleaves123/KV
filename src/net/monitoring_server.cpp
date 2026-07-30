@@ -366,6 +366,21 @@ std::string MonitoringServer::RenderMetrics(const Server& server,
         << "kv_raft_applied_index " << raft_stats.applied_index << "\n"
         << "# TYPE kv_raft_last_log_index gauge\n"
         << "kv_raft_last_log_index " << raft_stats.last_log_index << "\n";
+    out << "# TYPE kv_raft_peer_match_index gauge\n"
+        << "# TYPE kv_raft_peer_next_index gauge\n"
+        << "# TYPE kv_raft_peer_replication_lag gauge\n";
+    for (const auto& peer : raft_stats.peers) {
+      const std::string peer_id = std::to_string(peer.peer_id);
+      const uint64_t lag = raft_stats.last_log_index > peer.match_index
+                               ? raft_stats.last_log_index - peer.match_index
+                               : 0;
+      out << "kv_raft_peer_match_index{peer_id=\"" << peer_id << "\"} "
+          << peer.match_index << "\n"
+          << "kv_raft_peer_next_index{peer_id=\"" << peer_id << "\"} "
+          << peer.next_index << "\n"
+          << "kv_raft_peer_replication_lag{peer_id=\"" << peer_id << "\"} "
+          << lag << "\n";
+    }
   }
   return out.str();
 }

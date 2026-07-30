@@ -166,6 +166,15 @@ uint64_t RaftNode::Propose(const std::string& data) {
   return entry.index;
 }
 
+std::vector<std::pair<uint64_t, Progress>> RaftNode::Progresses() const {
+  std::vector<std::pair<uint64_t, Progress>> result;
+  result.reserve(progresses_.size());
+  for (const auto& entry : progresses_) {
+    result.push_back(entry);
+  }
+  return result;
+}
+
 RequestVoteReply RaftNode::HandleRequestVote(const RequestVoteArgs& args) {
   RequestVoteReply reply;
   

@@ -33,6 +33,12 @@ struct RaftStats {
   uint64_t commit_index = 0;
   uint64_t applied_index = 0;
   uint64_t last_log_index = 0;
+  struct PeerProgress {
+    uint64_t peer_id = 0;
+    uint64_t match_index = 0;
+    uint64_t next_index = 0;
+  };
+  std::vector<PeerProgress> peers;
 };
 
 // Raft cluster configuration for a single node.
