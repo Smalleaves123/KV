@@ -10,6 +10,7 @@ namespace kv::net::protocol {
 std::string SimpleString(const std::string& s); // +xxx\r\n
 std::string Integer(int64_t value);              // :n\r\n
 std::string Error(const std::string& msg);      // -ERR xxx\r\n
+std::string Moved(const std::string& address);  // -MOVED host:port\r\n
 std::string BulkString(const std::string& s);   // $len\r\n...\r\n
 std::string Nil();                              // $-1\r\n
 std::string Array(const std::vector<std::string>& encoded_items); // *n + items

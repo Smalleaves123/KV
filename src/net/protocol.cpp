@@ -14,6 +14,10 @@ std::string Error (const std::string & msg){
     return "-ERR" + msg + "\r\n";
 }
 
+std::string Moved(const std::string& address) {
+    return "-MOVED " + address + "\r\n";
+}
+
 std::string BulkString (const std::string &s){
     return "$" + std::to_string(s.size()) + "\r\n" + s + "\r\n";
 }

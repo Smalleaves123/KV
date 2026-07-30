@@ -257,7 +257,7 @@ int main(int argc, char** argv) {
 
   kv::net::Server server;
   s = server.Start(static_cast<uint16_t>(port), server_db,
-                   cluster_manager.get(), requirepass);
+                   cluster_manager.get(), requirepass, raft_server.get());
   if (!s.ok()) {
     std::cerr << "server start failed: " << s.ToString() << "\n";
     return 1;

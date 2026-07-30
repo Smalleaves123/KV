@@ -203,6 +203,27 @@ uint64_t RaftServer::LeaderId() const noexcept {
   return raft_node_->leader_id();
 }
 
+std::optional<NodeAddress> RaftServer::GetLeaderAddress() const {
+  const uint64_t leader_id = LeaderId();
+  if (leader_id == 0 || leader_id == config_.node_id) {
+    return std::nullopt;
+  }
+
+  const auto it = config_.peers.find(leader_id);
+  if (it == config_.peers.end()) {
+    return std::nullopt;
+  }
+
+  uint16_t client_port = it->second.client_port;
+  if (client_port == 0 && it->second.raft_port > 1) {
+    client_port = static_cast<uint16_t>(it->second.raft_port - 1);
+  }
+  if (client_port == 0 || it->second.host.empty()) {
+    return std::nullopt;
+  }
+  return NodeAddress{it->second.host, client_port};
+}
+
 uint64_t RaftServer::NodeId() const noexcept {
   return config_.node_id;
 }

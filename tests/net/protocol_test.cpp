@@ -15,6 +15,10 @@ TEST(ProtocolTest, ErrorEncoding) {
   EXPECT_EQ(Error("bad"), "-ERRbad\r\n");
 }
 
+TEST(ProtocolTest, MovedEncoding) {
+  EXPECT_EQ(Moved("127.0.0.1:9527"), "-MOVED 127.0.0.1:9527\r\n");
+}
+
 TEST(ProtocolTest, BulkStringEncoding) {
   EXPECT_EQ(BulkString("abc"), "$3\r\nabc\r\n");
 }

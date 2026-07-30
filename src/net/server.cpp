@@ -28,6 +28,7 @@ Server::Server()
       txn_abort_(0),
       txn_conflict_(0),
       requirepass_(),
+      raft_server_(nullptr),
       accept_thread_(),
       pool_(std::make_unique<ThreadPool>(0)),
       socket_runtime_() {
@@ -41,7 +42,7 @@ Server::~Server() {
 }
 
 Status Server::Start(uint16_t port, DB* db, ClusterManager* cluster_manager,
-                     const std::string& requirepass) {
+                     const std::string& requirepass, RaftServer* raft_server) {
   if (db == nullptr) {
     return Status::InvalidArgument("db is null");
   }
@@ -61,6 +62,7 @@ Status Server::Start(uint16_t port, DB* db, ClusterManager* cluster_manager,
 
   pool_ = std::make_unique<ThreadPool>(0);
   requirepass_ = requirepass;
+  raft_server_ = raft_server;
   running_.store(true);
   accept_thread_ = std::thread(&Server::AcceptLoop, this, db, cluster_manager);
   return Status::OK();
@@ -179,8 +181,8 @@ void Server::AcceptLoop(DB* db, ClusterManager* cluster_manager) {
     active_connections_.fetch_add(1);
 
     pool_->Execute([client_fd, db, cluster_manager, requirepass = requirepass_,
-                    this]() {
-      HandleClient(client_fd, db, cluster_manager, requirepass,
+                    raft_server = raft_server_, this]() {
+      HandleClient(client_fd, db, cluster_manager, requirepass, raft_server,
                    &running_,
                    &total_requests_,
                    &request_errors_,
@@ -201,6 +203,7 @@ void Server::HandleClient(platform::SocketHandle client_fd,
                           DB* db,
                           ClusterManager* cluster_manager,
                           const std::string& requirepass,
+                          RaftServer* raft_server,
                           std::atomic<bool>* running,
                           std::atomic<uint64_t>* total_requests,
                           std::atomic<uint64_t>* request_errors,
@@ -216,7 +219,7 @@ void Server::HandleClient(platform::SocketHandle client_fd,
                           std::atomic<uint64_t>* txn_conflict,
                           std::atomic<uint64_t>* active_connections) {
   Connection conn(client_fd);
-  Session session(db, cluster_manager, requirepass);
+  Session session(db, cluster_manager, requirepass, raft_server);
 
   (void)platform::SetReceiveTimeout(client_fd, 200);
 

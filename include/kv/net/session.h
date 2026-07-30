@@ -10,6 +10,7 @@
 
 namespace kv {
 class ClusterManager;
+class RaftServer;
 }
 
 namespace kv::net {
@@ -25,7 +26,7 @@ enum class TxnEvent {
 class Session {
  public:
   explicit Session(DB* db, ClusterManager* cluster_manager = nullptr,
-                   std::string requirepass = "");
+                   std::string requirepass = "", RaftServer* raft_server = nullptr);
   ~Session();
 
   // 输入一行命令，返回编码后的响应
@@ -36,6 +37,7 @@ class Session {
  private:
   std::string HandleCommand(const Command& cmd);
   std::string HandleAuthCommand(const Command& cmd);
+  std::string MaybeRedirectWrite(const Command& cmd) const;
   std::string HandleTxnCommand(const Command& cmd);
   std::string HandleDataCommandInTxn(const Command& cmd);
   void SetLastTxnEvent(TxnEvent event) noexcept;
@@ -44,6 +46,7 @@ class Session {
   CommandExecutor executor_;
   std::string requirepass_;
   bool authenticated_;
+  RaftServer* raft_server_;
   std::unique_ptr<Transaction> active_txn_;
   TxnEvent last_txn_event_;
 };

@@ -15,6 +15,7 @@
 namespace kv {
 class DB;
 class ClusterManager;
+class RaftServer;
 }
 
 namespace kv::net {
@@ -43,7 +44,8 @@ class Server {
   Server& operator=(const Server&) = delete;
 
   Status Start(uint16_t port, DB* db, ClusterManager* cluster_manager = nullptr,
-               const std::string& requirepass = "");
+               const std::string& requirepass = "",
+               RaftServer* raft_server = nullptr);
   Status Stop();
 
   bool IsRunning() const noexcept;
@@ -57,6 +59,7 @@ class Server {
                            DB* db,
                            ClusterManager* cluster_manager,
                            const std::string& requirepass,
+                           RaftServer* raft_server,
                            std::atomic<bool>* running,
                            std::atomic<uint64_t>* total_requests,
                            std::atomic<uint64_t>* request_errors,
@@ -88,6 +91,7 @@ class Server {
   std::atomic<uint64_t> txn_abort_;
   std::atomic<uint64_t> txn_conflict_;
   std::string requirepass_;
+  RaftServer* raft_server_;
 
   std::thread accept_thread_;
   std::unique_ptr<ThreadPool> pool_;

@@ -13,6 +13,7 @@
 #include "kv/engine/write_applier.h"
 #include "kv/common/time.h"
 #include "kv/raft/raft_rpc_codec.h"
+#include "kv/net/session.h"
 
 namespace kv {
 namespace {
@@ -20,6 +21,7 @@ namespace {
 struct TestNode {
   uint64_t node_id = 0;
   uint16_t raft_port = 0;
+  uint16_t client_port = 0;
   DBOptions db_options;
   std::string raft_dir;
   std::unique_ptr<DB> db;
@@ -57,15 +59,18 @@ class RaftServerIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
     constexpr uint16_t kBasePort = 21100;
+    constexpr uint16_t kClientBasePort = 22100;
     std::unordered_map<uint64_t, RaftConfig::Peer> peers;
     for (uint64_t id = 1; id <= 3; ++id) {
-      peers[id] = {"127.0.0.1", static_cast<uint16_t>(kBasePort + id)};
+      peers[id] = {"127.0.0.1", static_cast<uint16_t>(kBasePort + id),
+                   static_cast<uint16_t>(kClientBasePort + id)};
     }
 
     for (uint64_t id = 1; id <= 3; ++id) {
       TestNode node;
       node.node_id = id;
       node.raft_port = static_cast<uint16_t>(kBasePort + id);
+      node.client_port = static_cast<uint16_t>(kClientBasePort + id);
 
       const std::string base = MakeBasePath("replication", static_cast<int>(id));
       node.db_options.db_path = base + "_db";
@@ -131,6 +136,20 @@ TEST_F(RaftServerIntegrationTest, LeaderReplicatesCommittedWriteToAllNodes) {
       << "leader was not elected in time";
 
   ASSERT_NE(leader, nullptr);
+
+  TestNode* follower = nullptr;
+  for (auto& node : nodes_) {
+    if (node.raft.get() != leader) {
+      follower = &node;
+      break;
+    }
+  }
+  ASSERT_NE(follower, nullptr);
+  net::Session follower_session(follower->db.get(), nullptr, "",
+                                follower->raft.get());
+  EXPECT_EQ(follower_session.HandleLine("SET redirect value"),
+            "-MOVED 127.0.0.1:" + std::to_string(
+                static_cast<uint16_t>(22100 + leader->NodeId())) + "\r\n");
 
   const Status s = leader->Propose(raft::EncodePutCmd("alpha", "beta"));
   ASSERT_TRUE(s.ok()) << s.ToString();

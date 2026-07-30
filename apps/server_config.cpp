@@ -296,6 +296,11 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
           if (ParseIntValue(value, &port)) {
             current_peer.raft_port = static_cast<uint16_t>(port);
           }
+        } else if (key == "client_port") {
+          int port = 0;
+          if (ParseIntValue(value, &port)) {
+            current_peer.client_port = static_cast<uint16_t>(port);
+          }
         }
         continue;
       }
@@ -432,7 +437,7 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
   return cfg;
 }
 
-// Parse Raft peers from env: "1:127.0.0.1:9528,2:127.0.0.1:9628"
+// Parse Raft peers from env: "1:127.0.0.1:9528[:9527],2:127.0.0.1:9628[:9627]"
 std::unordered_map<uint64_t, kv::RaftConfig::Peer> ParsePeers(const std::string& s) {
   std::unordered_map<uint64_t, kv::RaftConfig::Peer> peers;
   std::istringstream iss(s);
@@ -441,17 +446,25 @@ std::unordered_map<uint64_t, kv::RaftConfig::Peer> ParsePeers(const std::string&
     if (item.empty())
       continue;
     std::istringstream pis(item);
-    std::string id_str, host, port_str;
+    std::string id_str, host, raft_port_str, client_port_str;
     if (!std::getline(pis, id_str, ':'))
       continue;
     if (!std::getline(pis, host, ':'))
       continue;
-    if (!std::getline(pis, port_str, ':'))
+    if (!std::getline(pis, raft_port_str, ':'))
       continue;
     uint64_t id = ParseNodeId(id_str.c_str());
-    int p = ParsePort(port_str.c_str());
-    if (id > 0 && p > 0) {
-      peers[id] = {host, static_cast<uint16_t>(p)};
+    int raft_port = ParsePort(raft_port_str.c_str());
+    int client_port = 0;
+    if (std::getline(pis, client_port_str, ':')) {
+      client_port = ParsePort(client_port_str.c_str());
+      if (client_port < 0) {
+        continue;
+      }
+    }
+    if (id > 0 && raft_port > 0) {
+      peers[id] = {host, static_cast<uint16_t>(raft_port),
+                   static_cast<uint16_t>(client_port)};
     }
   }
   return peers;

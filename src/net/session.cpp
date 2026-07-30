@@ -6,15 +6,17 @@
 #include <vector>
 
 #include "kv/net/protocol.h"
+#include "kv/raft/raft_server.h"
 
 namespace kv::net {
 
 Session::Session(DB* db, ClusterManager* cluster_manager,
-                 std::string requirepass)
+                 std::string requirepass, RaftServer* raft_server)
     : db_(db),
       executor_(db, cluster_manager),
       requirepass_(std::move(requirepass)),
       authenticated_(requirepass_.empty()),
+      raft_server_(raft_server),
       active_txn_(),
       last_txn_event_(TxnEvent::kNone) {}
 
@@ -51,6 +53,10 @@ std::string Session::HandleCommand(const Command& cmd) {
   }
   if (!authenticated_) {
     return protocol::Error("NOAUTH authentication required");
+  }
+  const std::string redirect = MaybeRedirectWrite(cmd);
+  if (!redirect.empty()) {
+    return redirect;
   }
 
   switch (cmd.type) {
@@ -99,6 +105,42 @@ std::string Session::HandleCommand(const Command& cmd) {
     default:
       return executor_.Execute(cmd);
   }
+}
+
+std::string Session::MaybeRedirectWrite(const Command& cmd) const {
+  if (raft_server_ == nullptr || raft_server_->IsLeader()) {
+    return {};
+  }
+
+  switch (cmd.type) {
+    case CommandType::kSet:
+    case CommandType::kDel:
+    case CommandType::kExpire:
+    case CommandType::kPersist:
+    case CommandType::kIncr:
+    case CommandType::kIncrBy:
+    case CommandType::kDecr:
+    case CommandType::kDecrBy:
+    case CommandType::kHSet:
+    case CommandType::kHDel:
+    case CommandType::kLPush:
+    case CommandType::kRPush:
+    case CommandType::kLPop:
+    case CommandType::kRPop:
+    case CommandType::kBegin:
+    case CommandType::kExec:
+    case CommandType::kAbort:
+      break;
+    default:
+      return {};
+  }
+
+  const auto leader = raft_server_->GetLeaderAddress();
+  if (!leader.has_value()) {
+    return protocol::Error("not leader");
+  }
+  return protocol::Moved(leader->host + ":" +
+                         std::to_string(leader->port));
 }
 
 std::string Session::HandleAuthCommand(const Command& cmd) {

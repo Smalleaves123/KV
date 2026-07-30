@@ -205,12 +205,15 @@ raft:
     - id: 1
       host: 127.0.0.1
       raft_port: 9528
+      client_port: 9527
     - id: 2
       host: 127.0.0.1
       raft_port: 9628
+      client_port: 9627
     - id: 3
       host: 127.0.0.1
       raft_port: 9728
+      client_port: 9727
 ```
 
 Fields:
@@ -218,6 +221,8 @@ Fields:
 - `enabled`: starts the Raft RPC server and wraps DB writes through Raft.
 - `node_id`: numeric id of this node.
 - `raft_port`: TCP port for Raft RPCs.
+- `client_port`: TCP command port used for redirects to this peer. When it is
+  omitted, the server assumes `raft_port - 1`.
 - `data_dir`: directory for Raft persistent state.
 - `peers`: cluster peer list.
 
@@ -228,13 +233,13 @@ KV_RAFT=1
 KV_RAFT_NODE_ID=1
 KV_RAFT_PORT=9528
 KV_RAFT_DATA_DIR=data/raft/node1
-KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728
+KV_RAFT_PEERS=1:127.0.0.1:9528:9527,2:127.0.0.1:9628:9627,3:127.0.0.1:9728:9727
 ```
 
 `KV_RAFT_PEERS` format:
 
 ```text
-node_id:host:raft_port,node_id:host:raft_port
+node_id:host:raft_port[:client_port],node_id:host:raft_port[:client_port]
 ```
 
 ## DBOptions Reference

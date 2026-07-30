@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -18,6 +19,11 @@
 
 namespace kv {
 
+struct NodeAddress {
+  std::string host;
+  uint16_t port = 0;
+};
+
 // Raft cluster configuration for a single node.
 struct RaftConfig {
   uint64_t node_id = 1;
@@ -29,6 +35,7 @@ struct RaftConfig {
   struct Peer {
     std::string host;
     uint16_t raft_port;
+    uint16_t client_port = 0;
   };
   std::unordered_map<uint64_t, Peer> peers;
 
@@ -61,6 +68,7 @@ class RaftServer {
 
   bool IsLeader() const noexcept;
   uint64_t LeaderId() const noexcept;
+  std::optional<NodeAddress> GetLeaderAddress() const;
   uint64_t NodeId() const noexcept;
 
  private:

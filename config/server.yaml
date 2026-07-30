@@ -5,7 +5,7 @@
 #   KV_RAFT_NODE_ID=1             This node's ID
 #   KV_RAFT_PORT=9528             Raft RPC port
 #   KV_RAFT_DATA_DIR=data/raft    Raft data directory
-#   KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728
+#   KV_RAFT_PEERS=1:127.0.0.1:9528:9527,2:127.0.0.1:9628:9627,3:127.0.0.1:9728:9727
 #   KV_CLUSTER_NODES=id:local,host:127.0.0.1,port:9527,weight:1,alive:true;id:peer2,host:127.0.0.1,port:9528,weight:1,alive:true
 #   KV_CACHE=1                    Enable cache
 #   KV_CACHE_CAPACITY=1024        Cache capacity
@@ -39,12 +39,15 @@ raft:
     - id: 1
       host: 127.0.0.1
       raft_port: 9528
+      client_port: 9527
     - id: 2
       host: 127.0.0.1
       raft_port: 9628
+      client_port: 9627
     - id: 3
       host: 127.0.0.1
       raft_port: 9728
+      client_port: 9727
 
 cache:
   enabled: false
