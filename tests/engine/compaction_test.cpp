@@ -5,6 +5,7 @@
 #include <string>
 
 #include "gtest/gtest.h"
+#include "kv/testing/failure_injection.h"
 
 namespace kv {
 namespace {
@@ -155,6 +156,73 @@ TEST(CompactionTest, AutoCompactionTriggeredAfterFlush) {
   EXPECT_GE(stats.trigger_attempts, 1U);
   EXPECT_GE(stats.succeeded, 1U);
   EXPECT_EQ(CountSSTFiles(options.sst_dir), 1U);
+}
+
+TEST(CompactionTest, OutputBeforeManifestIsIgnoredDuringRecovery) {
+  DBOptions options = MakeCompactionDBOptions("compaction_orphan_output");
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+  testing::ClearFailureInjection();
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "key", "v1").ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "key", "v2").ok());
+
+    testing::InjectFailure(testing::FailurePoint::kDuringCompactionOutput,
+                           Status::IOError("injected compaction output failure"));
+    Status s = db->Compact();
+    EXPECT_TRUE(s.IsIOError()) << s.ToString();
+    testing::ClearFailureInjection();
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  RemovePathIfExists(options.wal_path);
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "key", &value).ok());
+  EXPECT_EQ(value, "v2");
+  EXPECT_EQ(CountSSTFiles(options.sst_dir), 3U);
+}
+
+TEST(CompactionTest, ManifestAddBeforeRemoveRecoversWithOldFilesPresent) {
+  DBOptions options = MakeCompactionDBOptions("compaction_add_before_remove");
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+  testing::ClearFailureInjection();
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "key", "v1").ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "key", "v2").ok());
+
+    testing::InjectFailure(
+        testing::FailurePoint::kAfterCompactionAddBeforeRemove,
+        Status::IOError("injected compaction manifest failure"));
+    Status s = db->Compact();
+    EXPECT_TRUE(s.IsIOError()) << s.ToString();
+    testing::ClearFailureInjection();
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  RemovePathIfExists(options.wal_path);
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "key", &value).ok());
+  EXPECT_EQ(value, "v2");
+  EXPECT_EQ(CountSSTFiles(options.sst_dir), 3U);
 }
 
 }  // namespace

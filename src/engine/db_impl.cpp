@@ -1420,6 +1420,12 @@ Status DBImpl::CompactSSTFilesLocked() {
     return s;
   }
 
+  s = testing::MaybeInjectFailure(
+      testing::FailurePoint::kDuringCompactionOutput);
+  if (!s.ok()) {
+    return s;
+  }
+
   if (manifest_.IsOpen()) {
     ManifestFileMeta meta;
     meta.file_number = file_number;
@@ -1430,6 +1436,12 @@ Status DBImpl::CompactSSTFilesLocked() {
       return s;
     }
     s = manifest_.Sync();
+    if (!s.ok()) {
+      return s;
+    }
+
+    s = testing::MaybeInjectFailure(
+        testing::FailurePoint::kAfterCompactionAddBeforeRemove);
     if (!s.ok()) {
       return s;
     }

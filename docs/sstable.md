@@ -80,7 +80,10 @@ compactions.
 
 Compaction merges live SST files into a new SST file. The current implementation
 keeps the newest version per key and preserves tombstones that represent
-deletes. It then updates the manifest and removes compacted files.
+deletes. The output SST is synced before its manifest add-file record is
+synced. Only then are old manifest records and files removed. A crash after the
+new record is durable but before old-file removal leaves both generations live;
+recovery reads the newer compaction output first, preserving the latest value.
 
 Manual compaction:
 

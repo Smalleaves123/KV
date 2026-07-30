@@ -9,6 +9,8 @@ enum class FailurePoint {
   kAfterSSTableWriteBeforeManifest,
   kAfterManifestAppendBeforeSync,
   kAfterManifestSyncBeforeWALCleanup,
+  kDuringCompactionOutput,
+  kAfterCompactionAddBeforeRemove,
 };
 
 void InjectFailure(FailurePoint point, const Status& status);
