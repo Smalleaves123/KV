@@ -3,11 +3,46 @@
 #include <algorithm>
 #include <filesystem>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 #include "kv/wal/wal_writer.h"
 
 namespace kv {
+namespace {
+
+constexpr size_t kLogNumberWidth = 20;
+
+bool ParseLogNumber(const std::filesystem::path& path, uint64_t* number) {
+  if (number == nullptr || path.extension() != ".wal") {
+    return false;
+  }
+
+  const std::string stem = path.stem().string();
+  if (stem.size() != kLogNumberWidth) {
+    return false;
+  }
+
+  uint64_t value = 0;
+  for (char c : stem) {
+    if (c < '0' || c > '9') {
+      return false;
+    }
+    const uint64_t digit = static_cast<uint64_t>(c - '0');
+    if (value > (std::numeric_limits<uint64_t>::max() - digit) / 10) {
+      return false;
+    }
+    value = value * 10 + digit;
+  }
+  if (value == 0) {
+    return false;
+  }
+
+  *number = value;
+  return true;
+}
+
+}  // namespace
 
 WALManager::WALManager()
     : options_(),
@@ -21,10 +56,16 @@ WALManager::~WALManager() {
 }
 
 Status WALManager::Open(const WALOptions& options) {
-  options_ = options;
   if (open_) {
     return Status::AlreadyExists("wal manager already open");
   }
+  if (options.wal_dir.empty()) {
+    return Status::InvalidArgument("wal dir is empty");
+  }
+  if (options.max_log_file_size == 0) {
+    return Status::InvalidArgument("max log file size must be greater than 0");
+  }
+  options_ = options;
 
   std::error_code ec;
   std::filesystem::create_directories(options_.wal_dir, ec);
@@ -32,15 +73,20 @@ Status WALManager::Open(const WALOptions& options) {
     return Status::IOError("failed to create wal dir: " + options_.wal_dir);
   }
 
-  next_log_number_ = 1;
   std::vector<std::string> existing;
   Status s = ListLogs(&existing);
   if (!s.ok()) {
     return s;
   }
-  if (!existing.empty()) {
-    next_log_number_ = static_cast<uint64_t>(existing.size()) + 1;
+  uint64_t max_log_number = 0;
+  for (const auto& path : existing) {
+    uint64_t log_number = 0;
+    if (!ParseLogNumber(path, &log_number)) {
+      return Status::Corruption("invalid wal segment name: " + path);
+    }
+    max_log_number = std::max(max_log_number, log_number);
   }
+  next_log_number_ = max_log_number + 1;
 
   return RollToNewLog();
 }
@@ -65,6 +111,29 @@ Status WALManager::AppendPut(uint64_t seq, const std::string& key, const std::st
     return Status::IOError("wal manager not open");
   }
   Status s = writer_->AppendPut(seq, key, value);
+  if (!s.ok()) {
+    return s;
+  }
+  if (options_.sync_on_write) {
+    s = writer_->Sync();
+    if (!s.ok()) {
+      return s;
+    }
+  }
+  if (writer_->file_size() >= options_.max_log_file_size) {
+    return RollToNewLog();
+  }
+  return Status::OK();
+}
+
+Status WALManager::AppendPutWithTTL(uint64_t seq,
+                                    const std::string& key,
+                                    const std::string& value,
+                                    uint64_t expires_at_ms) {
+  if (!open_ || writer_ == nullptr) {
+    return Status::IOError("wal manager not open");
+  }
+  Status s = writer_->AppendPutWithTTL(seq, key, value, expires_at_ms);
   if (!s.ok()) {
     return s;
   }
@@ -125,7 +194,8 @@ Status WALManager::ListLogs(std::vector<std::string>* out) const {
     if (!e.is_regular_file()) {
       continue;
     }
-    if (e.path().extension() != ".wal") {
+    uint64_t log_number = 0;
+    if (!ParseLogNumber(e.path(), &log_number)) {
       continue;
     }
     out->push_back(e.path().string());
@@ -139,7 +209,11 @@ Status WALManager::RollToNewLog() {
     writer_ = std::make_unique<WALWriter>();
   }
   if (writer_->IsOpen()) {
-    Status s = writer_->Close();
+    Status s = writer_->Sync();
+    if (!s.ok()) {
+      return s;
+    }
+    s = writer_->Close();
     if (!s.ok()) {
       return s;
     }

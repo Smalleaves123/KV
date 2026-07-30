@@ -40,6 +40,8 @@ Status LogRecovery::ReplayLogs(const std::vector<std::string>& wal_files,
       *max_seq = std::max(*max_seq, rec.seq);
       if (rec.type == LogRecordType::kPut) {
         s = memtable->Put(rec.seq, rec.key, rec.value);
+      } else if (rec.type == LogRecordType::kPutWithTTL) {
+        s = memtable->Put(rec.seq, rec.key, rec.value, rec.expires_at_ms);
       } else if (rec.type == LogRecordType::kDelete) {
         s = memtable->Delete(rec.seq, rec.key);
       } else {

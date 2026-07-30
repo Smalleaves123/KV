@@ -73,16 +73,15 @@ Status WALWriter::Open(const std::string& file_path, bool append) {
     return Status::InvalidArgument("wal file path is empty");
   }
 
-  if (sync_fd_ >= 0) {
-    (void)platform::CloseFile(sync_fd_);
-    sync_fd_ = -1;
-  }
-
   if (stream_.is_open()) {
     Status s = Close();
     if (!s.ok()) {
       return s;
     }
+  }
+  if (sync_fd_ >= 0) {
+    (void)platform::CloseFile(sync_fd_);
+    sync_fd_ = -1;
   }
 
   stream_.clear();
@@ -121,27 +120,30 @@ Status WALWriter::Open(const std::string& file_path, bool append) {
 }
 
 Status WALWriter::Close() {
-  if (sync_fd_ >= 0) {
-    (void)platform::CloseFile(sync_fd_);
-    sync_fd_ = -1;
-  }
-
   if (!stream_.is_open()) {
+    if (sync_fd_ >= 0) {
+      (void)platform::CloseFile(sync_fd_);
+      sync_fd_ = -1;
+    }
     stream_.clear();
     return Status::OK();
   }
 
-  stream_.flush();
-  if (!stream_) {
-    stream_.close();
-    stream_.clear();
-    return Status::IOError("failed to flush wal file before close");
+  Status status = Sync();
+
+  if (sync_fd_ >= 0 && platform::CloseFile(sync_fd_) != 0 && status.ok()) {
+    status = Status::IOError("failed to close wal sync fd: " +
+                             platform::FileErrorString());
   }
+  sync_fd_ = -1;
 
   stream_.close();
-  if (stream_.fail()) {
+  if (stream_.fail() && status.ok()) {
+    status = Status::IOError("failed to close wal file");
+  }
+  if (!status.ok()) {
     stream_.clear();
-    return Status::IOError("failed to close wal file");
+    return status;
   }
 
   stream_.clear();

@@ -30,6 +30,10 @@ class WALManager {
   Status Close();
 
   Status AppendPut(uint64_t seq, const std::string& key, const std::string& value);
+  Status AppendPutWithTTL(uint64_t seq,
+                          const std::string& key,
+                          const std::string& value,
+                          uint64_t expires_at_ms);
   Status AppendDelete(uint64_t seq, const std::string& key);
 
   Status Sync();

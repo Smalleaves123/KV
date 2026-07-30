@@ -29,6 +29,7 @@ add_executable(kv_wal_test
   wal/log_record_test.cpp
   wal/wal_writer_test.cpp
   wal/wal_reader_test.cpp
+  wal/wal_manager_test.cpp
 )
 
 target_link_libraries(kv_wal_test
