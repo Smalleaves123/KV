@@ -50,6 +50,7 @@ TEST(CacheIntegrationTest, SSTReadBackFillsAndHitsCache) {
   ASSERT_TRUE(DB::Open(options, &db).ok());
 
   ASSERT_TRUE(db->Put(WriteOptions{}, "k", "v").ok());
+  EXPECT_TRUE(db->Compact().IsNotFound());
 
   CacheStats stats0;
   ASSERT_TRUE(db->GetCacheStats(&stats0).ok());
@@ -137,6 +138,7 @@ TEST(CacheIntegrationTest, TableCacheStatsTrackSSTReaderReuse) {
   ASSERT_TRUE(DB::Open(options, &db).ok());
 
   ASSERT_TRUE(db->Put(WriteOptions{}, "k", "v").ok());
+  EXPECT_TRUE(db->Compact().IsNotFound());
 
   ReadPathStats before;
   ASSERT_TRUE(db->GetReadPathStats(&before).ok());
@@ -173,6 +175,7 @@ TEST(CacheIntegrationTest, BloomFilterStatsTrackRejectedSSTLookups) {
   ASSERT_TRUE(DB::Open(options, &db).ok());
 
   ASSERT_TRUE(db->Put(WriteOptions{}, "present", "value").ok());
+  EXPECT_TRUE(db->Compact().IsNotFound());
 
   ReadPathStats before;
   ASSERT_TRUE(db->GetReadPathStats(&before).ok());

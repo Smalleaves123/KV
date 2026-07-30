@@ -1,10 +1,12 @@
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -109,11 +111,15 @@ class DBImpl final : public DB, public WriteApplier {
   Status SyncWAL();
   Status CloseWAL();
   Status RemoveFlushedWAL(uint64_t max_flushed_seq);
-  Status MaybeFlushMemTable();
-  Status FlushImmutableMemTables();
+  Status MaybeFlushMemTable(std::unique_lock<std::mutex>& lock);
+  Status WaitForImmutableMemTables(std::unique_lock<std::mutex>& lock);
+  Status WaitForImmutableMemTableSpace(std::unique_lock<std::mutex>& lock);
+  void FlushWorker();
   void RotateMemTable();
   Status FlushMemTableToSST(const MemTable& memtable,
                             std::string* out_file);
+  void MaybeCompactAfterFlushLocked();
+  Status CheckWritable() const;
   Status GetFromMemTableAt(const Slice& key,
                            uint64_t read_seq,
                            std::string* value,
@@ -161,7 +167,14 @@ class DBImpl final : public DB, public WriteApplier {
   std::vector<std::string> sst_files_;
   Manifest manifest_;
   std::unique_ptr<MemTable> memtable_;
-  std::deque<std::unique_ptr<MemTable>> immutable_mems_;
+  struct ImmutableMemTable {
+    std::unique_ptr<MemTable> table;
+    uint64_t min_sequence = 0;
+    uint64_t max_sequence = 0;
+    size_t approximate_bytes = 0;
+    bool flushing = false;
+  };
+  std::deque<ImmutableMemTable> immutable_mems_;
   WALWriter wal_writer_;
   WALManager wal_manager_;
   bool using_segmented_wal_;
@@ -169,6 +182,12 @@ class DBImpl final : public DB, public WriteApplier {
   uint64_t next_file_number_;
   bool open_;
   mutable std::mutex mu_;
+  mutable std::mutex wal_mu_;
+  std::condition_variable flush_cv_;
+  std::condition_variable flush_done_cv_;
+  std::thread flush_thread_;
+  bool shutting_down_ = false;
+  Status background_error_;
   std::unordered_set<Transaction*> active_transactions_;
   std::unordered_map<std::string, uint64_t> latest_key_seq_;
   std::unordered_set<const Snapshot*> active_snapshots_;

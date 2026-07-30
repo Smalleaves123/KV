@@ -1,9 +1,11 @@
 #include "kv/version/compaction.h"
 
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include "gtest/gtest.h"
 #include "kv/engine/db.h"
@@ -55,6 +57,18 @@ size_t CountSSTFiles(const std::string& dir_path) {
   return count;
 }
 
+bool WaitForSSTFileCount(const std::string& dir_path, size_t expected_count) {
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::seconds(1);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (CountSSTFiles(dir_path) == expected_count) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return CountSSTFiles(dir_path) == expected_count;
+}
+
 TEST(CompactionRunnerTest, MaybeRunOnceTreatsNotFoundAsNoop) {
   DBOptions options = MakeDBOptions("runner_noop");
   options.compaction_min_input_files = 3;
@@ -67,7 +81,7 @@ TEST(CompactionRunnerTest, MaybeRunOnceTreatsNotFoundAsNoop) {
 
   ASSERT_TRUE(db->Put(WriteOptions{}, "k1", "v1").ok());
   ASSERT_TRUE(db->Put(WriteOptions{}, "k2", "v2").ok());
-  ASSERT_EQ(CountSSTFiles(options.sst_dir), 2U);
+  ASSERT_TRUE(WaitForSSTFileCount(options.sst_dir, 2U));
 
   CompactionRunner runner(db.get());
   Status s = runner.MaybeRunOnce();
@@ -107,7 +121,7 @@ TEST(CompactionRunnerTest, MaybeRunOnceCompactsWhenThresholdMet) {
   ASSERT_TRUE(db->Put(WriteOptions{}, "a", "1").ok());
   ASSERT_TRUE(db->Put(WriteOptions{}, "b", "2").ok());
   ASSERT_TRUE(db->Put(WriteOptions{}, "c", "3").ok());
-  ASSERT_EQ(CountSSTFiles(options.sst_dir), 3U);
+  ASSERT_TRUE(WaitForSSTFileCount(options.sst_dir, 3U));
 
   CompactionRunner runner(db.get());
   Status s = runner.MaybeRunOnce();

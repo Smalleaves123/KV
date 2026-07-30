@@ -37,6 +37,9 @@ struct DBOptions {
   // MemTable 触发刷盘阈值（字节）
   size_t memtable_write_buffer_size = 4 * 1024 * 1024;
 
+  // 后台 flush 前允许排队的 immutable MemTable 数量。
+  size_t max_immutable_memtables = 2;
+
   // 如果为空，默认使用 db_path + "/sst"
   std::string sst_dir;
 

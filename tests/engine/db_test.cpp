@@ -335,6 +335,9 @@ TEST(DBTest, FlushCreatesSSTAndCanReadBack) {
   ASSERT_TRUE(DB::Open(options, &db).ok());
 
   ASSERT_TRUE(db->Put(WriteOptions{}, "name", "tdmpc2").ok());
+  Status flush_status = db->Compact();
+  EXPECT_TRUE(flush_status.ok() || flush_status.IsNotFound())
+      << flush_status.ToString();
   EXPECT_GE(CountSSTFiles(options.sst_dir), 1U);
 
   std::string value;
@@ -372,6 +375,31 @@ TEST(DBTest, ReopenCanLoadSSTWithoutWAL) {
     ASSERT_TRUE(s.ok());
     EXPECT_EQ(value, "cpp");
   }
+}
+
+TEST(DBTest, CloseFlushesActiveMemTableBeforeClosingWAL) {
+  DBOptions options = MakeDBOptions("close_flushes_active_memtable");
+  options.memtable_write_buffer_size = 1024 * 1024;
+  options.auto_compaction_enabled = false;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "persisted", "value").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  RemovePathIfExists(options.wal_path);
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "persisted", &value).ok());
+  EXPECT_EQ(value, "value");
 }
 
 TEST(DBTest, FlushAppendsManifestRecord) {

@@ -150,6 +150,9 @@ TEST(CompactionTest, AutoCompactionTriggeredAfterFlush) {
 
   ASSERT_TRUE(db->Put(WriteOptions{}, "a", "1").ok());
   ASSERT_TRUE(db->Put(WriteOptions{}, "b", "2").ok());
+  Status compact_status = db->Compact();
+  EXPECT_TRUE(compact_status.ok() || compact_status.IsNotFound())
+      << compact_status.ToString();
 
   CompactionStats stats;
   ASSERT_TRUE(db->GetCompactionStats(&stats).ok());

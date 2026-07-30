@@ -226,6 +226,9 @@ TEST(RecoveryTest, DBOpenIgnoresTruncatedTrailingWALRecord) {
     ASSERT_TRUE(db->Close().ok());
   }
 
+  RemoveAllSSTFiles(options.sst_dir);
+  RemoveIfExists(options.manifest_path);
+
   TruncateFileTail(options.wal_path, 4);
 
   DBOptions reopen_options = options;
@@ -288,7 +291,7 @@ TEST(RecoveryTest, SegmentedWALRecoversWritesDeletesAndTTLAcrossRotations) {
     ASSERT_TRUE(db->Close().ok());
   }
 
-  EXPECT_GE(CountWALSegments(options.wal_dir), 5U);
+  EXPECT_EQ(CountWALSegments(options.wal_dir), 1U);
 
   DBOptions reopen_options = options;
   reopen_options.create_if_missing = false;
@@ -358,10 +361,11 @@ TEST(RecoveryTest, ManifestSyncFailurePreventsSegmentedWALCleanup) {
         testing::FailurePoint::kAfterManifestSyncBeforeWALCleanup,
         Status::IOError("injected failure before wal cleanup"));
     Status s = db->Put(WriteOptions{}, "key", "value");
+    ASSERT_TRUE(s.ok()) << s.ToString();
+    s = db->Close();
     EXPECT_TRUE(s.IsIOError()) << s.ToString();
-    testing::ClearFailureInjection();
-    ASSERT_TRUE(db->Close().ok());
   }
+  testing::ClearFailureInjection();
 
   EXPECT_GE(CountWALSegments(options.wal_dir), 2U);
   DBOptions reopen_options = options;
@@ -427,9 +431,11 @@ TEST(RecoveryTest, InjectedFlushFailureLeavesOrphanSSTableOutOfRecovery) {
         testing::FailurePoint::kAfterSSTableWriteBeforeManifest,
         Status::IOError("injected failure after sstable write"));
     Status s = db->Put(WriteOptions{}, "live", "orphan");
+    ASSERT_TRUE(s.ok()) << s.ToString();
+    s = db->Close();
     EXPECT_TRUE(s.IsIOError()) << s.ToString();
-    testing::ClearFailureInjection();
   }
+  testing::ClearFailureInjection();
 
   RemoveIfExists(options.wal_path);
 
@@ -470,10 +476,11 @@ TEST(RecoveryTest, ManifestAppendFailureCanDiscardUndurableManifestTail) {
         testing::FailurePoint::kAfterManifestAppendBeforeSync,
         Status::IOError("injected failure before manifest sync"));
     Status s = db->Put(WriteOptions{}, "live", "v2");
+    ASSERT_TRUE(s.ok()) << s.ToString();
+    s = db->Close();
     EXPECT_TRUE(s.IsIOError()) << s.ToString();
-    testing::ClearFailureInjection();
-    ASSERT_TRUE(db->Close().ok());
   }
+  testing::ClearFailureInjection();
 
   // Model a crash that loses the manifest record written after the last fsync.
   std::error_code ec;
@@ -502,10 +509,11 @@ TEST(RecoveryTest, ManifestSyncBeforeWALCleanupRecoversFromSSTAndWAL) {
         testing::FailurePoint::kAfterManifestSyncBeforeWALCleanup,
         Status::IOError("injected failure after manifest sync"));
     Status s = db->Put(WriteOptions{}, "live", "v1");
+    ASSERT_TRUE(s.ok()) << s.ToString();
+    s = db->Close();
     EXPECT_TRUE(s.IsIOError()) << s.ToString();
-    testing::ClearFailureInjection();
-    ASSERT_TRUE(db->Close().ok());
   }
+  testing::ClearFailureInjection();
 
   DBOptions reopen_options = options;
   reopen_options.create_if_missing = false;
@@ -523,6 +531,28 @@ TEST(RecoveryTest, ManifestSyncBeforeWALCleanupRecoversFromSSTAndWAL) {
   EXPECT_EQ(value, "v1");
   ASSERT_TRUE(db->Get(ReadOptions{}, "after_reopen", &value).ok());
   EXPECT_EQ(value, "v2");
+}
+
+TEST(RecoveryTest, BackgroundFlushFailureRejectsLaterWrites) {
+  DBOptions options = MakeRecoveryDBOptions("background_flush_error");
+  RemoveDBFiles(options);
+  testing::ClearFailureInjection();
+
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+  testing::InjectFailure(
+      testing::FailurePoint::kAfterSSTableWriteBeforeManifest,
+      Status::IOError("injected background flush failure"));
+  ASSERT_TRUE(db->Put(WriteOptions{}, "first", "value").ok());
+
+  Status s = db->Compact();
+  EXPECT_TRUE(s.IsIOError()) << s.ToString();
+  testing::ClearFailureInjection();
+
+  s = db->Put(WriteOptions{}, "later", "value");
+  EXPECT_TRUE(s.IsIOError()) << s.ToString();
+  s = db->Close();
+  EXPECT_TRUE(s.IsIOError()) << s.ToString();
 }
 
 TEST(RecoveryTest, DBOpenIgnoresSSTableWithPartialTrailingManifestRecord) {

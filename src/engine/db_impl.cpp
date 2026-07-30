@@ -142,6 +142,9 @@ Status DBImpl::Init() {
   if (manifest_path_.empty()) {
     return Status::InvalidArgument("manifest path is empty");
   }
+  if (options_.max_immutable_memtables == 0) {
+    return Status::InvalidArgument("max immutable memtables must be positive");
+  }
 
   uint64_t max_sst_seq = 0;
   Status s = manifest_.Open(manifest_path_, options_.create_if_missing);
@@ -217,13 +220,14 @@ Status DBImpl::Init() {
     return s;
   }
   open_ = true;
+  flush_thread_ = std::thread(&DBImpl::FlushWorker, this);
   return Status::OK();
 }
 
 Status DBImpl::Put(const WriteOptions& options,
                    const Slice& key,
                    const Slice& value) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) {
@@ -243,7 +247,7 @@ Status DBImpl::Put(const WriteOptions& options,
 
   ++next_seq_;
 
-  s = MaybeFlushMemTable();
+  s = MaybeFlushMemTable(lk);
   if (!s.ok()) {
     return s;
   }
@@ -252,7 +256,7 @@ Status DBImpl::Put(const WriteOptions& options,
 }
 
 Status DBImpl::ApplyPut(const std::string& key, const std::string& value) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) return open_status;
@@ -263,11 +267,11 @@ Status DBImpl::ApplyPut(const std::string& key, const std::string& value) {
   s = ApplyPut(seq, WriteOptions{}, Slice(key), Slice(value));
   if (!s.ok()) return s;
   ++next_seq_;
-  return MaybeFlushMemTable();
+  return MaybeFlushMemTable(lk);
 }
 
 Status DBImpl::ApplyDelete(const std::string& key) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) return open_status;
@@ -278,13 +282,13 @@ Status DBImpl::ApplyDelete(const std::string& key) {
   s = ApplyDelete(seq, WriteOptions{}, Slice(key));
   if (!s.ok()) return s;
   ++next_seq_;
-  return MaybeFlushMemTable();
+  return MaybeFlushMemTable(lk);
 }
 
 Status DBImpl::ApplyPutWithExpiry(const std::string& key,
                                   const std::string& value,
                                   uint64_t expires_at_ms) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) return open_status;
@@ -294,11 +298,11 @@ Status DBImpl::ApplyPutWithExpiry(const std::string& key,
                          expires_at_ms);
   if (!s.ok()) return s;
   ++next_seq_;
-  return MaybeFlushMemTable();
+  return MaybeFlushMemTable(lk);
 }
 
 Status DBImpl::ApplyExpireAt(const std::string& key, uint64_t expires_at_ms) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) return open_status;
@@ -312,7 +316,7 @@ Status DBImpl::ApplyExpireAt(const std::string& key, uint64_t expires_at_ms) {
                          expires_at_ms);
   if (!s.ok()) return s;
   ++next_seq_;
-  return MaybeFlushMemTable();
+  return MaybeFlushMemTable(lk);
 }
 
 Status DBImpl::Get(const ReadOptions& options,
@@ -359,7 +363,7 @@ Status DBImpl::Get(const ReadOptions& options,
 }
 
 Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) {
@@ -379,7 +383,7 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
 
   ++next_seq_;
 
-  s = MaybeFlushMemTable();
+  s = MaybeFlushMemTable(lk);
   if (!s.ok()) {
     return s;
   }
@@ -389,7 +393,7 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
 
 Status DBImpl::Expire(const WriteOptions& options, const Slice& key,
                       int64_t ttl_seconds) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) return open_status;
@@ -418,7 +422,7 @@ Status DBImpl::Expire(const WriteOptions& options, const Slice& key,
   if (!s.ok()) return s;
 
   ++next_seq_;
-  return MaybeFlushMemTable();
+  return MaybeFlushMemTable(lk);
 }
 
 Status DBImpl::TTL(const ReadOptions& options, const Slice& key,
@@ -457,7 +461,7 @@ Status DBImpl::TTL(const ReadOptions& options, const Slice& key,
 }
 
 Status DBImpl::Persist(const WriteOptions& options, const Slice& key) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) return open_status;
@@ -474,11 +478,11 @@ Status DBImpl::Persist(const WriteOptions& options, const Slice& key) {
   s = ApplyPutWithExpiry(next_seq_, options, key, Slice(value), 0);
   if (!s.ok()) return s;
   ++next_seq_;
-  return MaybeFlushMemTable();
+  return MaybeFlushMemTable(lk);
 }
 
 Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) {
@@ -512,7 +516,7 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
     }
   }
 
-  return MaybeFlushMemTable();
+  return MaybeFlushMemTable(lk);
 }
 
 Status DBImpl::BeginTransaction(const TxnOptions& options,
@@ -536,7 +540,7 @@ Status DBImpl::BeginTransaction(const TxnOptions& options,
 }
 
 Status DBImpl::Compact() {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) {
@@ -548,8 +552,9 @@ Status DBImpl::Compact() {
 
   if (!memtable_->Empty()) {
     RotateMemTable();
+    flush_cv_.notify_one();
   }
-  Status flush_status = FlushImmutableMemTables();
+  Status flush_status = WaitForImmutableMemTables(lk);
   if (!flush_status.ok()) {
     return flush_status;
   }
@@ -683,7 +688,7 @@ std::unique_ptr<Iterator> DBImpl::NewIterator(const ReadOptions& options) {
   const uint64_t read_seq = ResolveReadSequence(options);
 
   // Copy in-memory tables so the returned iterator remains valid after a
-  // later rotation or synchronous flush.
+  // later rotation or background flush.
   std::vector<std::unique_ptr<MemTable>> memtables;
   memtables.reserve(immutable_mems_.size() + 1);
   std::unique_ptr<MemTable> memtable_copy;
@@ -694,7 +699,7 @@ std::unique_ptr<Iterator> DBImpl::NewIterator(const ReadOptions& options) {
   memtables.push_back(std::move(memtable_copy));
   for (const auto& immutable_mem : immutable_mems_) {
     std::unique_ptr<MemTable> immutable_copy;
-    s = CopyMemTable(*immutable_mem, &immutable_copy);
+    s = CopyMemTable(*immutable_mem.table, &immutable_copy);
     if (!s.ok()) {
       return nullptr;
     }
@@ -718,28 +723,47 @@ std::unique_ptr<Iterator> DBImpl::NewIterator(const ReadOptions& options) {
 }
 
 Status DBImpl::Close() {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   if (!open_) {
     return Status::OK();
   }
 
+  shutting_down_ = true;
+  open_ = false;
+  if (background_error_.ok() && !memtable_->Empty()) {
+    RotateMemTable();
+  }
+  flush_cv_.notify_one();
+
+  if (background_error_.ok()) {
+    flush_done_cv_.wait(lk, [this] {
+      return immutable_mems_.empty() || !background_error_.ok();
+    });
+  }
+  flush_cv_.notify_one();
+  lk.unlock();
+  if (flush_thread_.joinable()) {
+    flush_thread_.join();
+  }
+  lk.lock();
+
+  Status result = background_error_;
   Status s = CloseWAL();
-  if (!s.ok()) {
-    return s;
+  if (result.ok() && !s.ok()) {
+    result = s;
   }
 
   s = manifest_.Close();
-  if (!s.ok()) {
-    return s;
+  if (result.ok() && !s.ok()) {
+    result = s;
   }
 
   table_cache_->Clear();
   active_transactions_.clear();
   active_snapshots_.clear();
   owned_snapshots_.clear();
-  open_ = false;
-  return Status::OK();
+  return result;
 }
 
 bool DBImpl::is_open() const noexcept {
@@ -790,6 +814,10 @@ Status DBImpl::ApplyPut(uint64_t seq,
 Status DBImpl::ApplyPutWithExpiry(uint64_t seq, const WriteOptions& options,
                                   const Slice& key, const Slice& value,
                                   uint64_t expires_at_ms) {
+  Status writable_status = CheckWritable();
+  if (!writable_status.ok()) {
+    return writable_status;
+  }
   if (expires_at_ms == 0) {
     return ApplyPut(seq, options, key, value);
   }
@@ -829,6 +857,11 @@ Status DBImpl::ApplyDelete(uint64_t seq,
 
 Status DBImpl::ApplyOperationLocked(
     uint64_t seq, const WriteBatch::Operation& operation) {
+  Status writable_status = CheckWritable();
+  if (!writable_status.ok()) {
+    return writable_status;
+  }
+
   Status s;
   if (operation.type == WriteBatch::ValueType::kPut) {
     s = AppendWALPut(seq, operation.key, operation.value);
@@ -853,6 +886,7 @@ Status DBImpl::ApplyOperationLocked(
 Status DBImpl::AppendWALPut(uint64_t seq,
                             const Slice& key,
                             const Slice& value) {
+  std::lock_guard<std::mutex> lk(wal_mu_);
   if (using_segmented_wal_) {
     return wal_manager_.AppendPut(seq, key.ToString(), value.ToString());
   }
@@ -863,6 +897,7 @@ Status DBImpl::AppendWALPutWithTTL(uint64_t seq,
                                    const Slice& key,
                                    const Slice& value,
                                    uint64_t expires_at_ms) {
+  std::lock_guard<std::mutex> lk(wal_mu_);
   if (using_segmented_wal_) {
     return wal_manager_.AppendPutWithTTL(seq, key.ToString(), value.ToString(),
                                          expires_at_ms);
@@ -871,6 +906,7 @@ Status DBImpl::AppendWALPutWithTTL(uint64_t seq,
 }
 
 Status DBImpl::AppendWALDelete(uint64_t seq, const Slice& key) {
+  std::lock_guard<std::mutex> lk(wal_mu_);
   if (using_segmented_wal_) {
     return wal_manager_.AppendDelete(seq, key.ToString());
   }
@@ -878,10 +914,12 @@ Status DBImpl::AppendWALDelete(uint64_t seq, const Slice& key) {
 }
 
 Status DBImpl::SyncWAL() {
+  std::lock_guard<std::mutex> lk(wal_mu_);
   return using_segmented_wal_ ? wal_manager_.Sync() : wal_writer_.Sync();
 }
 
 Status DBImpl::CloseWAL() {
+  std::lock_guard<std::mutex> lk(wal_mu_);
   return using_segmented_wal_ ? wal_manager_.Close() : wal_writer_.Close();
 }
 
@@ -889,69 +927,124 @@ Status DBImpl::RemoveFlushedWAL(uint64_t max_flushed_seq) {
   if (!using_segmented_wal_) {
     return Status::OK();
   }
+  std::lock_guard<std::mutex> lk(wal_mu_);
   return wal_manager_.RemoveLogsUpTo(max_flushed_seq);
 }
 
-Status DBImpl::MaybeFlushMemTable() {
-  bool flushed = false;
-  if (options_.memtable_write_buffer_size != 0 && !memtable_->Empty() &&
-      memtable_->ApproximateMemoryUsage() >=
+Status DBImpl::MaybeFlushMemTable(std::unique_lock<std::mutex>& lock) {
+  if (options_.memtable_write_buffer_size == 0 || memtable_->Empty() ||
+      memtable_->ApproximateMemoryUsage() <
           options_.memtable_write_buffer_size) {
-    RotateMemTable();
-  }
-
-  if (!immutable_mems_.empty()) {
-    Status s = FlushImmutableMemTables();
-    if (!s.ok()) {
-      return s;
-    }
-    flushed = true;
-  }
-
-  if (!flushed) {
     return Status::OK();
   }
 
+  Status s = WaitForImmutableMemTableSpace(lock);
+  if (!s.ok()) {
+    return s;
+  }
+
+  RotateMemTable();
+  flush_cv_.notify_one();
+  return Status::OK();
+}
+
+Status DBImpl::WaitForImmutableMemTables(
+    std::unique_lock<std::mutex>& lock) {
+  flush_done_cv_.wait(lock, [this] {
+    return immutable_mems_.empty() || !background_error_.ok();
+  });
+  return background_error_;
+}
+
+Status DBImpl::WaitForImmutableMemTableSpace(
+    std::unique_lock<std::mutex>& lock) {
+  flush_done_cv_.wait(lock, [this] {
+    return immutable_mems_.size() < options_.max_immutable_memtables ||
+           !background_error_.ok() || shutting_down_;
+  });
+  return CheckWritable();
+}
+
+void DBImpl::MaybeCompactAfterFlushLocked() {
   if (!options_.auto_compaction_enabled) {
-    return Status::OK();
+    return;
   }
 
   if (sst_files_.size() < options_.compaction_min_input_files) {
     ++compaction_stats_.skipped_due_threshold;
-    return Status::OK();
+    return;
   }
   if (!active_snapshots_.empty()) {
     ++compaction_stats_.skipped_due_snapshot;
-    return Status::OK();
+    return;
   }
 
   ++compaction_stats_.trigger_attempts;
   Status compact_status = CompactSSTFilesLocked();
   if (compact_status.ok()) {
     ++compaction_stats_.succeeded;
-    return Status::OK();
+    return;
   }
 
   ++compaction_stats_.failed;
-  return Status::OK();
 }
 
 void DBImpl::RotateMemTable() {
-  immutable_mems_.push_back(std::move(memtable_));
+  ImmutableMemTable immutable_mem;
+  immutable_mem.min_sequence = memtable_->MinSequence();
+  immutable_mem.max_sequence = memtable_->MaxSequence();
+  immutable_mem.approximate_bytes = memtable_->ApproximateMemoryUsage();
+  immutable_mem.table = std::move(memtable_);
+  immutable_mems_.push_back(std::move(immutable_mem));
   memtable_ = std::make_unique<MemTable>();
 }
 
-Status DBImpl::FlushImmutableMemTables() {
-  while (!immutable_mems_.empty()) {
-    std::string sst_file;
-    Status s = FlushMemTableToSST(*immutable_mems_.front(), &sst_file);
-    if (!s.ok()) {
-      return s;
+void DBImpl::FlushWorker() {
+  while (true) {
+    std::unique_lock<std::mutex> lock(mu_);
+    flush_cv_.wait(lock, [this] {
+      return shutting_down_ ||
+             (!immutable_mems_.empty() && background_error_.ok());
+    });
+
+    if (!background_error_.ok()) {
+      return;
     }
+    if (immutable_mems_.empty()) {
+      if (shutting_down_) {
+        return;
+      }
+      continue;
+    }
+
+    ImmutableMemTable& immutable_mem = immutable_mems_.front();
+    immutable_mem.flushing = true;
+    MemTable* memtable = immutable_mem.table.get();
+    lock.unlock();
+
+    std::string sst_file;
+    Status s = FlushMemTableToSST(*memtable, &sst_file);
+
+    lock.lock();
+    immutable_mems_.front().flushing = false;
+    if (!s.ok()) {
+      background_error_ = s;
+      flush_done_cv_.notify_all();
+      continue;
+    }
+
     sst_files_.push_back(std::move(sst_file));
     immutable_mems_.pop_front();
+    MaybeCompactAfterFlushLocked();
+    flush_done_cv_.notify_all();
   }
-  return Status::OK();
+}
+
+Status DBImpl::CheckWritable() const {
+  if (!open_ || shutting_down_) {
+    return Status::IOError("db is not accepting writes");
+  }
+  return background_error_;
 }
 
 Status DBImpl::FlushMemTableToSST(const MemTable& memtable,
@@ -1089,7 +1182,7 @@ Status DBImpl::GetFromMemTableAt(const Slice& key,
 
   for (auto it = immutable_mems_.rbegin(); it != immutable_mems_.rend();
        ++it) {
-    s = find_visible(**it);
+    s = find_visible(*it->table);
     if (s.ok() || (has_visible_version != nullptr && *has_visible_version)) {
       return s;
     }
@@ -1239,7 +1332,7 @@ Status DBImpl::RebuildLatestKeySeqIndex() {
   };
 
   for (const auto& immutable_mem : immutable_mems_) {
-    add_memtable_sequences(*immutable_mem);
+    add_memtable_sequences(*immutable_mem.table);
   }
   add_memtable_sequences(*memtable_);
 
@@ -1251,7 +1344,7 @@ Status DBImpl::CommitOCCTransaction(
     uint64_t start_seq,
     const std::unordered_set<std::string>& read_set,
     const std::vector<WriteBatch::Operation>& writes) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) {
@@ -1293,7 +1386,7 @@ Status DBImpl::CommitOCCTransaction(
     }
   }
 
-  return MaybeFlushMemTable();
+  return MaybeFlushMemTable(lk);
 }
 
 void DBImpl::RegisterTransaction(Transaction* txn) {
