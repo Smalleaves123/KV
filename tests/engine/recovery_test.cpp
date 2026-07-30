@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <cstdio>
+#include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -193,6 +194,61 @@ TEST(RecoveryTest, TruncatedWALTrailingRecordIsIgnored) {
   EXPECT_TRUE(mem.Get("k1", &value).ok());
   EXPECT_EQ(value, "v1");
   EXPECT_TRUE(mem.Get("k2", &value).IsNotFound());
+}
+
+TEST(RecoveryTest, DBOpenIgnoresTruncatedTrailingWALRecord) {
+  DBOptions options = MakeRecoveryDBOptions("db_truncated_wal_tail");
+  options.memtable_write_buffer_size = 1024 * 1024;
+  RemoveDBFiles(options);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "first", "v1").ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "second", "v2").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  TruncateFileTail(options.wal_path, 4);
+
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "first", &value).ok());
+  EXPECT_EQ(value, "v1");
+  EXPECT_TRUE(db->Get(ReadOptions{}, "second", &value).IsNotFound());
+}
+
+TEST(RecoveryTest, DBOpenRejectsWALChecksumCorruption) {
+  DBOptions options = MakeRecoveryDBOptions("db_wal_checksum_corruption");
+  options.memtable_write_buffer_size = 1024 * 1024;
+  RemoveDBFiles(options);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "key", "value").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  std::fstream wal(options.wal_path,
+                   std::ios::binary | std::ios::in | std::ios::out);
+  ASSERT_TRUE(wal.is_open());
+  char checksum_byte = 0;
+  wal.read(&checksum_byte, 1);
+  ASSERT_EQ(wal.gcount(), 1);
+  wal.seekp(0);
+  wal.put(static_cast<char>(checksum_byte ^ 0xFF));
+  wal.close();
+
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  Status s = DB::Open(reopen_options, &db);
+  EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
 TEST(RecoveryTest, DBOpenIgnoresOrphanSSTableWhenManifestExists) {

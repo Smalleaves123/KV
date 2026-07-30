@@ -69,7 +69,8 @@ replay records also represented in an SST.
 ## Error Handling
 
 Opening a DB with `create_if_missing = false` fails when there is no WAL and no
-SST metadata to recover. Corrupt WAL records return an error from recovery.
+SST metadata to recover. Recovery ignores an incomplete trailing WAL record,
+but checksum mismatches and malformed complete records return `Corruption`.
 
 ## Current Limitations
 
