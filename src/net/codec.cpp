@@ -1,6 +1,8 @@
 #include "kv/net/codec.h"
 
+#include <cerrno>
 #include <cstdlib>
+#include <limits>
 #include <sstream>
 
 namespace kv::net {
@@ -18,9 +20,10 @@ bool ReadCRLFLine(const std::string& buffer, size_t* pos, std::string* line) {
 
 bool ParseInt64(const std::string& s, int64_t* out) {
   if (out == nullptr) return false;
+  errno = 0;
   char* end = nullptr;
   const long long v = std::strtoll(s.c_str(), &end, 10);
-  if (end == s.c_str() || *end != '\0') return false;
+  if (errno == ERANGE || end == s.c_str() || *end != '\0') return false;
   *out = static_cast<int64_t>(v);
   return true;
 }
@@ -50,86 +53,110 @@ std::string LineCodec::EncodeLine(const std::string& line) {
   return line + "\r\n";
 }
 
-bool RequestCodec::TryDecode(std::string* buffer,
-                             std::vector<std::string>* tokens,
-                             std::string* error) {
+RequestDecodeResult RequestCodec::TryDecode(
+    std::string* buffer, std::vector<std::string>* tokens,
+    std::string* error) {
   if (buffer == nullptr || tokens == nullptr) {
     if (error != nullptr) *error = "request output is null";
-    return false;
+    return RequestDecodeResult::kError;
   }
   tokens->clear();
   if (error != nullptr) error->clear();
   if (buffer->empty()) {
-    return false;
+    return RequestDecodeResult::kNeedMore;
   }
 
   if ((*buffer)[0] != '*') {
     std::string line;
-    if (!LineCodec::TryDecodeLine(buffer, &line)) {
-      return false;
+    const size_t newline = buffer->find('\n');
+    if (newline == std::string::npos) {
+      return RequestDecodeResult::kNeedMore;
     }
+    line = buffer->substr(0, newline);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
     std::istringstream iss(line);
     std::string token;
     while (iss >> token) {
       tokens->push_back(token);
     }
-    return true;
+    buffer->erase(0, newline + 1);
+    return RequestDecodeResult::kOk;
   }
 
+  enum class ParseState { kArrayLen, kBulkLen, kBulkData };
+  ParseState state = ParseState::kArrayLen;
   size_t pos = 1;
-  std::string line;
-  if (!ReadCRLFLine(*buffer, &pos, &line)) {
-    return false;
-  }
-
   int64_t count = 0;
-  if (!ParseInt64(line, &count) || count < 0) {
-    if (error != nullptr) *error = "invalid RESP array length";
-    buffer->clear();
-    return true;
-  }
-
+  int64_t index = 0;
+  int64_t bulk_len = 0;
+  std::string line;
   std::vector<std::string> parsed;
-  parsed.reserve(static_cast<size_t>(count));
-  for (int64_t i = 0; i < count; ++i) {
-    if (pos >= buffer->size()) {
-      return false;
-    }
-    if ((*buffer)[pos] != '$') {
-      if (error != nullptr) *error = "expected RESP bulk string";
-      buffer->erase(0, pos);
-      return true;
-    }
-    ++pos;
+  while (true) {
+    switch (state) {
+      case ParseState::kArrayLen:
+        if (!ReadCRLFLine(*buffer, &pos, &line)) {
+          return RequestDecodeResult::kNeedMore;
+        }
+        if (!ParseInt64(line, &count) || count < 0) {
+          if (error != nullptr) *error = "invalid RESP array length";
+          return RequestDecodeResult::kError;
+        }
+        state = ParseState::kBulkLen;
+        if (count == 0) {
+          buffer->erase(0, pos);
+          *tokens = std::move(parsed);
+          return RequestDecodeResult::kOk;
+        }
+        break;
 
-    if (!ReadCRLFLine(*buffer, &pos, &line)) {
-      return false;
-    }
-    int64_t len = 0;
-    if (!ParseInt64(line, &len) || len < 0) {
-      if (error != nullptr) *error = "invalid RESP bulk string length";
-      buffer->erase(0, pos);
-      return true;
-    }
+      case ParseState::kBulkLen:
+        if (pos >= buffer->size()) {
+          return RequestDecodeResult::kNeedMore;
+        }
+        if ((*buffer)[pos] != '$') {
+          if (error != nullptr) *error = "expected RESP bulk string";
+          return RequestDecodeResult::kError;
+        }
+        ++pos;
+        if (!ReadCRLFLine(*buffer, &pos, &line)) {
+          return RequestDecodeResult::kNeedMore;
+        }
+        if (!ParseInt64(line, &bulk_len) || bulk_len < 0) {
+          if (error != nullptr) *error = "invalid RESP bulk string length";
+          return RequestDecodeResult::kError;
+        }
+        if (static_cast<uint64_t>(bulk_len) >
+            std::numeric_limits<size_t>::max()) {
+          if (error != nullptr) *error = "RESP bulk string is too large";
+          return RequestDecodeResult::kError;
+        }
+        state = ParseState::kBulkData;
+        break;
 
-    const size_t body_len = static_cast<size_t>(len);
-    if (buffer->size() < pos + body_len + 2) {
-      return false;
+      case ParseState::kBulkData: {
+        const size_t body_len = static_cast<size_t>(bulk_len);
+        if (body_len > buffer->size() - pos ||
+            buffer->size() - pos - body_len < 2) {
+          return RequestDecodeResult::kNeedMore;
+        }
+        if ((*buffer)[pos + body_len] != '\r' ||
+            (*buffer)[pos + body_len + 1] != '\n') {
+          if (error != nullptr) *error = "bulk string missing CRLF terminator";
+          return RequestDecodeResult::kError;
+        }
+        parsed.push_back(buffer->substr(pos, body_len));
+        pos += body_len + 2;
+        ++index;
+        if (index == count) {
+          buffer->erase(0, pos);
+          *tokens = std::move(parsed);
+          return RequestDecodeResult::kOk;
+        }
+        state = ParseState::kBulkLen;
+        break;
+      }
     }
-    if ((*buffer)[pos + body_len] != '\r' ||
-        (*buffer)[pos + body_len + 1] != '\n') {
-      if (error != nullptr) *error = "bulk string missing CRLF terminator";
-      buffer->erase(0, pos + body_len);
-      return true;
-    }
-
-    parsed.push_back(buffer->substr(pos, body_len));
-    pos += body_len + 2;
   }
-
-  buffer->erase(0, pos);
-  *tokens = std::move(parsed);
-  return true;
 }
 
 }  // namespace kv::net

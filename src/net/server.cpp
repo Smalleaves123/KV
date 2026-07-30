@@ -225,7 +225,7 @@ void Server::HandleClient(platform::SocketHandle client_fd,
       if (s.IsInvalidArgument()) {
         request_errors->fetch_add(1);
         (void)conn.WriteAll(kv::net::protocol::Error(s.ToString()));
-        continue;
+        break;
       }
       if (s.IsIOError()) {
         continue;

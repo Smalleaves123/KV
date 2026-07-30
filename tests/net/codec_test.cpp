@@ -38,7 +38,8 @@ TEST(RequestCodecTest, DecodesLineRequest) {
   std::vector<std::string> tokens;
   std::string error;
 
-  ASSERT_TRUE(RequestCodec::TryDecode(&buffer, &tokens, &error));
+  ASSERT_EQ(RequestCodec::TryDecode(&buffer, &tokens, &error),
+            RequestDecodeResult::kOk);
   EXPECT_TRUE(error.empty());
   ASSERT_EQ(tokens.size(), 1U);
   EXPECT_EQ(tokens[0], "PING");
@@ -50,7 +51,8 @@ TEST(RequestCodecTest, DecodesLineRequestIntoTokens) {
   std::vector<std::string> tokens;
   std::string error;
 
-  ASSERT_TRUE(RequestCodec::TryDecode(&buffer, &tokens, &error));
+  ASSERT_EQ(RequestCodec::TryDecode(&buffer, &tokens, &error),
+            RequestDecodeResult::kOk);
   EXPECT_TRUE(error.empty());
   ASSERT_EQ(tokens.size(), 3U);
   EXPECT_EQ(tokens[0], "SET");
@@ -63,7 +65,8 @@ TEST(RequestCodecTest, DecodesRespArrayRequest) {
   std::vector<std::string> tokens;
   std::string error;
 
-  ASSERT_TRUE(RequestCodec::TryDecode(&buffer, &tokens, &error));
+  ASSERT_EQ(RequestCodec::TryDecode(&buffer, &tokens, &error),
+            RequestDecodeResult::kOk);
   EXPECT_TRUE(error.empty());
   ASSERT_EQ(tokens.size(), 3U);
   EXPECT_EQ(tokens[0], "SET");
@@ -72,13 +75,69 @@ TEST(RequestCodecTest, DecodesRespArrayRequest) {
   EXPECT_TRUE(buffer.empty());
 }
 
-TEST(RequestCodecTest, IncompleteRespArrayReturnsFalse) {
+TEST(RequestCodecTest, IncompleteRespArrayReturnsNeedMoreWithoutConsumption) {
   std::string buffer = "*2\r\n$3\r\nGET\r\n$1\r\n";
+  const std::string original = buffer;
   std::vector<std::string> tokens;
   std::string error;
 
-  EXPECT_FALSE(RequestCodec::TryDecode(&buffer, &tokens, &error));
+  EXPECT_EQ(RequestCodec::TryDecode(&buffer, &tokens, &error),
+            RequestDecodeResult::kNeedMore);
   EXPECT_TRUE(error.empty());
+  EXPECT_EQ(buffer, original);
+}
+
+TEST(RequestCodecTest, DecodesBulkValueContainingCRLFAndNullBytes) {
+  const std::string value("a\0b\r\nc", 6);
+  std::string buffer = "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$6\r\n";
+  buffer.append(value);
+  buffer.append("\r\n");
+  std::vector<std::string> tokens;
+  std::string error;
+
+  ASSERT_EQ(RequestCodec::TryDecode(&buffer, &tokens, &error),
+            RequestDecodeResult::kOk);
+  EXPECT_TRUE(error.empty());
+  ASSERT_EQ(tokens.size(), 3U);
+  EXPECT_EQ(tokens[2], value);
+  EXPECT_TRUE(buffer.empty());
+}
+
+TEST(RequestCodecTest, DecodesPipelinedRequestsOneAtATime) {
+  std::string buffer = "*1\r\n$4\r\nPING\r\n*2\r\n$3\r\nGET\r\n$1\r\nk\r\n";
+  std::vector<std::string> tokens;
+  std::string error;
+
+  ASSERT_EQ(RequestCodec::TryDecode(&buffer, &tokens, &error),
+            RequestDecodeResult::kOk);
+  ASSERT_EQ(tokens.size(), 1U);
+  EXPECT_EQ(tokens[0], "PING");
+
+  ASSERT_EQ(RequestCodec::TryDecode(&buffer, &tokens, &error),
+            RequestDecodeResult::kOk);
+  ASSERT_EQ(tokens.size(), 2U);
+  EXPECT_EQ(tokens[0], "GET");
+  EXPECT_EQ(tokens[1], "k");
+  EXPECT_TRUE(buffer.empty());
+}
+
+TEST(RequestCodecTest, MalformedFramesReturnErrorWithoutConsumption) {
+  const std::vector<std::string> malformed = {
+      "*x\r\n", "*1\r\n$-2\r\n", "*1\r\n+4\r\nPING\r\n",
+      "*1\r\n$4\r\nPINGxx",
+  };
+
+  for (const std::string& frame : malformed) {
+    std::string buffer = frame;
+    std::vector<std::string> tokens;
+    std::string error;
+
+    EXPECT_EQ(RequestCodec::TryDecode(&buffer, &tokens, &error),
+              RequestDecodeResult::kError);
+    EXPECT_FALSE(error.empty());
+    EXPECT_EQ(buffer, frame);
+    EXPECT_TRUE(tokens.empty());
+  }
 }
 
 }  // namespace

@@ -371,6 +371,40 @@ TEST_F(ServerIntegrationTest, RespArrayRequestSupportsValuesWithSpaces) {
   (void)platform::CloseSocket(fd);
 }
 
+TEST_F(ServerIntegrationTest, RespFramesCanBeSplitAndPipelined) {
+  if (!started_) {
+    GTEST_SKIP() << "server failed to start in test environment: "
+                 << last_status_.ToString();
+  }
+
+  const platform::SocketHandle fd = ConnectWithRetry(port_);
+  ASSERT_GE(fd, 0);
+
+  const std::string value("a\0b\r\nc", 6);
+  std::string set_request = "*3\r\n$3\r\nSET\r\n$6\r\nbinary\r\n$6\r\na";
+  set_request.append("\0b", 2);
+  const std::string first_chunk = set_request;
+
+  std::string second_chunk = "\r\nc\r\n";
+  second_chunk.append("*2\r\n$3\r\nGET\r\n$6\r\nbinary\r\n");
+
+  ASSERT_TRUE(SendRaw(fd, first_chunk));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  ASSERT_TRUE(SendRaw(fd, second_chunk));
+
+  std::string resp;
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  EXPECT_EQ(resp, "+OK\r\n");
+
+  ASSERT_TRUE(ReadResp(fd, &resp));
+  std::string expected = "$6\r\n";
+  expected.append(value);
+  expected.append("\r\n");
+  EXPECT_EQ(resp, expected);
+
+  (void)platform::CloseSocket(fd);
+}
+
 TEST_F(ServerIntegrationTest, ClusterCommandsWorkOverNetwork) {
   if (!started_) {
     GTEST_SKIP() << "server failed to start in test environment: "

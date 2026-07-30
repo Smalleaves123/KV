@@ -5,6 +5,12 @@
 
 namespace kv::net {
 
+enum class RequestDecodeResult {
+  kNeedMore,
+  kOk,
+  kError,
+};
+
 class LineCodec {
  public:
   // Try decode one line from buffer. Supports '\n' and strips trailing '\r'.
@@ -17,8 +23,11 @@ class LineCodec {
 
 class RequestCodec {
  public:
-  static bool TryDecode(std::string* buffer, std::vector<std::string>* tokens,
-                        std::string* error);
+  // Decodes one request without consuming incomplete or malformed input.
+  // On success, removes exactly one request and leaves pipelined bytes intact.
+  static RequestDecodeResult TryDecode(std::string* buffer,
+                                       std::vector<std::string>* tokens,
+                                       std::string* error);
 };
 
 }  // namespace kv::net

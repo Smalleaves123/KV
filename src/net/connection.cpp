@@ -80,11 +80,13 @@ Status Connection::ReadRequest(std::vector<std::string>* tokens) {
   }
 
   std::string error;
-  if (RequestCodec::TryDecode(&read_buffer_, tokens, &error)) {
-    if (!error.empty()) {
-      return Status::InvalidArgument(error);
-    }
+  RequestDecodeResult result =
+      RequestCodec::TryDecode(&read_buffer_, tokens, &error);
+  if (result == RequestDecodeResult::kOk) {
     return Status::OK();
+  }
+  if (result == RequestDecodeResult::kError) {
+    return Status::InvalidArgument(error);
   }
 
   char buf[1024];
@@ -104,11 +106,12 @@ Status Connection::ReadRequest(std::vector<std::string>* tokens) {
     }
 
     read_buffer_.append(buf, static_cast<size_t>(n));
-    if (RequestCodec::TryDecode(&read_buffer_, tokens, &error)) {
-      if (!error.empty()) {
-        return Status::InvalidArgument(error);
-      }
+    result = RequestCodec::TryDecode(&read_buffer_, tokens, &error);
+    if (result == RequestDecodeResult::kOk) {
       return Status::OK();
+    }
+    if (result == RequestDecodeResult::kError) {
+      return Status::InvalidArgument(error);
     }
   }
 }
