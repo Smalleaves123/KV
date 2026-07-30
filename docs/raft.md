@@ -146,7 +146,8 @@ node with the same `data_dir` and it will receive committed log entries again.
 With `server.metrics_port` enabled, `/metrics` exports `kv_raft_role`,
 `kv_raft_term`, `kv_raft_voted_for`, `kv_raft_leader_id`,
 `kv_raft_commit_index`, `kv_raft_applied_index`, and
-`kv_raft_last_log_index` for a server started in Raft mode.
+`kv_raft_last_log_index`, `kv_raft_snapshot_last_included_index`, and
+per-peer replication progress metrics for a server started in Raft mode.
 
 ## Tests
 
@@ -160,8 +161,9 @@ In restricted environments, listener socket tests may skip.
 ## Current Limitations
 
 - No dynamic membership changes.
-- No InstallSnapshot RPC.
-- No persistent snapshots or Raft log compaction; a long-running cluster grows
+- `RaftServer::CreateSnapshot()` can create a local, reopenable DB checkpoint
+  at the latest applied Raft index. Snapshot recovery, InstallSnapshot RPC,
+  and Raft log compaction are not implemented, so a long-running cluster grows
   its Raft log indefinitely.
 - No production operational tooling.
 - Redirects apply to follower writes; follower reads still return the adapter's

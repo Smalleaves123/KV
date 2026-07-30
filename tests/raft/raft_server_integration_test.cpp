@@ -263,6 +263,50 @@ TEST_F(RaftServerIntegrationTest, RestartedFollowerCatchesUpCommittedWrite) {
       std::chrono::seconds(5)));
 }
 
+TEST_F(RaftServerIntegrationTest, LeaderCreatesReopenableLocalSnapshot) {
+  TestNode* leader = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          if (node.raft->IsLeader()) {
+            leader = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  ASSERT_NE(leader, nullptr);
+
+  ASSERT_TRUE(leader->raft->Propose(
+                  raft::EncodePutCmd("snapshot-key", "snapshot-value"))
+                  .ok());
+  const RaftStats before_snapshot = leader->raft->GetStats();
+  ASSERT_GT(before_snapshot.applied_index, 0U);
+
+  ASSERT_TRUE(leader->raft->CreateSnapshot().ok());
+  const RaftStats after_snapshot = leader->raft->GetStats();
+  EXPECT_EQ(after_snapshot.snapshot_last_included_index,
+            before_snapshot.applied_index);
+
+  const std::string checkpoint_dir =
+      leader->raft_dir + "/snapshot/" +
+      std::to_string(after_snapshot.snapshot_last_included_index) + "/db";
+  DBOptions checkpoint_options;
+  checkpoint_options.db_path = checkpoint_dir;
+  checkpoint_options.wal_path = checkpoint_dir + "/wal.log";
+  checkpoint_options.sst_dir = checkpoint_dir + "/sst";
+  checkpoint_options.manifest_path = checkpoint_dir + "/MANIFEST";
+  checkpoint_options.create_if_missing = false;
+
+  std::unique_ptr<DB> checkpoint_db;
+  ASSERT_TRUE(DB::Open(checkpoint_options, &checkpoint_db).ok());
+  std::string value;
+  ASSERT_TRUE(checkpoint_db->Get(ReadOptions{}, "snapshot-key", &value).ok());
+  EXPECT_EQ(value, "snapshot-value");
+  ASSERT_TRUE(checkpoint_db->Close().ok());
+}
+
 TEST_F(RaftServerIntegrationTest, NewLeaderCommitsAfterOldLeaderRestarts) {
   TestNode* old_leader = nullptr;
   ASSERT_TRUE(WaitUntil(

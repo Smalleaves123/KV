@@ -84,6 +84,10 @@ class RaftServer {
   Status Propose(const std::string& cmd);
   Status LinearizableReadBarrier();
 
+  // Persist a local DB checkpoint at the latest applied Raft index. This does
+  // not yet compact the Raft log or replicate the snapshot to peers.
+  Status CreateSnapshot();
+
   bool IsLeader() const noexcept;
   uint64_t LeaderId() const noexcept;
   std::optional<NodeAddress> GetLeaderAddress() const;

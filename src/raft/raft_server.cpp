@@ -193,6 +193,43 @@ Status RaftServer::LinearizableReadBarrier() {
   return Propose(raft::EncodeNoopCmd());
 }
 
+Status RaftServer::CreateSnapshot() {
+  if (!running_.load()) {
+    return Status::IOError("raft server not running");
+  }
+
+  std::lock_guard<std::mutex> lk(raft_mu_);
+  if (last_applied_ == 0) {
+    return Status::NotFound("no applied raft entries to snapshot");
+  }
+
+  const raft::RaftSnapshotMeta current_meta = storage_->SnapshotMeta();
+  if (last_applied_ <= current_meta.last_included_index) {
+    return Status::OK();
+  }
+
+  const uint64_t last_included_term = storage_->Term(last_applied_);
+  if (last_included_term == 0) {
+    return Status::Corruption("cannot find term for applied raft entry");
+  }
+
+  const std::string snapshot_dir =
+      config_.data_dir + "/snapshot/" + std::to_string(last_applied_) + "/db";
+  Status s = applier_->CreateCheckpoint(snapshot_dir);
+  if (!s.ok()) {
+    return s;
+  }
+
+  const raft::RaftSnapshotMeta meta{last_applied_, last_included_term};
+  storage_->SaveSnapshotMeta(meta);
+  const raft::RaftSnapshotMeta persisted_meta = storage_->SnapshotMeta();
+  if (persisted_meta.last_included_index != meta.last_included_index ||
+      persisted_meta.last_included_term != meta.last_included_term) {
+    return Status::IOError("failed to persist raft snapshot metadata");
+  }
+  return Status::OK();
+}
+
 bool RaftServer::IsLeader() const noexcept {
   std::lock_guard<std::mutex> lk(raft_mu_);
   return raft_node_->role() == raft::RaftRole::kLeader;

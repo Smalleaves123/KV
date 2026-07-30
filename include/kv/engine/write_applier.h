@@ -25,6 +25,9 @@ public:
   }
   virtual Status ApplyExpireAt(const std::string& key,
                                uint64_t expires_at_ms) = 0;
+  virtual Status CreateCheckpoint(const std::string&) {
+    return Status::InvalidArgument("state machine does not support checkpoints");
+  }
 };
 
 } // namespace kv
