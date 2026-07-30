@@ -57,6 +57,7 @@ class DBImpl final : public DB, public WriteApplier {
   Status GetCacheStats(CacheStats* stats) const override;
   Status GetReadPathStats(ReadPathStats* stats) const override;
   Status GetCompactionStats(CompactionStats* stats) const override;
+  Status GetFlushStats(FlushStats* stats) const override;
   const Snapshot* GetSnapshot() override;
   Status ReleaseSnapshot(const Snapshot* snapshot) override;
   Status TxnGetAtSequence(const Slice& key,
@@ -201,6 +202,7 @@ class DBImpl final : public DB, public WriteApplier {
   mutable std::unique_ptr<TableCache> table_cache_;
   mutable ReadPathStats read_path_stats_;
   mutable CompactionStats compaction_stats_;
+  FlushStats flush_stats_;
 
 };
 

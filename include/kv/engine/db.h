@@ -102,6 +102,15 @@ struct CompactionStats {
   uint64_t failed = 0;
 };
 
+struct FlushStats {
+  uint64_t completed = 0;
+  uint64_t failed = 0;
+  uint64_t total_duration_us = 0;
+  uint64_t write_stalls = 0;
+  uint64_t write_stall_duration_us = 0;
+  uint64_t queue_length = 0;
+};
+
 class DB {
  public:
   virtual ~DB() = default;
@@ -140,6 +149,7 @@ class DB {
   virtual Status GetCacheStats(CacheStats* stats) const = 0;
   virtual Status GetReadPathStats(ReadPathStats* stats) const = 0;
   virtual Status GetCompactionStats(CompactionStats* stats) const = 0;
+  virtual Status GetFlushStats(FlushStats* stats) const = 0;
 
   virtual const Snapshot* GetSnapshot() = 0;
   virtual Status ReleaseSnapshot(const Snapshot* snapshot) = 0;

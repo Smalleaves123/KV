@@ -205,9 +205,11 @@ std::string MonitoringServer::RenderMetrics(const Server& server,
   CacheStats cache_stats;
   ReadPathStats read_stats;
   CompactionStats compaction_stats;
+  FlushStats flush_stats;
   const bool cache_ok = db.GetCacheStats(&cache_stats).ok();
   const bool read_ok = db.GetReadPathStats(&read_stats).ok();
   const bool compaction_ok = db.GetCompactionStats(&compaction_stats).ok();
+  const bool flush_ok = db.GetFlushStats(&flush_stats).ok();
 
   std::ostringstream out;
   out << "# HELP kv_server_up Whether the command server is running.\n"
@@ -275,7 +277,8 @@ std::string MonitoringServer::RenderMetrics(const Server& server,
   }
   out << "# HELP kv_db_up Whether DB statistics can be collected.\n"
       << "# TYPE kv_db_up gauge\n"
-      << "kv_db_up " << (db.IsOpen() && cache_ok && read_ok && compaction_ok ? 1 : 0)
+      << "kv_db_up "
+      << (db.IsOpen() && cache_ok && read_ok && compaction_ok && flush_ok ? 1 : 0)
       << "\n";
 
   if (cache_ok) {
@@ -323,6 +326,22 @@ std::string MonitoringServer::RenderMetrics(const Server& server,
         << compaction_stats.skipped_due_snapshot << "\n"
         << "kv_db_compaction_skipped_total{reason=\"threshold\"} "
         << compaction_stats.skipped_due_threshold << "\n";
+  }
+  if (flush_ok) {
+    out << "# TYPE kv_db_flush_completed_total counter\n"
+        << "kv_db_flush_completed_total " << flush_stats.completed << "\n"
+        << "# TYPE kv_db_flush_failures_total counter\n"
+        << "kv_db_flush_failures_total " << flush_stats.failed << "\n"
+        << "# TYPE kv_db_flush_duration_microseconds_total counter\n"
+        << "kv_db_flush_duration_microseconds_total "
+        << flush_stats.total_duration_us << "\n"
+        << "# TYPE kv_db_flush_queue_length gauge\n"
+        << "kv_db_flush_queue_length " << flush_stats.queue_length << "\n"
+        << "# TYPE kv_db_write_stalls_total counter\n"
+        << "kv_db_write_stalls_total " << flush_stats.write_stalls << "\n"
+        << "# TYPE kv_db_write_stall_duration_microseconds_total counter\n"
+        << "kv_db_write_stall_duration_microseconds_total "
+        << flush_stats.write_stall_duration_us << "\n";
   }
   return out.str();
 }

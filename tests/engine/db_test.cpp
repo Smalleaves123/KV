@@ -402,6 +402,28 @@ TEST(DBTest, CloseFlushesActiveMemTableBeforeClosingWAL) {
   EXPECT_EQ(value, "value");
 }
 
+TEST(DBTest, FlushStatsTrackCompletedBackgroundFlush) {
+  DBOptions options = MakeDBOptions("flush_stats");
+  options.memtable_write_buffer_size = 1;
+  options.auto_compaction_enabled = false;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "key", "value").ok());
+  EXPECT_TRUE(db->Compact().IsNotFound());
+
+  FlushStats stats;
+  ASSERT_TRUE(db->GetFlushStats(&stats).ok());
+  EXPECT_EQ(stats.completed, 1U);
+  EXPECT_EQ(stats.failed, 0U);
+  EXPECT_GE(stats.total_duration_us, 0U);
+  EXPECT_EQ(stats.queue_length, 0U);
+  EXPECT_TRUE(db->GetFlushStats(nullptr).IsInvalidArgument());
+}
+
 TEST(DBTest, FlushAppendsManifestRecord) {
   DBOptions options = MakeDBOptions("manifest_append");
   options.memtable_write_buffer_size = 1;

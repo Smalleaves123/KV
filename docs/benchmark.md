@@ -100,6 +100,8 @@ Each benchmark should print:
 - WAL bytes written;
 - SST count and bytes;
 - compaction count and time;
+- flush completion/failure count, queue length, and cumulative flush time;
+- write-stall count and cumulative wait time;
 - cache hit/miss/eviction/expiration counts;
 - table cache and Bloom filter read-path stats.
 

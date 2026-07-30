@@ -33,6 +33,7 @@ public:
   Status GetCacheStats(CacheStats* stats) const override;
   Status GetReadPathStats(ReadPathStats* stats) const override;
   Status GetCompactionStats(CompactionStats* stats) const override;
+  Status GetFlushStats(FlushStats* stats) const override;
   const Snapshot* GetSnapshot() override;
   Status ReleaseSnapshot(const Snapshot* snapshot) override;
   Status Close() override;

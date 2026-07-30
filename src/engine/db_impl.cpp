@@ -1,6 +1,7 @@
 #include "kv/engine/db_impl.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -611,6 +612,16 @@ Status DBImpl::GetCompactionStats(CompactionStats* stats) const {
   return Status::OK();
 }
 
+Status DBImpl::GetFlushStats(FlushStats* stats) const {
+  std::lock_guard<std::mutex> lk(mu_);
+  if (stats == nullptr) {
+    return Status::InvalidArgument("flush stats output is null");
+  }
+  *stats = flush_stats_;
+  stats->queue_length = immutable_mems_.size();
+  return Status::OK();
+}
+
 Status DBImpl::TxnGetAtSequence(const Slice& key,
                                 uint64_t read_seq,
                                 std::string* value) const {
@@ -987,10 +998,20 @@ Status DBImpl::WaitForImmutableMemTables(
 
 Status DBImpl::WaitForImmutableMemTableSpace(
     std::unique_lock<std::mutex>& lock) {
+  const bool will_stall =
+      immutable_mems_.size() >= options_.max_immutable_memtables;
+  const auto start = std::chrono::steady_clock::now();
   flush_done_cv_.wait(lock, [this] {
     return immutable_mems_.size() < options_.max_immutable_memtables ||
            !background_error_.ok() || shutting_down_;
   });
+  if (will_stall) {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - start);
+    ++flush_stats_.write_stalls;
+    flush_stats_.write_stall_duration_us +=
+        static_cast<uint64_t>(elapsed.count());
+  }
   return CheckWritable();
 }
 
@@ -1051,12 +1072,17 @@ void DBImpl::FlushWorker() {
     MemTable* memtable = immutable_mem.table.get();
     lock.unlock();
 
+    const auto start = std::chrono::steady_clock::now();
     std::string sst_file;
     Status s = FlushMemTableToSST(*memtable, &sst_file);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - start);
 
     lock.lock();
     immutable_mems_.front().flushing = false;
+    flush_stats_.total_duration_us += static_cast<uint64_t>(elapsed.count());
     if (!s.ok()) {
+      ++flush_stats_.failed;
       background_error_ = s;
       flush_done_cv_.notify_all();
       continue;
@@ -1064,6 +1090,7 @@ void DBImpl::FlushWorker() {
 
     sst_files_.push_back(std::move(sst_file));
     immutable_mems_.pop_front();
+    ++flush_stats_.completed;
     MaybeCompactAfterFlushLocked();
     flush_done_cv_.notify_all();
   }

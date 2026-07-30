@@ -130,6 +130,10 @@ Status RaftDBAdapter::GetCompactionStats(CompactionStats* stats) const {
   return local_db_->GetCompactionStats(stats);
 }
 
+Status RaftDBAdapter::GetFlushStats(FlushStats* stats) const {
+  return local_db_->GetFlushStats(stats);
+}
+
 const Snapshot* RaftDBAdapter::GetSnapshot() { return local_db_->GetSnapshot(); }
 
 Status RaftDBAdapter::ReleaseSnapshot(const Snapshot* snapshot) {

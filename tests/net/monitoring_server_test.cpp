@@ -135,7 +135,9 @@ TEST_F(MonitoringServerTest, HealthReadinessAndMetricsEndpoints) {
       std::string::npos);
   EXPECT_NE(metrics.find("kv_db_up 1"), std::string::npos);
   EXPECT_NE(metrics.find("kv_db_compaction_attempts_total"),
-           std::string::npos);
+            std::string::npos);
+  EXPECT_NE(metrics.find("kv_db_flush_completed_total"), std::string::npos);
+  EXPECT_NE(metrics.find("kv_db_flush_queue_length"), std::string::npos);
 }
 
 TEST_F(MonitoringServerTest, ReportsNotReadyAfterCommandServerStops) {
