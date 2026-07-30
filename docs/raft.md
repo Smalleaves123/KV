@@ -30,7 +30,9 @@ When Raft is enabled in `kv_server`:
 `GET` in Raft mode currently requires the node to be leader. The wrapper calls
 `LinearizableReadBarrier()` before reading from the local DB.
 
-Follower reads return an error containing the known leader id.
+Follower reads return an error containing the known leader id. Writes received
+by a follower return `-MOVED host:port` when the current leader's client
+address is configured, so a RESP client can retry against that node.
 
 ## Command Support In Raft Mode
 
@@ -61,12 +63,15 @@ raft:
     - id: 1
       host: 127.0.0.1
       raft_port: 9528
+      client_port: 9527
     - id: 2
       host: 127.0.0.1
       raft_port: 9628
+      client_port: 9627
     - id: 3
       host: 127.0.0.1
       raft_port: 9728
+      client_port: 9727
 ```
 
 Environment format:
@@ -76,7 +81,7 @@ KV_RAFT=1
 KV_RAFT_NODE_ID=1
 KV_RAFT_PORT=9528
 KV_RAFT_DATA_DIR=data/raft/node1
-KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728
+KV_RAFT_PEERS=1:127.0.0.1:9528:9527,2:127.0.0.1:9628:9627,3:127.0.0.1:9728:9727
 ```
 
 ## Local Three-Node Example
@@ -88,7 +93,7 @@ KV_RAFT=1 \
 KV_RAFT_NODE_ID=1 \
 KV_RAFT_PORT=9528 \
 KV_RAFT_DATA_DIR=data/raft/node1 \
-KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728 \
+KV_RAFT_PEERS=1:127.0.0.1:9528:9527,2:127.0.0.1:9628:9627,3:127.0.0.1:9728:9727 \
 ./build/apps/kv_server 9527 data/db-node1
 ```
 
@@ -99,7 +104,7 @@ KV_RAFT=1 \
 KV_RAFT_NODE_ID=2 \
 KV_RAFT_PORT=9628 \
 KV_RAFT_DATA_DIR=data/raft/node2 \
-KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728 \
+KV_RAFT_PEERS=1:127.0.0.1:9528:9527,2:127.0.0.1:9628:9627,3:127.0.0.1:9728:9727 \
 ./build/apps/kv_server 9627 data/db-node2
 ```
 
@@ -110,7 +115,7 @@ KV_RAFT=1 \
 KV_RAFT_NODE_ID=3 \
 KV_RAFT_PORT=9728 \
 KV_RAFT_DATA_DIR=data/raft/node3 \
-KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728 \
+KV_RAFT_PEERS=1:127.0.0.1:9528:9527,2:127.0.0.1:9628:9627,3:127.0.0.1:9728:9727 \
 ./build/apps/kv_server 9727 data/db-node3
 ```
 
@@ -126,8 +131,22 @@ Send writes to the leader's client port:
 printf "SET alpha beta\nGET alpha\n" | nc 127.0.0.1 9527
 ```
 
-If you send a write to a follower, the server returns an error with the known
-leader id.
+If you send a write to a follower, it returns a redirect such as:
+
+```text
+-MOVED 127.0.0.1:9527
+```
+
+Retry the same request against that client port. A stopped leader is replaced
+by a new leader once the remaining two nodes form a majority; restart the old
+node with the same `data_dir` and it will receive committed log entries again.
+
+## Metrics
+
+With `server.metrics_port` enabled, `/metrics` exports `kv_raft_role`,
+`kv_raft_term`, `kv_raft_voted_for`, `kv_raft_leader_id`,
+`kv_raft_commit_index`, `kv_raft_applied_index`, and
+`kv_raft_last_log_index` for a server started in Raft mode.
 
 ## Tests
 
@@ -142,8 +161,11 @@ In restricted environments, listener socket tests may skip.
 
 - No dynamic membership changes.
 - No InstallSnapshot RPC.
+- No persistent snapshots or Raft log compaction; a long-running cluster grows
+  its Raft log indefinitely.
 - No production operational tooling.
-- No client-side redirect protocol beyond an error message.
+- Redirects apply to follower writes; follower reads still return the adapter's
+  leader error.
 - Raft write batches and transactions are not supported by `RaftDBAdapter`.
 - The implementation is designed for learning and testing, not production
   deployment.
