@@ -57,13 +57,33 @@ bool WaitUntil(const std::function<bool()>& pred,
 
 class RaftServerIntegrationTest : public ::testing::Test {
  protected:
+  RaftConfig MakeRaftConfig(const TestNode& node) const {
+    RaftConfig config;
+    config.node_id = node.node_id;
+    config.raft_port = node.raft_port;
+    config.data_dir = node.raft_dir;
+    config.peers = peers_;
+    return config;
+  }
+
+  Status StartNode(TestNode* node) {
+    if (node == nullptr || node->db == nullptr) {
+      return Status::InvalidArgument("test node is unavailable");
+    }
+    auto* applier = dynamic_cast<WriteApplier*>(node->db.get());
+    if (applier == nullptr) {
+      return Status::InvalidArgument("test DB is not a write applier");
+    }
+    node->raft = std::make_unique<RaftServer>(MakeRaftConfig(*node), applier);
+    return node->raft->Start();
+  }
+
   void SetUp() override {
     constexpr uint16_t kBasePort = 21100;
     constexpr uint16_t kClientBasePort = 22100;
-    std::unordered_map<uint64_t, RaftConfig::Peer> peers;
     for (uint64_t id = 1; id <= 3; ++id) {
-      peers[id] = {"127.0.0.1", static_cast<uint16_t>(kBasePort + id),
-                   static_cast<uint16_t>(kClientBasePort + id)};
+      peers_[id] = {"127.0.0.1", static_cast<uint16_t>(kBasePort + id),
+                    static_cast<uint16_t>(kClientBasePort + id)};
     }
 
     for (uint64_t id = 1; id <= 3; ++id) {
@@ -82,16 +102,8 @@ class RaftServerIntegrationTest : public ::testing::Test {
       Status s = DB::Open(node.db_options, &node.db);
       ASSERT_TRUE(s.ok()) << s.ToString();
 
-      RaftConfig cfg;
-      cfg.node_id = id;
-      cfg.raft_port = node.raft_port;
-      cfg.data_dir = node.raft_dir;
-      cfg.peers = peers;
-
-      auto* applier = dynamic_cast<WriteApplier*>(node.db.get());
-      ASSERT_NE(applier, nullptr);
-      node.raft = std::make_unique<RaftServer>(cfg, applier);
-      s = node.raft->Start();
+      nodes_.push_back(std::move(node));
+      s = StartNode(&nodes_.back());
       if (!s.ok() &&
           s.ToString().find("raft rpc bind: Operation not permitted") !=
               std::string::npos) {
@@ -99,7 +111,6 @@ class RaftServerIntegrationTest : public ::testing::Test {
       }
       ASSERT_TRUE(s.ok()) << s.ToString();
 
-      nodes_.push_back(std::move(node));
     }
   }
 
@@ -118,6 +129,7 @@ class RaftServerIntegrationTest : public ::testing::Test {
   }
 
   std::vector<TestNode> nodes_;
+  std::unordered_map<uint64_t, RaftConfig::Peer> peers_;
 };
 
 TEST_F(RaftServerIntegrationTest, LeaderReplicatesCommittedWriteToAllNodes) {
@@ -206,6 +218,102 @@ TEST_F(RaftServerIntegrationTest, LeaderReplicatesCommittedWriteToAllNodes) {
     std::string value;
     EXPECT_TRUE(node.db->Get(ReadOptions{}, "ttl-key", &value).IsNotFound());
   }
+}
+
+TEST_F(RaftServerIntegrationTest, RestartedFollowerCatchesUpCommittedWrite) {
+  TestNode* leader_node = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          if (node.raft->IsLeader()) {
+            leader_node = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  ASSERT_NE(leader_node, nullptr);
+
+  TestNode* follower = nullptr;
+  for (auto& node : nodes_) {
+    if (&node != leader_node) {
+      follower = &node;
+      break;
+    }
+  }
+  ASSERT_NE(follower, nullptr);
+
+  ASSERT_TRUE(follower->raft->Stop().ok());
+  follower->raft.reset();
+  ASSERT_TRUE(leader_node->raft->Propose(
+                  raft::EncodePutCmd("after-follower-restart", "value"))
+                  .ok());
+  ASSERT_TRUE(StartNode(follower).ok());
+
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        std::string value;
+        return follower->db->Get(ReadOptions{}, "after-follower-restart",
+                                 &value)
+                   .ok() &&
+               value == "value";
+      },
+      std::chrono::seconds(5)));
+}
+
+TEST_F(RaftServerIntegrationTest, NewLeaderCommitsAfterOldLeaderRestarts) {
+  TestNode* old_leader = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          if (node.raft->IsLeader()) {
+            old_leader = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  ASSERT_NE(old_leader, nullptr);
+
+  ASSERT_TRUE(old_leader->raft->Stop().ok());
+  old_leader->raft.reset();
+
+  TestNode* new_leader = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          if (node.raft != nullptr && node.raft->IsLeader()) {
+            new_leader = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  ASSERT_NE(new_leader, nullptr);
+  ASSERT_NE(new_leader, old_leader);
+
+  ASSERT_TRUE(new_leader->raft->Propose(
+                  raft::EncodePutCmd("after-leader-failover", "value"))
+                  .ok());
+  const Status restart = StartNode(old_leader);
+  ASSERT_TRUE(restart.ok()) << restart.ToString();
+
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          std::string value;
+          if (!node.db->Get(ReadOptions{}, "after-leader-failover", &value)
+                   .ok() ||
+              value != "value") {
+            return false;
+          }
+        }
+        return true;
+      },
+      std::chrono::seconds(5)));
 }
 
 }  // namespace
