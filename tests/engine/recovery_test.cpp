@@ -10,6 +10,7 @@
 #include "kv/engine/db.h"
 #include "kv/memtable/memtable.h"
 #include "kv/sstable/table_builder.h"
+#include "kv/testing/failure_injection.h"
 #include "kv/wal/wal_writer.h"
 
 namespace kv {
@@ -187,6 +188,45 @@ TEST(RecoveryTest, DBOpenIgnoresOrphanSSTableWhenManifestExists) {
   const std::string orphan_path =
       options.sst_dir + "/00000000000000099999.sst";
   WriteSingleEntrySST(orphan_path, "live", 99999, "orphan");
+
+  RemoveIfExists(options.wal_path);
+
+  {
+    DBOptions reopen_options = options;
+    reopen_options.create_if_missing = false;
+
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+
+    std::string value;
+    ASSERT_TRUE(db->Get(ReadOptions{}, "live", &value).ok());
+    EXPECT_EQ(value, "manifested");
+  }
+}
+
+TEST(RecoveryTest, InjectedFlushFailureLeavesOrphanSSTableOutOfRecovery) {
+  DBOptions options = MakeRecoveryDBOptions("injected_orphan_sstable");
+  RemoveDBFiles(options);
+  testing::ClearFailureInjection();
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "live", "manifested").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+
+    testing::InjectFailure(
+        testing::FailurePoint::kAfterSSTableWriteBeforeManifest,
+        Status::IOError("injected failure after sstable write"));
+    Status s = db->Put(WriteOptions{}, "live", "orphan");
+    EXPECT_TRUE(s.IsIOError()) << s.ToString();
+    testing::ClearFailureInjection();
+  }
 
   RemoveIfExists(options.wal_path);
 

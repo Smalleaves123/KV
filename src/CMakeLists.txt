@@ -52,6 +52,7 @@ add_library(kv
   sstable/table_cache.cpp
   sstable/value_codec.cpp
   table/bloom_filter.cpp
+  testing/failure_injection.cpp
   raft/raft_log.cpp
   raft/raft_node.cpp
   raft/raft_rpc_codec.cpp

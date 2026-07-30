@@ -25,6 +25,10 @@ set(KV_SANITIZERS "address,undefined" CACHE STRING
 add_subdirectory(src)
 kv_enable_sanitizers(kv)
 
+if(KV_BUILD_TESTS)
+  target_compile_definitions(kv PRIVATE KV_ENABLE_FAILURE_INJECTION)
+endif()
+
 if(WIN32)
   target_link_libraries(kv PUBLIC ws2_32)
 endif()

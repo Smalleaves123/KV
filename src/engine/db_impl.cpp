@@ -25,6 +25,7 @@
 #include "kv/sstable/value_codec.h"
 #include "kv/table/bloom_filter.h"
 #include "kv/table/table_index.h"
+#include "kv/testing/failure_injection.h"
 
 namespace kv {
 
@@ -850,6 +851,12 @@ Status DBImpl::FlushMemTableToSST(std::string* out_file) {
   }
 
   Status s = builder.Finish();
+  if (!s.ok()) {
+    return s;
+  }
+
+  s = testing::MaybeInjectFailure(
+      testing::FailurePoint::kAfterSSTableWriteBeforeManifest);
   if (!s.ok()) {
     return s;
   }
