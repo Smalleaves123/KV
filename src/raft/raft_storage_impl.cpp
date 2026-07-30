@@ -12,8 +12,10 @@ namespace raft {
 FileRaftStorage::FileRaftStorage(const std::string& dir_path)
     : dir_path_(dir_path),
       state_path_(dir_path + "/raft_state"),
+      snapshot_meta_path_(dir_path + "/snapshot_meta"),
       log_path_(dir_path + "/raft_log"),
       hard_state_{},
+      snapshot_meta_{},
       first_index_(1),
       last_index_(0) {
   std::error_code ec;
@@ -33,6 +35,16 @@ FileRaftStorage::FileRaftStorage(const std::string& dir_path)
       }
     }
     sf.close();
+  }
+
+  std::ifstream meta_file(snapshot_meta_path_, std::ios::binary);
+  if (meta_file.is_open()) {
+    char buf[16];
+    meta_file.read(buf, sizeof(buf));
+    if (meta_file.gcount() == static_cast<std::streamsize>(sizeof(buf))) {
+      snapshot_meta_.last_included_index = DecodeFixed64(buf);
+      snapshot_meta_.last_included_term = DecodeFixed64(buf + 8);
+    }
   }
 
   // Load log index
@@ -58,6 +70,34 @@ void FileRaftStorage::SaveHardState(const HardState& state) {
     sf.write(data.data(), static_cast<std::streamsize>(data.size()));
     sf.close();
   }
+}
+
+RaftSnapshotMeta FileRaftStorage::SnapshotMeta() const {
+  return snapshot_meta_;
+}
+
+void FileRaftStorage::SaveSnapshotMeta(const RaftSnapshotMeta& meta) {
+  std::string data;
+  data.reserve(16);
+  EncodeFixed64(&data, meta.last_included_index);
+  EncodeFixed64(&data, meta.last_included_term);
+
+  const std::string tmp_path = snapshot_meta_path_ + ".tmp";
+  {
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return;
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+    if (!out) return;
+  }
+
+  std::error_code ec;
+  std::filesystem::rename(tmp_path, snapshot_meta_path_, ec);
+  if (ec) {
+    std::filesystem::remove(snapshot_meta_path_, ec);
+    ec.clear();
+    std::filesystem::rename(tmp_path, snapshot_meta_path_, ec);
+  }
+  if (!ec) snapshot_meta_ = meta;
 }
 
 void FileRaftStorage::LoadIndex() {

@@ -1,6 +1,10 @@
 #include "kv/raft/raft_log.h"
 
+#include <filesystem>
+
 #include <gtest/gtest.h>
+
+#include "kv/raft/raft_storage_impl.h"
 
 namespace kv {
 namespace raft {
@@ -225,6 +229,29 @@ TEST(RaftLogTest, CommitToBoundary) {
   log.Append({{1, 1, "x"}});
   log.CommitTo(1);
   EXPECT_EQ(log.commit_index(), 1u);
+}
+
+TEST(FileRaftStorageTest, SnapshotMetaPersistsAcrossReopen) {
+  const std::string path = "test_tmp/raft/snapshot_meta_persistence";
+  std::error_code ec;
+  std::filesystem::remove_all(path, ec);
+
+  {
+    FileRaftStorage storage(path);
+    storage.SaveSnapshotMeta(RaftSnapshotMeta{42, 7});
+    const RaftSnapshotMeta meta = storage.SnapshotMeta();
+    EXPECT_EQ(meta.last_included_index, 42U);
+    EXPECT_EQ(meta.last_included_term, 7U);
+  }
+
+  {
+    FileRaftStorage storage(path);
+    const RaftSnapshotMeta meta = storage.SnapshotMeta();
+    EXPECT_EQ(meta.last_included_index, 42U);
+    EXPECT_EQ(meta.last_included_term, 7U);
+  }
+
+  std::filesystem::remove_all(path, ec);
 }
 
 }  // namespace

@@ -21,6 +21,8 @@ class FileRaftStorage : public RaftStorage {
 
   HardState InitialState() const override;
   void SaveHardState(const HardState& state) override;
+  RaftSnapshotMeta SnapshotMeta() const override;
+  void SaveSnapshotMeta(const RaftSnapshotMeta& meta) override;
 
   std::vector<LogEntry> Entries(uint64_t low, uint64_t high) const override;
   uint64_t Term(uint64_t index) const override;
@@ -38,9 +40,11 @@ class FileRaftStorage : public RaftStorage {
 
   std::string dir_path_;
   std::string state_path_;
+  std::string snapshot_meta_path_;
   std::string log_path_;
 
   HardState hard_state_;
+  RaftSnapshotMeta snapshot_meta_;
   uint64_t first_index_;
   uint64_t last_index_;
   std::map<uint64_t, uint64_t> index_offset_;  // index -> file offset

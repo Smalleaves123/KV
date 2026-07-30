@@ -33,6 +33,7 @@ struct RaftStats {
   uint64_t commit_index = 0;
   uint64_t applied_index = 0;
   uint64_t last_log_index = 0;
+  uint64_t snapshot_last_included_index = 0;
   struct PeerProgress {
     uint64_t peer_id = 0;
     uint64_t match_index = 0;

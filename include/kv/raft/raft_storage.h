@@ -15,6 +15,8 @@ class RaftStorage {
   // 状态持久化
   virtual HardState InitialState() const = 0;
   virtual void SaveHardState(const HardState& state) = 0;
+  virtual RaftSnapshotMeta SnapshotMeta() const { return {}; }
+  virtual void SaveSnapshotMeta(const RaftSnapshotMeta&) {}
 
   // 日志持久化
   virtual std::vector<LogEntry> Entries(uint64_t low, uint64_t high) const = 0;

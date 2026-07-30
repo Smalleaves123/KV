@@ -235,6 +235,8 @@ RaftStats RaftServer::GetStats() const noexcept {
   stats.commit_index = raft_node_->commit_index();
   stats.applied_index = last_applied_;
   stats.last_log_index = raft_node_->last_log_index();
+  stats.snapshot_last_included_index =
+      storage_->SnapshotMeta().last_included_index;
   for (const auto& [peer_id, progress] : raft_node_->Progresses()) {
     stats.peers.push_back(
         RaftStats::PeerProgress{peer_id, progress.match, progress.next});

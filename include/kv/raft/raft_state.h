@@ -29,5 +29,10 @@ struct HardState {
   uint64_t applied_index{0};
 };
 
+struct RaftSnapshotMeta {
+  uint64_t last_included_index{0};
+  uint64_t last_included_term{0};
+};
+
 } // namespace raft
 } // namespace kv
