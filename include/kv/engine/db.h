@@ -146,6 +146,10 @@ class DB {
                                   std::unique_ptr<Transaction>* txn) = 0;
   virtual Status Compact() = 0;
 
+  // Flush all mutable state and write a self-contained, reopenable checkpoint
+  // into a new directory.
+  virtual Status CreateCheckpoint(const std::string& checkpoint_dir) = 0;
+
   virtual Status GetCacheStats(CacheStats* stats) const = 0;
   virtual Status GetReadPathStats(ReadPathStats* stats) const = 0;
   virtual Status GetCompactionStats(CompactionStats* stats) const = 0;

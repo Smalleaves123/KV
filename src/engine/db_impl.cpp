@@ -574,6 +574,102 @@ Status DBImpl::Compact() {
   return s;
 }
 
+Status DBImpl::CreateCheckpoint(const std::string& checkpoint_dir) {
+  if (checkpoint_dir.empty()) {
+    return Status::InvalidArgument("checkpoint directory is empty");
+  }
+
+  std::unique_lock<std::mutex> lk(mu_);
+  Status open_status = RequireOpen(open_);
+  if (!open_status.ok()) {
+    return open_status;
+  }
+
+  if (!memtable_->Empty()) {
+    RotateMemTable();
+    flush_cv_.notify_one();
+  }
+  Status flush_status = WaitForImmutableMemTables(lk);
+  if (!flush_status.ok()) {
+    return flush_status;
+  }
+
+  const std::filesystem::path checkpoint_path(checkpoint_dir);
+  const std::filesystem::path tmp_path = checkpoint_dir + ".tmp";
+  std::error_code ec;
+  if (std::filesystem::exists(checkpoint_path, ec)) {
+    return Status::AlreadyExists("checkpoint already exists: " + checkpoint_dir);
+  }
+  if (ec) {
+    return Status::IOError("failed to query checkpoint directory: " +
+                           checkpoint_dir);
+  }
+
+  std::filesystem::remove_all(tmp_path, ec);
+  if (ec) {
+    return Status::IOError("failed to clear checkpoint temporary directory: " +
+                           tmp_path.string());
+  }
+  std::filesystem::create_directories(tmp_path / "sst", ec);
+  if (ec) {
+    return Status::IOError("failed to create checkpoint directory: " +
+                           tmp_path.string());
+  }
+
+  std::vector<ManifestFileMeta> files;
+  Status s = manifest_.Recover(&files);
+  if (!s.ok()) {
+    std::filesystem::remove_all(tmp_path, ec);
+    return s;
+  }
+
+  for (const auto& file : files) {
+    const std::filesystem::path destination =
+        tmp_path / "sst" / BuildSSTFileName(file.file_number);
+    std::filesystem::copy_file(file.file_path, destination, ec);
+    if (ec) {
+      std::filesystem::remove_all(tmp_path, ec);
+      return Status::IOError("failed to copy checkpoint sst: " +
+                             file.file_path);
+    }
+  }
+
+  Manifest checkpoint_manifest;
+  const std::string checkpoint_manifest_path =
+      (tmp_path / "MANIFEST").string();
+  s = checkpoint_manifest.Open(checkpoint_manifest_path, true);
+  if (s.ok()) {
+    for (const auto& file : files) {
+      ManifestFileMeta checkpoint_file = file;
+      checkpoint_file.file_path =
+          (checkpoint_path / "sst" / BuildSSTFileName(file.file_number))
+              .string();
+      s = checkpoint_manifest.AddFile(checkpoint_file);
+      if (!s.ok()) {
+        break;
+      }
+    }
+  }
+  if (s.ok()) {
+    s = checkpoint_manifest.Sync();
+  }
+  Status close_status = checkpoint_manifest.Close();
+  if (s.ok() && !close_status.ok()) {
+    s = close_status;
+  }
+  if (!s.ok()) {
+    std::filesystem::remove_all(tmp_path, ec);
+    return s;
+  }
+
+  std::filesystem::rename(tmp_path, checkpoint_path, ec);
+  if (ec) {
+    std::filesystem::remove_all(tmp_path, ec);
+    return Status::IOError("failed to publish checkpoint: " + checkpoint_dir);
+  }
+  return Status::OK();
+}
+
 Status DBImpl::GetCacheStats(CacheStats* stats) const {
   std::lock_guard<std::mutex> lk(mu_);
   if (stats == nullptr) {

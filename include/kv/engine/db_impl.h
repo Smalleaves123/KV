@@ -54,6 +54,7 @@ class DBImpl final : public DB, public WriteApplier {
   Status BeginTransaction(const TxnOptions& options,
                           std::unique_ptr<Transaction>* txn) override;
   Status Compact() override;
+  Status CreateCheckpoint(const std::string& checkpoint_dir) override;
   Status GetCacheStats(CacheStats* stats) const override;
   Status GetReadPathStats(ReadPathStats* stats) const override;
   Status GetCompactionStats(CompactionStats* stats) const override;

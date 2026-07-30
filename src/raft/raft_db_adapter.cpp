@@ -118,6 +118,10 @@ Status RaftDBAdapter::BeginTransaction(const TxnOptions&,
 
 Status RaftDBAdapter::Compact() { return local_db_->Compact(); }
 
+Status RaftDBAdapter::CreateCheckpoint(const std::string& checkpoint_dir) {
+  return local_db_->CreateCheckpoint(checkpoint_dir);
+}
+
 Status RaftDBAdapter::GetCacheStats(CacheStats* stats) const {
   return local_db_->GetCacheStats(stats);
 }

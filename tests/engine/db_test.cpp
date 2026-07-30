@@ -188,6 +188,52 @@ TEST(DBTest, ReopenReplaysWAL) {
   }
 }
 
+TEST(DBTest, CheckpointReopensWithoutSourceFiles) {
+  DBOptions options = MakeDBOptions("checkpoint_reopen");
+  options.memtable_write_buffer_size = 1024 * 1024;
+  options.auto_compaction_enabled = false;
+  const std::string checkpoint_dir = options.sst_dir + "_checkpoint";
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+  RemoveDirIfExists(checkpoint_dir);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "present", "value").ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "deleted", "value").ok());
+    ASSERT_TRUE(db->Delete(WriteOptions{}, "deleted").ok());
+    ASSERT_TRUE(db->CreateCheckpoint(checkpoint_dir).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "after-checkpoint", "later").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+
+  DBOptions checkpoint_options;
+  checkpoint_options.db_path = checkpoint_dir;
+  checkpoint_options.wal_path = checkpoint_dir + "/wal.log";
+  checkpoint_options.sst_dir = checkpoint_dir + "/sst";
+  checkpoint_options.manifest_path = checkpoint_dir + "/MANIFEST";
+  checkpoint_options.create_if_missing = false;
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(checkpoint_options, &db).ok());
+    std::string value;
+    ASSERT_TRUE(db->Get(ReadOptions{}, "present", &value).ok());
+    EXPECT_EQ(value, "value");
+    EXPECT_TRUE(db->Get(ReadOptions{}, "deleted", &value).IsNotFound());
+    EXPECT_TRUE(
+        db->Get(ReadOptions{}, "after-checkpoint", &value).IsNotFound());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  RemoveDirIfExists(checkpoint_dir);
+}
+
 TEST(DBTest, CreateIfMissingFalseRejectsMissingWAL) {
   DBOptions options = MakeDBOptions("missing_reject");
   options.create_if_missing = false;
