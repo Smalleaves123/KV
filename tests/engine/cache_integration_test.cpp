@@ -190,5 +190,31 @@ TEST(CacheIntegrationTest, BloomFilterStatsTrackRejectedSSTLookups) {
   EXPECT_GE(after.bloom_negatives, before.bloom_negatives + 1);
 }
 
+TEST(CacheIntegrationTest, ConfiguredTableCacheCapacityEvictsReaders) {
+  DBOptions options = MakeDBOptionsWithCache("table_cache_capacity");
+  options.cache_enabled = false;
+  options.table_cache_capacity = 1;
+  options.compaction_min_input_files = 3;
+  options.auto_compaction_enabled = false;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "a", "1").ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "b", "2").ok());
+  EXPECT_TRUE(db->Compact().IsNotFound());
+
+  std::string value;
+  ASSERT_TRUE(db->Get(ReadOptions{}, "a", &value).ok());
+  ASSERT_TRUE(db->Get(ReadOptions{}, "b", &value).ok());
+
+  ReadPathStats stats;
+  ASSERT_TRUE(db->GetReadPathStats(&stats).ok());
+  EXPECT_EQ(stats.table_cache_entries, 1U);
+  EXPECT_GE(stats.table_cache_evictions, 1U);
+}
+
 }  // namespace
 }  // namespace kv

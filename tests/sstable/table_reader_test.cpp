@@ -15,6 +15,67 @@
 namespace kv {
 namespace {
 
+Footer ReadFooter(const std::string& file_path) {
+  std::ifstream file(file_path, std::ios::binary);
+  EXPECT_TRUE(file.is_open());
+  file.seekg(-static_cast<std::streamoff>(kFooterEncodedSize), std::ios::end);
+  std::string encoded(kFooterEncodedSize, '\0');
+  file.read(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+  EXPECT_TRUE(file.good());
+  bool ok = false;
+  Footer footer = Footer::DecodeFrom(encoded, &ok);
+  EXPECT_TRUE(ok);
+  return footer;
+}
+
+TEST(TableBuilderTest, ConfigurableBlockAndBloomSizesAffectLayout) {
+  const std::filesystem::path dir("test_tmp/sstable");
+  std::filesystem::create_directories(dir);
+  const std::string small_path = (dir / "config_small.sst").string();
+  const std::string large_path = (dir / "config_large.sst").string();
+  const std::string wide_filter_path =
+      (dir / "config_wide_filter.sst").string();
+  std::error_code ec;
+  std::filesystem::remove(small_path, ec);
+  std::filesystem::remove(large_path, ec);
+  std::filesystem::remove(wide_filter_path, ec);
+
+  const auto add_entries = [](TableBuilder* builder) {
+    for (int i = 0; i < 20; ++i) {
+      const std::string key = std::string("key") +
+                              (i < 10 ? "0" : "") + std::to_string(i);
+      ASSERT_TRUE(builder->Add(key, static_cast<uint64_t>(i + 1), 0,
+                               std::string(80, 'v')).ok());
+    }
+  };
+
+  TableBuilder small_builder(small_path, 256, 8);
+  add_entries(&small_builder);
+  ASSERT_TRUE(small_builder.Finish().ok());
+
+  TableBuilder large_builder(large_path, 4096, 8);
+  add_entries(&large_builder);
+  ASSERT_TRUE(large_builder.Finish().ok());
+
+  TableBuilder wide_filter_builder(wide_filter_path, 4096, 32);
+  add_entries(&wide_filter_builder);
+  ASSERT_TRUE(wide_filter_builder.Finish().ok());
+
+  std::unique_ptr<TableReader> small_reader;
+  std::unique_ptr<TableReader> large_reader;
+  ASSERT_TRUE(TableReader::Open(small_path, &small_reader).ok());
+  ASSERT_TRUE(TableReader::Open(large_path, &large_reader).ok());
+  EXPECT_GT(small_reader->NumDataBlocks(), large_reader->NumDataBlocks());
+
+  const Footer narrow_footer = ReadFooter(large_path);
+  const Footer wide_footer = ReadFooter(wide_filter_path);
+  EXPECT_GT(wide_footer.filter_handle.size, narrow_footer.filter_handle.size);
+
+  std::filesystem::remove(small_path, ec);
+  std::filesystem::remove(large_path, ec);
+  std::filesystem::remove(wide_filter_path, ec);
+}
+
 TEST(TableReaderTest, ReturnsLatestVersionAcrossDataBlocks) {
   const std::filesystem::path dir("test_tmp/sstable");
   std::filesystem::create_directories(dir);

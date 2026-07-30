@@ -72,6 +72,9 @@ KV_METRICS_PORT=9090
 storage:
   sync_on_write: false
   memtable_write_buffer_size: 4194304
+  sstable_block_size_bytes: 4096
+  bloom_bits_per_key: 10
+  table_cache_capacity: 64
   compaction_min_input_files: 2
   auto_compaction_enabled: true
 ```
@@ -80,6 +83,9 @@ Fields:
 
 - `sync_on_write`: sync WAL writes by default.
 - `memtable_write_buffer_size`: flush threshold in bytes.
+- `sstable_block_size_bytes`: target SSTable data-block size in bytes.
+- `bloom_bits_per_key`: Bloom filter bits allocated per SSTable key.
+- `table_cache_capacity`: maximum number of open SSTable readers cached.
 - `compaction_min_input_files`: minimum SST file count before compaction.
 - `auto_compaction_enabled`: try compaction after flush when the threshold is
   met.
@@ -89,6 +95,9 @@ Environment overrides:
 ```bash
 KV_SYNC_ON_WRITE=0
 KV_MEMTABLE_WRITE_BUFFER_SIZE=4194304
+KV_SSTABLE_BLOCK_SIZE_BYTES=4096
+KV_BLOOM_BITS_PER_KEY=10
+KV_TABLE_CACHE_CAPACITY=64
 KV_COMPACTION_MIN_INPUT_FILES=2
 KV_AUTO_COMPACTION=1
 ```
@@ -234,6 +243,9 @@ options.db_path = "data/db";
 options.create_if_missing = true;
 options.sync_on_write = false;
 options.memtable_write_buffer_size = 4 * 1024 * 1024;
+options.sstable_block_size_bytes = 4 * 1024;
+options.bloom_bits_per_key = 10;
+options.table_cache_capacity = 64;
 options.cache_enabled = false;
 options.compaction_min_input_files = 2;
 options.auto_compaction_enabled = true;
@@ -248,6 +260,8 @@ Important fields:
 - `create_if_missing`: allow opening a new DB if files are missing.
 - `sync_on_write`: fsync-like behavior after each write by default.
 - `memtable_write_buffer_size`: flush threshold.
+- `sstable_block_size_bytes`, `bloom_bits_per_key`, `table_cache_capacity`:
+  SSTable layout, Bloom filter, and open-table cache settings.
 - `cache_enabled`, `cache_policy`, `cache_capacity`,
   `cache_default_ttl_ms`: value cache settings.
 - `compaction_min_input_files`: minimum SST count before compaction.

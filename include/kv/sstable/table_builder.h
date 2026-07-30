@@ -24,7 +24,9 @@ class BlockBuilder;
 class TableBuilder {
  public:
   // Construct with target file path. Blocks are ~block_size bytes.
-  TableBuilder(const std::string& file_path, size_t block_size = 4096);
+  TableBuilder(const std::string& file_path,
+               size_t block_size = 4096,
+               size_t bloom_bits_per_key = 10);
   ~TableBuilder();
 
   TableBuilder(const TableBuilder&) = delete;

@@ -104,7 +104,7 @@ DBImpl::DBImpl(DBOptions options)
       active_snapshots_(),
       owned_snapshots_(),
       cache_(),
-      table_cache_(std::make_unique<TableCache>(64)) {}
+      table_cache_(std::make_unique<TableCache>(options_.table_cache_capacity)) {}
 
 DBImpl::~DBImpl() {
   (void)Close();
@@ -1067,7 +1067,8 @@ Status DBImpl::FlushMemTableToSST(const MemTable& memtable,
       sst_dir_ + "/" + BuildSSTFileName(next_file_number_);
   const uint64_t file_number = next_file_number_;
 
-  TableBuilder builder(sst_path, options_.memtable_write_buffer_size);
+  TableBuilder builder(sst_path, options_.sstable_block_size_bytes,
+                       options_.bloom_bits_per_key);
 
   auto it = memtable.NewIterator();
   uint64_t max_flushed_seq = 0;

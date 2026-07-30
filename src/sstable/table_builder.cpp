@@ -18,7 +18,9 @@ static void PutFixed64(std::string* out, uint64_t v) {
   }
 }
 
-TableBuilder::TableBuilder(const std::string& file_path, size_t block_size)
+TableBuilder::TableBuilder(const std::string& file_path,
+                           size_t block_size,
+                           size_t bloom_bits_per_key)
     : file_path_(file_path),
       file_(),
       block_size_(std::max<size_t>(block_size, 256)),
@@ -29,7 +31,7 @@ TableBuilder::TableBuilder(const std::string& file_path, size_t block_size)
       data_block_(std::make_unique<BlockBuilder>()),
       last_key_(),
       index_entries_(),
-      filter_builder_() {
+      filter_builder_(bloom_bits_per_key) {
   file_.open(file_path_, std::ios::binary | std::ios::trunc);
 }
 

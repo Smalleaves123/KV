@@ -21,6 +21,9 @@ server:
 storage:
   sync_on_write: false
   memtable_write_buffer_size: 4194304
+  sstable_block_size_bytes: 4096
+  bloom_bits_per_key: 10
+  table_cache_capacity: 64
   compaction_min_input_files: 2
   auto_compaction_enabled: true
 

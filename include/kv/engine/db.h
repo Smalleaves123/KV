@@ -43,6 +43,15 @@ struct DBOptions {
   // 如果为空，默认使用 db_path + "/sst"
   std::string sst_dir;
 
+  // SSTable 数据块目标大小（字节）。
+  size_t sstable_block_size_bytes = 4 * 1024;
+
+  // 每个 SSTable key 使用的 Bloom filter bit 数。
+  size_t bloom_bits_per_key = 10;
+
+  // 已打开 SSTable reader 的 LRU 缓存容量。
+  size_t table_cache_capacity = 64;
+
   // 如果为空，默认使用 db_path + "/MANIFEST"
   std::string manifest_path;
 

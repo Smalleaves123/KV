@@ -27,6 +27,9 @@ struct AppConfigFile {
   int64_t cache_ttl_ms = 0;
   bool sync_on_write = false;
   size_t memtable_write_buffer_size = 4 * 1024 * 1024;
+  size_t sstable_block_size_bytes = 4 * 1024;
+  size_t bloom_bits_per_key = 10;
+  size_t table_cache_capacity = 64;
   size_t compaction_min_input_files = 2;
   bool auto_compaction_enabled = true;
 };

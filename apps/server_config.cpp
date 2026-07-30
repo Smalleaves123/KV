@@ -366,6 +366,12 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
         ParseBoolValue(value, &cfg.sync_on_write);
       } else if (key == "memtable_write_buffer_size") {
         ParseSizeValue(value, &cfg.memtable_write_buffer_size);
+      } else if (key == "sstable_block_size_bytes") {
+        ParseSizeValue(value, &cfg.sstable_block_size_bytes);
+      } else if (key == "bloom_bits_per_key") {
+        ParseSizeValue(value, &cfg.bloom_bits_per_key);
+      } else if (key == "table_cache_capacity") {
+        ParseSizeValue(value, &cfg.table_cache_capacity);
       } else if (key == "compaction_min_input_files") {
         ParseSizeValue(value, &cfg.compaction_min_input_files);
       } else if (key == "auto_compaction_enabled") {

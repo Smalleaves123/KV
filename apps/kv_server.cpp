@@ -142,6 +142,9 @@ int main(int argc, char** argv) {
   options.db_path = db_path;
   options.sync_on_write = file_config.sync_on_write;
   options.memtable_write_buffer_size = file_config.memtable_write_buffer_size;
+  options.sstable_block_size_bytes = file_config.sstable_block_size_bytes;
+  options.bloom_bits_per_key = file_config.bloom_bits_per_key;
+  options.table_cache_capacity = file_config.table_cache_capacity;
   options.compaction_min_input_files = file_config.compaction_min_input_files;
   options.auto_compaction_enabled = file_config.auto_compaction_enabled;
   options.cache_enabled = file_config.cache_enabled;
@@ -182,6 +185,25 @@ int main(int argc, char** argv) {
     size_t parsed = 0;
     if (kv::app::ParseSizeValue(v, &parsed)) {
       options.memtable_write_buffer_size = parsed;
+    }
+  }
+  if (const char* v = std::getenv("KV_SSTABLE_BLOCK_SIZE_BYTES");
+      v != nullptr) {
+    size_t parsed = 0;
+    if (kv::app::ParseSizeValue(v, &parsed)) {
+      options.sstable_block_size_bytes = parsed;
+    }
+  }
+  if (const char* v = std::getenv("KV_BLOOM_BITS_PER_KEY"); v != nullptr) {
+    size_t parsed = 0;
+    if (kv::app::ParseSizeValue(v, &parsed)) {
+      options.bloom_bits_per_key = parsed;
+    }
+  }
+  if (const char* v = std::getenv("KV_TABLE_CACHE_CAPACITY"); v != nullptr) {
+    size_t parsed = 0;
+    if (kv::app::ParseSizeValue(v, &parsed)) {
+      options.table_cache_capacity = parsed;
     }
   }
   if (const char* v = std::getenv("KV_COMPACTION_MIN_INPUT_FILES");
