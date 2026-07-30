@@ -73,6 +73,7 @@ Command CommandParser::ParseTokens(const std::vector<std::string>& tokens) {
   else if (head == "LLEN") cmd.type = CommandType::kLLen;
   else if (head == "LINDEX") cmd.type = CommandType::kLIndex;
   else if (head == "LRANGE") cmd.type = CommandType::kLRange;
+  else if (head == "AUTH") cmd.type = CommandType::kAuth;
   else cmd.type = CommandType::kInvalid;
 
   return cmd;

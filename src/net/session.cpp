@@ -2,15 +2,19 @@
 #include "kv/net/session.h"
 
 #include <cctype>
+#include <utility>
 #include <vector>
 
 #include "kv/net/protocol.h"
 
 namespace kv::net {
 
-Session::Session(DB* db, ClusterManager* cluster_manager)
+Session::Session(DB* db, ClusterManager* cluster_manager,
+                 std::string requirepass)
     : db_(db),
       executor_(db, cluster_manager),
+      requirepass_(std::move(requirepass)),
+      authenticated_(requirepass_.empty()),
       active_txn_(),
       last_txn_event_(TxnEvent::kNone) {}
 
@@ -41,6 +45,13 @@ std::string Session::HandleTokens(const std::vector<std::string>& tokens) {
 
 std::string Session::HandleCommand(const Command& cmd) {
   SetLastTxnEvent(TxnEvent::kNone);
+
+  if (cmd.type == CommandType::kAuth) {
+    return HandleAuthCommand(cmd);
+  }
+  if (!authenticated_) {
+    return protocol::Error("NOAUTH authentication required");
+  }
 
   switch (cmd.type) {
     case CommandType::kBegin:
@@ -88,6 +99,23 @@ std::string Session::HandleCommand(const Command& cmd) {
     default:
       return executor_.Execute(cmd);
   }
+}
+
+std::string Session::HandleAuthCommand(const Command& cmd) {
+  using namespace protocol;
+
+  if (cmd.args.size() != 1) {
+    return Error("wrong number of arguments for 'AUTH'");
+  }
+  if (requirepass_.empty()) {
+    return Error("AUTH is not enabled");
+  }
+  if (cmd.args[0] != requirepass_) {
+    return Error("invalid password");
+  }
+
+  authenticated_ = true;
+  return SimpleString("OK");
 }
 
 std::string Session::HandleTxnCommand(const Command& cmd) {

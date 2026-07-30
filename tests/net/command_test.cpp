@@ -348,6 +348,31 @@ TEST(SessionTest, HandleLineParsesAndExecutes) {
   EXPECT_EQ(session.HandleLine("PING"), "+PONG\r\n");
 }
 
+TEST(SessionTest, RequirepassBlocksCommandsUntilAuthSucceeds) {
+  auto db = OpenDBForTest("session_auth");
+  Session session(db.get(), nullptr, "secret");
+
+  EXPECT_EQ(session.HandleLine("PING"),
+            "-ERRNOAUTH authentication required\r\n");
+  EXPECT_EQ(session.HandleLine("AUTH wrong"), "-ERRinvalid password\r\n");
+  EXPECT_EQ(session.HandleLine("SET key value"),
+            "-ERRNOAUTH authentication required\r\n");
+  EXPECT_EQ(session.HandleLine("AUTH secret"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("SET key value"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("GET key"), "$5\r\nvalue\r\n");
+}
+
+TEST(SessionTest, AuthRejectsWrongArityAndDisabledAuthentication) {
+  auto db = OpenDBForTest("session_auth_args");
+  Session protected_session(db.get(), nullptr, "secret");
+  Session open_session(db.get());
+
+  EXPECT_EQ(protected_session.HandleLine("AUTH"),
+            "-ERRwrong number of arguments for 'AUTH'\r\n");
+  EXPECT_EQ(open_session.HandleLine("AUTH secret"),
+            "-ERRAUTH is not enabled\r\n");
+}
+
 TEST(SessionTest, DataTypeCommandsWorkThroughSession) {
   auto db = OpenDBForTest("session_data_types");
   Session session(db.get());

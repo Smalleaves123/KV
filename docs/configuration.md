@@ -42,6 +42,7 @@ and DB path:
 server:
   port: 9527
   metrics_port: 9090
+  requirepass: ""
   db_path: data/db
 ```
 
@@ -50,6 +51,8 @@ Fields:
 - `port`: TCP client port for line-oriented commands.
 - `metrics_port`: optional HTTP port for `/health`, `/ready`, and `/metrics`;
   `0` disables the monitoring server.
+- `requirepass`: optional password required by every TCP client before it can
+  run commands. An empty value disables authentication.
 - `db_path`: directory used to derive default WAL, SST, and manifest paths.
 
 Derived default storage paths:
@@ -64,6 +67,7 @@ Environment override:
 
 ```bash
 KV_METRICS_PORT=9090
+KV_REQUIREPASS=secret
 ```
 
 ## Storage Section

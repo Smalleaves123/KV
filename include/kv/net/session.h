@@ -24,7 +24,8 @@ enum class TxnEvent {
 
 class Session {
  public:
-  explicit Session(DB* db, ClusterManager* cluster_manager = nullptr);
+  explicit Session(DB* db, ClusterManager* cluster_manager = nullptr,
+                   std::string requirepass = "");
   ~Session();
 
   // 输入一行命令，返回编码后的响应
@@ -34,12 +35,15 @@ class Session {
 
  private:
   std::string HandleCommand(const Command& cmd);
+  std::string HandleAuthCommand(const Command& cmd);
   std::string HandleTxnCommand(const Command& cmd);
   std::string HandleDataCommandInTxn(const Command& cmd);
   void SetLastTxnEvent(TxnEvent event) noexcept;
 
   DB* db_;
   CommandExecutor executor_;
+  std::string requirepass_;
+  bool authenticated_;
   std::unique_ptr<Transaction> active_txn_;
   TxnEvent last_txn_event_;
 };

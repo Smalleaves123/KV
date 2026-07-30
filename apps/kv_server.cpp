@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
 
   int port = file_config.server_port;
   int metrics_port = file_config.metrics_port;
+  std::string requirepass = file_config.requirepass;
   std::string db_path = file_config.db_path;
   int arg_index = 1;
   if (argc >= 2 && std::string(argv[1]).rfind("--config=", 0) == 0) {
@@ -75,6 +76,9 @@ int main(int argc, char** argv) {
   if (const char* v = std::getenv("KV_METRICS_PORT"); v != nullptr) {
     const int parsed = kv::app::ParseOptionalPort(v);
     if (parsed >= 0) metrics_port = parsed;
+  }
+  if (const char* v = std::getenv("KV_REQUIREPASS"); v != nullptr) {
+    requirepass = v;
   }
 
   // ---- Raft config from file/env ----
@@ -252,7 +256,8 @@ int main(int argc, char** argv) {
   }
 
   kv::net::Server server;
-  s = server.Start(static_cast<uint16_t>(port), server_db, cluster_manager.get());
+  s = server.Start(static_cast<uint16_t>(port), server_db,
+                   cluster_manager.get(), requirepass);
   if (!s.ok()) {
     std::cerr << "server start failed: " << s.ToString() << "\n";
     return 1;

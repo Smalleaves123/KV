@@ -119,6 +119,8 @@ const char* CommandMetricName(CommandType type) {
       return "LINDEX";
     case CommandType::kLRange:
       return "LRANGE";
+    case CommandType::kAuth:
+      return "AUTH";
     case CommandType::kInvalid:
       return "INVALID";
   }

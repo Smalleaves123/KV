@@ -50,6 +50,15 @@ std::string StripComment(const std::string& s) {
   return Trim(pos == std::string::npos ? s : s.substr(0, pos));
 }
 
+std::string UnquoteScalar(const std::string& s) {
+  if (s.size() >= 2 &&
+      ((s.front() == '"' && s.back() == '"') ||
+       (s.front() == '\'' && s.back() == '\''))) {
+    return s.substr(1, s.size() - 2);
+  }
+  return s;
+}
+
 bool ParseBoolValue(const std::string& s, bool* value) {
   if (value == nullptr)
     return false;
@@ -355,6 +364,8 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
       } else if (key == "metrics_port") {
         const int port = ParseOptionalPort(value.c_str());
         if (port >= 0) cfg.metrics_port = port;
+      } else if (key == "requirepass") {
+        cfg.requirepass = UnquoteScalar(value);
       } else if (key == "db_path") {
         cfg.db_path = value;
       }

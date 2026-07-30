@@ -16,6 +16,7 @@ namespace kv::app {
 struct AppConfigFile {
   int server_port = 9527;
   int metrics_port = 0;
+  std::string requirepass;
   std::string db_path = "data/db";
   bool raft_enabled = false;
   kv::RaftConfig raft;

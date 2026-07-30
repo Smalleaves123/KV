@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <thread>
 
 #include "kv/common/socket_compat.h"
@@ -41,7 +42,8 @@ class Server {
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;
 
-  Status Start(uint16_t port, DB* db, ClusterManager* cluster_manager = nullptr);
+  Status Start(uint16_t port, DB* db, ClusterManager* cluster_manager = nullptr,
+               const std::string& requirepass = "");
   Status Stop();
 
   bool IsRunning() const noexcept;
@@ -54,6 +56,7 @@ class Server {
   static void HandleClient(platform::SocketHandle client_fd,
                            DB* db,
                            ClusterManager* cluster_manager,
+                           const std::string& requirepass,
                            std::atomic<bool>* running,
                            std::atomic<uint64_t>* total_requests,
                            std::atomic<uint64_t>* request_errors,
@@ -84,6 +87,7 @@ class Server {
   std::atomic<uint64_t> txn_commit_;
   std::atomic<uint64_t> txn_abort_;
   std::atomic<uint64_t> txn_conflict_;
+  std::string requirepass_;
 
   std::thread accept_thread_;
   std::unique_ptr<ThreadPool> pool_;

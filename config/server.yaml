@@ -11,11 +11,14 @@
 #   KV_CACHE_CAPACITY=1024        Cache capacity
 #   KV_CACHE_TTL_MS=0             Default TTL (0=no expiry)
 #   KV_METRICS_PORT=9090          Prometheus/health HTTP port (0=disabled)
+#   KV_REQUIREPASS=secret         Require AUTH before executing commands
 
 server:
   port: 9527
   # Prometheus/health HTTP port; 0 disables the endpoint.
   metrics_port: 0
+  # Empty disables authentication.
+  requirepass: ""
   db_path: data/db
 
 storage:

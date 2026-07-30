@@ -405,6 +405,45 @@ TEST_F(ServerIntegrationTest, RespFramesCanBeSplitAndPipelined) {
   (void)platform::CloseSocket(fd);
 }
 
+TEST_F(ServerIntegrationTest, RequirepassRequiresPerConnectionAuth) {
+  if (!started_) {
+    GTEST_SKIP() << "server failed to start in test environment: "
+                 << last_status_.ToString();
+  }
+
+  Server protected_server;
+  ASSERT_TRUE(protected_server.Start(0, db_.get(), cluster_.get(), "secret").ok());
+  const platform::SocketHandle first = ConnectWithRetry(protected_server.port());
+  ASSERT_GE(first, 0);
+
+  std::string resp;
+  ASSERT_TRUE(SendLine(first, "GET key"));
+  ASSERT_TRUE(ReadResp(first, &resp));
+  EXPECT_EQ(resp, "-ERRNOAUTH authentication required\r\n");
+
+  ASSERT_TRUE(SendLine(first, "AUTH wrong"));
+  ASSERT_TRUE(ReadResp(first, &resp));
+  EXPECT_EQ(resp, "-ERRinvalid password\r\n");
+
+  ASSERT_TRUE(SendLine(first, "AUTH secret"));
+  ASSERT_TRUE(ReadResp(first, &resp));
+  EXPECT_EQ(resp, "+OK\r\n");
+
+  ASSERT_TRUE(SendLine(first, "SET key value"));
+  ASSERT_TRUE(ReadResp(first, &resp));
+  EXPECT_EQ(resp, "+OK\r\n");
+
+  const platform::SocketHandle second = ConnectWithRetry(protected_server.port());
+  ASSERT_GE(second, 0);
+  ASSERT_TRUE(SendLine(second, "GET key"));
+  ASSERT_TRUE(ReadResp(second, &resp));
+  EXPECT_EQ(resp, "-ERRNOAUTH authentication required\r\n");
+
+  (void)platform::CloseSocket(first);
+  (void)platform::CloseSocket(second);
+  EXPECT_TRUE(protected_server.Stop().ok());
+}
+
 TEST_F(ServerIntegrationTest, ClusterCommandsWorkOverNetwork) {
   if (!started_) {
     GTEST_SKIP() << "server failed to start in test environment: "

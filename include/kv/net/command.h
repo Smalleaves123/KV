@@ -48,10 +48,11 @@ enum class CommandType {
   kLLen,
   kLIndex,
   kLRange,
+  kAuth,
 };
 
 constexpr size_t kCommandTypeCount =
-    static_cast<size_t>(CommandType::kLRange) + 1;
+    static_cast<size_t>(CommandType::kAuth) + 1;
 
 struct Command {
   CommandType type = CommandType::kInvalid;

@@ -71,6 +71,13 @@ TEST(CommandParserTest, ParsesTransactionCommands) {
   EXPECT_TRUE(abort.args.empty());
 }
 
+TEST(CommandParserTest, ParsesAuthCommand) {
+  Command cmd = CommandParser::ParseLine("auth secret");
+  ASSERT_EQ(cmd.type, CommandType::kAuth);
+  ASSERT_EQ(cmd.args.size(), 1U);
+  EXPECT_EQ(cmd.args[0], "secret");
+}
+
 TEST(CommandParserTest, ParsesInfoAndStatsCommands) {
   Command info = CommandParser::ParseLine("INFO");
   EXPECT_EQ(info.type, CommandType::kInfo);
