@@ -23,6 +23,11 @@ struct DBOptions {
   // 如果非空，优先使用这个 WAL 文件路径
   std::string wal_path;
 
+  // 未设置 wal_path 时使用分段 WAL。段文件默认写入 db_path + "/wal"。
+  bool wal_segmented = true;
+  size_t wal_segment_size_bytes = 64 * 1024 * 1024;
+  std::string wal_dir;
+
   // 打开时如果 WAL 不存在，是否允许创建新库
   bool create_if_missing = true;
 

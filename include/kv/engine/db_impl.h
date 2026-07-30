@@ -16,6 +16,7 @@
 #include "kv/memtable/memtable.h"
 #include "kv/sstable/table_cache.h"
 #include "kv/version/manifest.h"
+#include "kv/wal/wal_manager.h"
 #include "kv/wal/wal_writer.h"
 
 namespace kv {
@@ -98,6 +99,14 @@ class DBImpl final : public DB, public WriteApplier {
   // that process a batch can sync once after all operations are appended.
   Status ApplyOperationLocked(uint64_t seq,
                               const WriteBatch::Operation& operation);
+  Status AppendWALPut(uint64_t seq, const Slice& key, const Slice& value);
+  Status AppendWALPutWithTTL(uint64_t seq,
+                             const Slice& key,
+                             const Slice& value,
+                             uint64_t expires_at_ms);
+  Status AppendWALDelete(uint64_t seq, const Slice& key);
+  Status SyncWAL();
+  Status CloseWAL();
   Status MaybeFlushMemTable();
   Status FlushMemTableToSST(std::string* out_file);
   Status GetFromMemTableAt(const Slice& key,
@@ -131,6 +140,7 @@ class DBImpl final : public DB, public WriteApplier {
   Status ValidateKey(const Slice& key) const;
 
   static std::string BuildWalPath(const DBOptions& options);
+  static std::string BuildWalDirPath(const DBOptions& options);
   static std::string BuildSSTDirPath(const DBOptions& options);
   static std::string BuildManifestPath(const DBOptions& options);
   static std::string BuildSSTFileName(uint64_t file_number);
@@ -140,12 +150,15 @@ class DBImpl final : public DB, public WriteApplier {
 
   DBOptions options_;
   std::string wal_path_;
+  std::string wal_dir_;
   std::string sst_dir_;
   std::string manifest_path_;
   std::vector<std::string> sst_files_;
   Manifest manifest_;
   MemTable memtable_;
   WALWriter wal_writer_;
+  WALManager wal_manager_;
+  bool using_segmented_wal_;
   uint64_t next_seq_;
   uint64_t next_file_number_;
   bool open_;

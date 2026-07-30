@@ -177,19 +177,33 @@ Status WALManager::Sync() {
 }
 
 Status WALManager::ListLogs(std::vector<std::string>* out) const {
+  return ListLogs(options_.wal_dir, out);
+}
+
+Status WALManager::ListLogs(const std::string& wal_dir,
+                            std::vector<std::string>* out) {
   if (out == nullptr) {
     return Status::InvalidArgument("null output");
   }
   out->clear();
-
-  std::error_code ec;
-  if (!std::filesystem::exists(options_.wal_dir, ec)) {
-    return Status::OK();
+  if (wal_dir.empty()) {
+    return Status::InvalidArgument("wal dir is empty");
   }
 
-  for (const auto& e : std::filesystem::directory_iterator(options_.wal_dir, ec)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(wal_dir, ec)) {
     if (ec) {
-      break;
+      return Status::IOError("failed to query wal dir: " + wal_dir);
+    }
+    return Status::OK();
+  }
+  if (ec) {
+    return Status::IOError("failed to query wal dir: " + wal_dir);
+  }
+
+  for (const auto& e : std::filesystem::directory_iterator(wal_dir, ec)) {
+    if (ec) {
+      return Status::IOError("failed to list wal dir: " + wal_dir);
     }
     if (!e.is_regular_file()) {
       continue;

@@ -37,6 +37,8 @@ class WALManager {
   Status AppendDelete(uint64_t seq, const std::string& key);
 
   Status Sync();
+  static Status ListLogs(const std::string& wal_dir,
+                         std::vector<std::string>* out);
   Status ListLogs(std::vector<std::string>* out) const;
 
   bool IsOpen() const noexcept { return open_; }

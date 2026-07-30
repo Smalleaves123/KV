@@ -90,6 +90,23 @@ void RemoveAllSSTFiles(const std::string& dir_path) {
   }
 }
 
+size_t CountWALSegments(const std::string& wal_dir) {
+  std::error_code ec;
+  if (!std::filesystem::exists(wal_dir, ec)) {
+    EXPECT_FALSE(ec);
+    return 0;
+  }
+
+  size_t count = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(wal_dir, ec)) {
+    EXPECT_FALSE(ec);
+    if (entry.is_regular_file() && entry.path().extension() == ".wal") {
+      ++count;
+    }
+  }
+  return count;
+}
+
 TEST(RecoveryTest, ReplayWALRestoresLatestState) {
   const std::string path = MakeRecoveryTestPath("replay_latest_state");
   RemoveIfExists(path);
@@ -249,6 +266,49 @@ TEST(RecoveryTest, DBOpenRejectsWALChecksumCorruption) {
   std::unique_ptr<DB> db;
   Status s = DB::Open(reopen_options, &db);
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
+}
+
+TEST(RecoveryTest, SegmentedWALRecoversWritesDeletesAndTTLAcrossRotations) {
+  DBOptions options = MakeRecoveryDBOptions("segmented_wal_recovery");
+  options.wal_path.clear();
+  options.wal_dir = "test_tmp/recovery_db/segmented_wal_recovery_wal";
+  options.wal_segment_size_bytes = 1;
+  options.memtable_write_buffer_size = 1024 * 1024;
+  RemoveDBFiles(options);
+  std::error_code ec;
+  std::filesystem::remove_all(options.wal_dir, ec);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "deleted", "v1").ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "ttl", "v2").ok());
+    ASSERT_TRUE(db->Expire(WriteOptions{}, "ttl", 120).ok());
+    ASSERT_TRUE(db->Delete(WriteOptions{}, "deleted").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  EXPECT_GE(CountWALSegments(options.wal_dir), 5U);
+
+  DBOptions reopen_options = options;
+  reopen_options.create_if_missing = false;
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+
+  std::string value;
+  EXPECT_TRUE(db->Get(ReadOptions{}, "deleted", &value).IsNotFound());
+  ASSERT_TRUE(db->Get(ReadOptions{}, "ttl", &value).ok());
+  EXPECT_EQ(value, "v2");
+  int64_t ttl = -1;
+  ASSERT_TRUE(db->TTL(ReadOptions{}, "ttl", &ttl).ok());
+  EXPECT_GE(ttl, 0);
+
+  ASSERT_TRUE(db->Put(WriteOptions{}, "after_reopen", "v3").ok());
+  ASSERT_TRUE(db->Close().ok());
+
+  ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+  ASSERT_TRUE(db->Get(ReadOptions{}, "after_reopen", &value).ok());
+  EXPECT_EQ(value, "v3");
 }
 
 TEST(RecoveryTest, DBOpenIgnoresOrphanSSTableWhenManifestExists) {

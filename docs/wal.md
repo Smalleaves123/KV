@@ -11,6 +11,11 @@ only by SST files.
 - Implementation: `src/wal/`
 - Tests: `tests/wal/`, `tests/engine/recovery_test.cpp`
 
+When `DBOptions::wal_path` is explicitly set, KVEngine keeps the legacy
+single-file WAL behavior. Otherwise, segmented WAL is enabled by default and
+uses `DBOptions::wal_dir` or `db_path + "/wal"`. Segment names are fixed-width,
+monotonically increasing numeric files ending in `.wal`.
+
 ## Record Format
 
 `LogRecordCodec` encodes records as:
@@ -53,7 +58,8 @@ also set `WriteOptions::sync`.
 
 On open:
 
-1. If the WAL exists, `Recovery::ReplayWAL` reads records in order.
+1. A legacy WAL is replayed as one file; a segmented WAL replays all segment
+   files in numeric order.
 2. Put records are applied to the memtable.
 3. Delete records are applied as tombstones.
 4. The maximum replayed sequence number is returned.
@@ -74,9 +80,8 @@ but checksum mismatches and malformed complete records return `Corruption`.
 
 ## Current Limitations
 
-- WAL truncation after successful flush is not implemented.
+- WAL cleanup after a successful flush is not implemented yet.
 - Group commit is not implemented.
-- WAL segment rotation is not implemented.
 - The WAL format is intentionally simple and not versioned yet.
 
 ## Useful Tests

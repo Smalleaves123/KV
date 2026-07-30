@@ -26,6 +26,7 @@
 #include "kv/table/bloom_filter.h"
 #include "kv/table/table_index.h"
 #include "kv/testing/failure_injection.h"
+#include "kv/wal/log_recovery.h"
 
 namespace kv {
 
@@ -61,11 +62,14 @@ struct CompactionEntry {
 DBImpl::DBImpl(DBOptions options)
     : options_(std::move(options)),
       wal_path_(),
+      wal_dir_(),
       sst_dir_(),
       manifest_path_(),
       sst_files_(),
       memtable_(),
       wal_writer_(),
+      wal_manager_(),
+      using_segmented_wal_(false),
       next_seq_(1),
       next_file_number_(1),
       open_(false),
@@ -87,7 +91,9 @@ Status DBImpl::Init() {
     return Status::AlreadyExists("db is already open");
   }
 
-  wal_path_ = BuildWalPath(options_);
+  using_segmented_wal_ = options_.wal_path.empty() && options_.wal_segmented;
+  wal_path_ = using_segmented_wal_ ? std::string{} : BuildWalPath(options_);
+  wal_dir_ = using_segmented_wal_ ? BuildWalDirPath(options_) : std::string{};
   sst_dir_ = BuildSSTDirPath(options_);
   manifest_path_ = BuildManifestPath(options_);
   if (options_.cache_enabled) {
@@ -98,7 +104,10 @@ Status DBImpl::Init() {
     cache_.reset();
   }
 
-  if (wal_path_.empty()) {
+  if (using_segmented_wal_ && wal_dir_.empty()) {
+    return Status::InvalidArgument("wal dir is empty");
+  }
+  if (!using_segmented_wal_ && wal_path_.empty()) {
     return Status::InvalidArgument("wal path is empty");
   }
   if (sst_dir_.empty()) {
@@ -126,11 +135,21 @@ Status DBImpl::Init() {
     }
   }
 
-  const std::filesystem::path wal_fs_path(wal_path_);
-  std::error_code ec;
-  const bool wal_exists = std::filesystem::exists(wal_fs_path, ec);
-  if (ec) {
-    return Status::IOError("failed to query wal path: " + wal_path_);
+  bool wal_exists = false;
+  std::vector<std::string> wal_segments;
+  if (using_segmented_wal_) {
+    s = WALManager::ListLogs(wal_dir_, &wal_segments);
+    if (!s.ok()) {
+      return s;
+    }
+    wal_exists = !wal_segments.empty();
+  } else {
+    const std::filesystem::path wal_fs_path(wal_path_);
+    std::error_code ec;
+    wal_exists = std::filesystem::exists(wal_fs_path, ec);
+    if (ec) {
+      return Status::IOError("failed to query wal path: " + wal_path_);
+    }
   }
 
   if (!wal_exists && !options_.create_if_missing && sst_files_.empty()) {
@@ -138,14 +157,29 @@ Status DBImpl::Init() {
   }
 
   uint64_t max_seq = 0;
-  if (wal_exists) {
+  if (using_segmented_wal_) {
+    if (!wal_segments.empty()) {
+      s = LogRecovery::ReplayLogs(wal_segments, &memtable_, &max_seq);
+      if (!s.ok()) {
+        return s;
+      }
+    }
+  } else if (wal_exists) {
     s = Recovery::ReplayWAL(wal_path_, &memtable_, &max_seq);
     if (!s.ok()) {
       return s;
     }
   }
 
-  s = wal_writer_.Open(wal_path_, true);
+  if (using_segmented_wal_) {
+    WALOptions wal_options;
+    wal_options.sync_on_write = false;
+    wal_options.max_log_file_size = options_.wal_segment_size_bytes;
+    wal_options.wal_dir = wal_dir_;
+    s = wal_manager_.Open(wal_options);
+  } else {
+    s = wal_writer_.Open(wal_path_, true);
+  }
   if (!s.ok()) {
     return s;
   }
@@ -446,7 +480,7 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   }
 
   if (ShouldSync(options)) {
-    Status s = wal_writer_.Sync();
+    Status s = SyncWAL();
     if (!s.ok()) {
       return s;
     }
@@ -649,7 +683,7 @@ Status DBImpl::Close() {
     return Status::OK();
   }
 
-  Status s = wal_writer_.Close();
+  Status s = CloseWAL();
   if (!s.ok()) {
     return s;
   }
@@ -683,6 +717,9 @@ uint64_t DBImpl::LatestSequence() const noexcept {
 
 const std::string& DBImpl::wal_path() const noexcept {
   std::lock_guard<std::mutex> lk(mu_);
+  if (using_segmented_wal_) {
+    return wal_manager_.active_log_path();
+  }
   return wal_path_;
 }
 
@@ -700,7 +737,7 @@ Status DBImpl::ApplyPut(uint64_t seq,
     return s;
   }
   if (ShouldSync(options)) {
-    s = wal_writer_.Sync();
+    s = SyncWAL();
     if (!s.ok()) {
       return s;
     }
@@ -716,14 +753,14 @@ Status DBImpl::ApplyPutWithExpiry(uint64_t seq, const WriteOptions& options,
     return ApplyPut(seq, options, key, value);
   }
 
-  Status s = wal_writer_.AppendPutWithTTL(seq, key, value, expires_at_ms);
+  Status s = AppendWALPutWithTTL(seq, key, value, expires_at_ms);
   if (!s.ok()) return s;
   s = memtable_.Put(seq, key, value, expires_at_ms);
   if (!s.ok()) return s;
   InvalidateCacheEntry(key.ToString());
   latest_key_seq_[key.ToString()] = seq;
   if (ShouldSync(options)) {
-    return wal_writer_.Sync();
+    return SyncWAL();
   }
   return Status::OK();
 }
@@ -740,7 +777,7 @@ Status DBImpl::ApplyDelete(uint64_t seq,
     return s;
   }
   if (ShouldSync(options)) {
-    s = wal_writer_.Sync();
+    s = SyncWAL();
     if (!s.ok()) {
       return s;
     }
@@ -753,12 +790,12 @@ Status DBImpl::ApplyOperationLocked(
     uint64_t seq, const WriteBatch::Operation& operation) {
   Status s;
   if (operation.type == WriteBatch::ValueType::kPut) {
-    s = wal_writer_.AppendPut(seq, operation.key, operation.value);
+    s = AppendWALPut(seq, operation.key, operation.value);
     if (s.ok()) {
       s = memtable_.Put(seq, operation.key, operation.value);
     }
   } else {
-    s = wal_writer_.AppendDelete(seq, operation.key);
+    s = AppendWALDelete(seq, operation.key);
     if (s.ok()) {
       s = memtable_.Delete(seq, operation.key);
     }
@@ -770,6 +807,41 @@ Status DBImpl::ApplyOperationLocked(
   InvalidateCacheEntry(operation.key);
   latest_key_seq_[operation.key] = seq;
   return Status::OK();
+}
+
+Status DBImpl::AppendWALPut(uint64_t seq,
+                            const Slice& key,
+                            const Slice& value) {
+  if (using_segmented_wal_) {
+    return wal_manager_.AppendPut(seq, key.ToString(), value.ToString());
+  }
+  return wal_writer_.AppendPut(seq, key, value);
+}
+
+Status DBImpl::AppendWALPutWithTTL(uint64_t seq,
+                                   const Slice& key,
+                                   const Slice& value,
+                                   uint64_t expires_at_ms) {
+  if (using_segmented_wal_) {
+    return wal_manager_.AppendPutWithTTL(seq, key.ToString(), value.ToString(),
+                                         expires_at_ms);
+  }
+  return wal_writer_.AppendPutWithTTL(seq, key, value, expires_at_ms);
+}
+
+Status DBImpl::AppendWALDelete(uint64_t seq, const Slice& key) {
+  if (using_segmented_wal_) {
+    return wal_manager_.AppendDelete(seq, key.ToString());
+  }
+  return wal_writer_.AppendDelete(seq, key);
+}
+
+Status DBImpl::SyncWAL() {
+  return using_segmented_wal_ ? wal_manager_.Sync() : wal_writer_.Sync();
+}
+
+Status DBImpl::CloseWAL() {
+  return using_segmented_wal_ ? wal_manager_.Close() : wal_writer_.Close();
 }
 
 Status DBImpl::MaybeFlushMemTable() {
@@ -1115,7 +1187,7 @@ Status DBImpl::CommitOCCTransaction(
   }
 
   if (ShouldSync(options)) {
-    Status s = wal_writer_.Sync();
+    Status s = SyncWAL();
     if (!s.ok()) {
       return s;
     }
@@ -1308,6 +1380,16 @@ std::string DBImpl::BuildWalPath(const DBOptions& options) {
     return {};
   }
   return options.db_path + "/wal.log";
+}
+
+std::string DBImpl::BuildWalDirPath(const DBOptions& options) {
+  if (!options.wal_dir.empty()) {
+    return options.wal_dir;
+  }
+  if (options.db_path.empty()) {
+    return {};
+  }
+  return options.db_path + "/wal";
 }
 
 std::string DBImpl::BuildSSTDirPath(const DBOptions& options) {
