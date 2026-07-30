@@ -31,6 +31,10 @@ Status EnsureParentDirectory(const std::filesystem::path& path) {
   return Status::OK();
 }
 
+bool IsTrailingShortRead(const std::ifstream& in) {
+  return in.eof();
+}
+
 }  // namespace
 
 Manifest::Manifest() : append_stream_(), file_path_(), is_open_(false) {}
@@ -197,6 +201,9 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
       std::array<char, 20> header{};
       in.read(header.data(), static_cast<std::streamsize>(header.size()));
       if (in.gcount() != static_cast<std::streamsize>(header.size())) {
+        if (IsTrailingShortRead(in)) {
+          break;
+        }
         return Status::Corruption("truncated manifest add-file header");
       }
 
@@ -211,6 +218,9 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
       meta.file_path.assign(path_len, '\0');
       in.read(meta.file_path.data(), static_cast<std::streamsize>(path_len));
       if (in.gcount() != static_cast<std::streamsize>(path_len)) {
+        if (IsTrailingShortRead(in)) {
+          break;
+        }
         return Status::Corruption("truncated manifest add-file path");
       }
 
@@ -226,6 +236,9 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
       std::array<char, 8> payload{};
       in.read(payload.data(), static_cast<std::streamsize>(payload.size()));
       if (in.gcount() != static_cast<std::streamsize>(payload.size())) {
+        if (IsTrailingShortRead(in)) {
+          break;
+        }
         return Status::Corruption("truncated manifest remove-file payload");
       }
       const uint64_t file_number = DecodeFixed64(payload.data());

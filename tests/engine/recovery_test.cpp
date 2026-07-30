@@ -64,6 +64,15 @@ void WriteSingleEntrySST(const std::string& file_path,
   ASSERT_TRUE(builder.Finish().ok());
 }
 
+void TruncateFileTail(const std::string& file_path, uintmax_t bytes_to_remove) {
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(file_path, ec);
+  ASSERT_FALSE(ec);
+  ASSERT_GT(size, bytes_to_remove);
+  std::filesystem::resize_file(file_path, size - bytes_to_remove, ec);
+  ASSERT_FALSE(ec);
+}
+
 TEST(RecoveryTest, ReplayWALRestoresLatestState) {
   const std::string path = MakeRecoveryTestPath("replay_latest_state");
   RemoveIfExists(path);
@@ -240,6 +249,34 @@ TEST(RecoveryTest, InjectedFlushFailureLeavesOrphanSSTableOutOfRecovery) {
     std::string value;
     ASSERT_TRUE(db->Get(ReadOptions{}, "live", &value).ok());
     EXPECT_EQ(value, "manifested");
+  }
+}
+
+TEST(RecoveryTest, DBOpenIgnoresSSTableWithPartialTrailingManifestRecord) {
+  DBOptions options = MakeRecoveryDBOptions("partial_manifest_tail");
+  RemoveDBFiles(options);
+
+  {
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(options, &db).ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "live", "v1").ok());
+    ASSERT_TRUE(db->Put(WriteOptions{}, "live", "v2").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  TruncateFileTail(options.manifest_path, 4);
+  RemoveIfExists(options.wal_path);
+
+  {
+    DBOptions reopen_options = options;
+    reopen_options.create_if_missing = false;
+
+    std::unique_ptr<DB> db;
+    ASSERT_TRUE(DB::Open(reopen_options, &db).ok());
+
+    std::string value;
+    ASSERT_TRUE(db->Get(ReadOptions{}, "live", &value).ok());
+    EXPECT_EQ(value, "v1");
   }
 }
 
