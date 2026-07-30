@@ -85,6 +85,8 @@ class MemTable {
   uint64_t LatestSequence() const noexcept {
     return next_seq_ == 0 ? 0 : next_seq_ - 1;
   }
+  uint64_t MinSequence() const noexcept { return min_sequence_; }
+  uint64_t MaxSequence() const noexcept { return max_sequence_; }
 
   size_t ApproximateMemoryUsage() const noexcept { return memory_usage_; }
   void Clear();
@@ -104,6 +106,8 @@ class MemTable {
 
   Table table_;
   uint64_t next_seq_;
+  uint64_t min_sequence_;
+  uint64_t max_sequence_;
   size_t memory_usage_;
 };
 

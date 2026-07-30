@@ -7,7 +7,12 @@
 
 namespace kv {
 
-MemTable::MemTable() : table_(), next_seq_(1), memory_usage_(0) {}
+MemTable::MemTable()
+    : table_(),
+      next_seq_(1),
+      min_sequence_(0),
+      max_sequence_(0),
+      memory_usage_(0) {}
 
 void MemTable::Iterator::Seek(const Slice& key) {
   MemTableEntry target;
@@ -64,6 +69,13 @@ Status MemTable::Add(uint64_t seq,
 
   table_.Insert(std::move(entry));
 
+  if (min_sequence_ == 0 || seq < min_sequence_) {
+    min_sequence_ = seq;
+  }
+  if (seq > max_sequence_) {
+    max_sequence_ = seq;
+  }
+
   if (seq >= next_seq_) {
     next_seq_ = seq + 1;
   }
@@ -102,6 +114,8 @@ Status MemTable::Get(const Slice& key, std::string* value) const {
 void MemTable::Clear() {
   table_.Clear();
   next_seq_ = 1;
+  min_sequence_ = 0;
+  max_sequence_ = 0;
   memory_usage_ = 0;
 }
 

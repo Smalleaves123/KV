@@ -69,6 +69,28 @@ TEST(MemTableTest, PutWithExplicitSequence) {
   EXPECT_EQ(mem.LatestSequence(), 101U);
 }
 
+TEST(MemTableTest, TracksSequenceRangeAcrossExplicitSequences) {
+  MemTable mem;
+
+  ASSERT_TRUE(mem.Put(100, "k1", "v100").ok());
+  ASSERT_TRUE(mem.Put(80, "k2", "v80").ok());
+  ASSERT_TRUE(mem.Delete(120, "k1").ok());
+
+  EXPECT_EQ(mem.MinSequence(), 80U);
+  EXPECT_EQ(mem.MaxSequence(), 120U);
+}
+
+TEST(MemTableTest, ClearResetsSequenceRange) {
+  MemTable mem;
+
+  ASSERT_TRUE(mem.Put(10, "key", "value").ok());
+  mem.Clear();
+
+  EXPECT_TRUE(mem.Empty());
+  EXPECT_EQ(mem.MinSequence(), 0U);
+  EXPECT_EQ(mem.MaxSequence(), 0U);
+}
+
 TEST(MemTableTest, DeleteWithExplicitSequence) {
   MemTable mem;
 
