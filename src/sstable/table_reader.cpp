@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "kv/common/checksum.h"
 #include "kv/common/encoding.h"
 #include "kv/sstable/block.h"
 #include "kv/sstable/block_iterator.h"
@@ -57,6 +58,7 @@ Status TableReader::Init() {
   }
 
   max_seq_ = footer.max_seq;
+  has_data_block_checksums_ = footer.format_version >= 1;
 
   // Read index block
   std::string index_data(footer.index_handle.size, '\0');
@@ -148,13 +150,10 @@ Status TableReader::Get(const std::string& target, uint64_t read_seq,
   }
 
   for (size_t i = lo; i < index_.size(); ++i) {
-    std::string block_data(index_[i].block_size, '\0');
-    file_.seekg(static_cast<std::streamoff>(index_[i].block_offset));
-    file_.read(block_data.data(),
-               static_cast<std::streamsize>(index_[i].block_size));
-    if (!file_) {
-      return Status::IOError("failed to read data block");
-    }
+    std::string block_data;
+    Status s = ReadBlock(index_[i].block_offset, index_[i].block_size,
+                         &block_data);
+    if (!s.ok()) return s;
 
     Block block(block_data.data(), block_data.size());
     BlockIterator it(block);
@@ -186,11 +185,24 @@ Status TableReader::Get(const std::string& target, uint64_t read_seq,
 
 Status TableReader::ReadBlock(uint64_t offset, uint64_t size,
                               std::string* block_data) const {
-  block_data->assign(size, '\0');
+  if (block_data == nullptr) {
+    return Status::InvalidArgument("block data output is null");
+  }
+  const uint64_t bytes_to_read = size + (has_data_block_checksums_ ? 4 : 0);
+  block_data->assign(static_cast<size_t>(bytes_to_read), '\0');
   file_.seekg(static_cast<std::streamoff>(offset));
-  file_.read(block_data->data(), static_cast<std::streamsize>(size));
+  file_.read(block_data->data(), static_cast<std::streamsize>(bytes_to_read));
   if (!file_) {
     return Status::IOError("failed to read block");
+  }
+  if (has_data_block_checksums_) {
+    const char* trailer = block_data->data() + size;
+    const uint32_t expected = DecodeFixed32(trailer);
+    const uint32_t actual = CRC32(block_data->data(), static_cast<size_t>(size));
+    if (actual != expected) {
+      return Status::Corruption("data block checksum mismatch: " + file_path_);
+    }
+    block_data->resize(static_cast<size_t>(size));
   }
   return Status::OK();
 }

@@ -1,6 +1,7 @@
 add_library(kv
   common/status.cpp
   common/slice.cpp
+  common/checksum.cpp
   common/socket_compat.cpp
   memtable/memtable.cpp
   wal/log_record.cpp

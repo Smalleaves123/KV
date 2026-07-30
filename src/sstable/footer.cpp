@@ -31,7 +31,7 @@ std::string Footer::Encode() const {
   index_handle.EncodeTo(&out);   // 16 bytes
   filter_handle.EncodeTo(&out);  // 16 bytes
   EncodeFixed64(&out, max_seq);     // 8 bytes
-  EncodeFixed64(&out, kSSTMagic);   // 8 bytes
+  EncodeFixed64(&out, format_version == 0 ? kSSTMagicV0 : kSSTMagicV1);
 
   return out;
 }
@@ -51,7 +51,11 @@ Footer Footer::DecodeFrom(std::string_view data, bool* ok) {
 
   // Verify magic
   uint64_t magic = DecodeFixed64(footer_start + 40);
-  if (magic != kSSTMagic) {
+  if (magic == kSSTMagicV0) {
+    f.format_version = 0;
+  } else if (magic == kSSTMagicV1) {
+    f.format_version = 1;
+  } else {
     return f;
   }
 

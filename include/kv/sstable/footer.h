@@ -22,12 +22,15 @@ struct BlockHandle {
 //   magic           (fixed64, 8 bytes)
 // Total fixed-size footer: 2*(max_varint64*2) + 8 + 8 ≈ 48 bytes
 static constexpr size_t kFooterEncodedSize = 48;
-static constexpr uint64_t kSSTMagic = 0x6b765f7373745f30ULL;  // "kv_sst_0"
+static constexpr uint64_t kSSTMagicV0 = 0x6b765f7373745f30ULL;  // "kv_sst_0"
+static constexpr uint64_t kSSTMagicV1 = 0x6b765f7373745f31ULL;  // "kv_sst_1"
+static constexpr uint64_t kSSTMagic = kSSTMagicV1;
 
 struct Footer {
   BlockHandle index_handle;
   BlockHandle filter_handle;
   uint64_t max_seq = 0;
+  uint32_t format_version = 1;
 
   std::string Encode() const;
   static Footer DecodeFrom(std::string_view data, bool* ok);

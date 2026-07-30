@@ -1,9 +1,14 @@
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
 #include "gtest/gtest.h"
 
+#include "kv/common/encoding.h"
+#include "kv/sstable/block_builder.h"
+#include "kv/sstable/filter_block.h"
+#include "kv/sstable/footer.h"
 #include "kv/sstable/table_builder.h"
 #include "kv/sstable/table_reader.h"
 
@@ -36,6 +41,121 @@ TEST(TableReaderTest, ReturnsLatestVersionAcrossDataBlocks) {
   ASSERT_TRUE(reader->Get("key", 40, &type, &value).ok());
   EXPECT_EQ(type, 0);
   EXPECT_EQ(value, "v39");
+
+  std::filesystem::remove(file_path, ec);
+}
+
+TEST(TableReaderTest, DetectsCorruptedDataBlockChecksum) {
+  const std::filesystem::path dir("test_tmp/sstable");
+  std::filesystem::create_directories(dir);
+  const std::string file_path = (dir / "corrupt_data_block.sst").string();
+
+  std::error_code ec;
+  std::filesystem::remove(file_path, ec);
+
+  {
+    TableBuilder builder(file_path, 256);
+    ASSERT_TRUE(builder.Add("alpha", 1, 0, "one").ok());
+    ASSERT_TRUE(builder.Add("bravo", 2, 0, "two").ok());
+    ASSERT_TRUE(builder.Finish().ok());
+  }
+
+  std::unique_ptr<TableReader> reader;
+  ASSERT_TRUE(TableReader::Open(file_path, &reader).ok());
+  ASSERT_FALSE(reader->index().empty());
+  const uint64_t block_offset = reader->index().front().block_offset;
+  reader.reset();
+
+  {
+    std::fstream file(file_path, std::ios::binary | std::ios::in | std::ios::out);
+    ASSERT_TRUE(file.is_open());
+    file.seekp(static_cast<std::streamoff>(block_offset));
+    char byte = 0;
+    file.read(&byte, 1);
+    ASSERT_TRUE(file.good());
+    file.seekp(static_cast<std::streamoff>(block_offset));
+    byte ^= 0x01;
+    file.write(&byte, 1);
+    ASSERT_TRUE(file.good());
+  }
+
+  ASSERT_TRUE(TableReader::Open(file_path, &reader).ok());
+  uint8_t type = 0;
+  std::string value;
+  Status s = reader->Get("alpha", 1, &type, &value);
+  EXPECT_TRUE(s.IsCorruption()) << s.ToString();
+
+  std::filesystem::remove(file_path, ec);
+}
+
+TEST(TableReaderTest, ReadsLegacyTableWithoutDataBlockChecksums) {
+  const std::filesystem::path dir("test_tmp/sstable");
+  std::filesystem::create_directories(dir);
+  const std::string file_path = (dir / "legacy_no_checksums.sst").string();
+
+  std::error_code ec;
+  std::filesystem::remove(file_path, ec);
+
+  uint64_t offset = 0;
+  uint64_t max_seq = 0;
+  std::vector<TableReader::IndexEntry> index_entries;
+  FilterBlockBuilder filter_builder;
+
+  std::ofstream file(file_path, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(file.is_open());
+
+  BlockBuilder data_block;
+  data_block.Add("alpha", 1, 0, "one");
+  data_block.Add("bravo", 2, 0, "two");
+  filter_builder.AddKey("alpha");
+  filter_builder.AddKey("bravo");
+  max_seq = 2;
+
+  std::string block_data = data_block.Finish();
+  file.write(block_data.data(), static_cast<std::streamsize>(block_data.size()));
+  ASSERT_TRUE(file.good());
+  index_entries.push_back({"bravo", offset, block_data.size()});
+  offset += block_data.size();
+
+  const uint64_t filter_offset = offset;
+  std::string filter_data = filter_builder.Finish();
+  file.write(filter_data.data(), static_cast<std::streamsize>(filter_data.size()));
+  ASSERT_TRUE(file.good());
+  offset += filter_data.size();
+
+  BlockBuilder index_block;
+  for (const auto& entry : index_entries) {
+    std::string handle;
+    EncodeFixed64(&handle, entry.block_offset);
+    EncodeFixed64(&handle, entry.block_size);
+    index_block.Add(entry.last_key, 0, 0, handle);
+  }
+
+  const uint64_t index_offset = offset;
+  std::string index_data = index_block.Finish();
+  file.write(index_data.data(), static_cast<std::streamsize>(index_data.size()));
+  ASSERT_TRUE(file.good());
+
+  Footer footer;
+  footer.format_version = 0;
+  footer.index_handle.offset = index_offset;
+  footer.index_handle.size = index_data.size();
+  footer.filter_handle.offset = filter_offset;
+  footer.filter_handle.size = filter_data.size();
+  footer.max_seq = max_seq;
+  std::string footer_data = footer.Encode();
+  file.write(footer_data.data(), static_cast<std::streamsize>(footer_data.size()));
+  ASSERT_TRUE(file.good());
+  file.close();
+
+  std::unique_ptr<TableReader> reader;
+  ASSERT_TRUE(TableReader::Open(file_path, &reader).ok());
+
+  uint8_t type = 0;
+  std::string value;
+  ASSERT_TRUE(reader->Get("alpha", 1, &type, &value).ok());
+  EXPECT_EQ(type, 0);
+  EXPECT_EQ(value, "one");
 
   std::filesystem::remove(file_path, ec);
 }

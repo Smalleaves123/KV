@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "kv/common/checksum.h"
+#include "kv/common/encoding.h"
 #include "kv/sstable/block_builder.h"
 #include "kv/sstable/footer.h"
 #include "kv/sstable/value_codec.h"
@@ -76,10 +78,16 @@ Status TableBuilder::FlushDataBlock() {
   if (!file_) {
     return Status::IOError("failed to write data block");
   }
+  std::string trailer;
+  EncodeFixed32(&trailer, CRC32(block_data.data(), block_data.size()));
+  file_.write(trailer.data(), static_cast<std::streamsize>(trailer.size()));
+  if (!file_) {
+    return Status::IOError("failed to write data block checksum");
+  }
 
   index_entries_.push_back({last_key_, offset_, block_data.size()});
 
-  offset_ += block_data.size();
+  offset_ += block_data.size() + trailer.size();
   data_block_->Reset();
   last_key_.clear();
 

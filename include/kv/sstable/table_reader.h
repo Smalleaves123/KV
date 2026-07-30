@@ -69,6 +69,7 @@ class TableReader {
   std::string filter_data_;
   FilterBlockReader filter_;
   uint64_t max_seq_;
+  bool has_data_block_checksums_ = false;
 };
 
 // Iterator over all entries in an SST file.
