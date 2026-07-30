@@ -142,4 +142,13 @@ std::unique_ptr<Iterator> RaftDBAdapter::NewIterator(const ReadOptions& options)
   return local_db_->NewIterator(options);
 }
 
+Status RaftDBAdapter::Scan(
+    const ReadOptions& options,
+    const Slice& start_key,
+    const Slice& end_key,
+    size_t limit,
+    std::vector<std::pair<std::string, std::string>>* out) {
+  return local_db_->Scan(options, start_key, end_key, limit, out);
+}
+
 } // namespace kv

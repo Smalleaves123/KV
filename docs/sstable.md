@@ -97,6 +97,13 @@ Programmatic compaction:
 db->Compact();
 ```
 
+## Range Scans
+
+`DB::Scan` returns a stable, key-ordered view in `[start_key, end_key)`. An
+empty `end_key` has no upper bound and `limit == 0` returns every visible key.
+The scan uses the same sequence, tombstone, and TTL resolution rules as a DB
+iterator.
+
 ## Manifest
 
 The manifest is an append-only metadata file that tracks live SST files. It is
@@ -107,7 +114,5 @@ If the manifest is missing, the DB can fall back to scanning the SST directory.
 ## Current Limitations
 
 - No multi-level compaction strategy yet.
-- No range-scan API.
-- No per-block checksum in SST files.
-- WAL truncation after flush/compaction is not implemented.
-- Compaction is synchronous and protected by the DB mutex.
+- Index, filter, and footer checksums are not implemented.
+- Compaction runs in the flush worker and is protected by the DB mutex.

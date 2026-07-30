@@ -73,6 +73,11 @@ class DBImpl final : public DB, public WriteApplier {
   bool IsOpen() const noexcept override;
 
   std::unique_ptr<Iterator> NewIterator(const ReadOptions& options) override;
+  Status Scan(const ReadOptions& options,
+              const Slice& start_key,
+              const Slice& end_key,
+              size_t limit,
+              std::vector<std::pair<std::string, std::string>>* out) override;
 
   Status ApplyPut(const std::string& key,
                   const std::string& value) override;

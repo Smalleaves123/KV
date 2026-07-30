@@ -293,6 +293,41 @@ TEST(IteratorTest, ScanWithLimit) {
   EXPECT_EQ(keys[4], "e");
 }
 
+TEST(IteratorTest, ScanUsesInclusiveStartExclusiveEndAndLimit) {
+  auto db = OpenDB(MakeDBOptions("scan_api_range"));
+  ASSERT_TRUE(db->Put(WriteOptions{}, "a", "1").ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "b", "2").ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "c", "3").ok());
+  ASSERT_TRUE(db->Delete(WriteOptions{}, "b").ok());
+
+  std::vector<std::pair<std::string, std::string>> entries;
+  ASSERT_TRUE(db->Scan(ReadOptions{}, "a", "c", 0, &entries).ok());
+  ASSERT_EQ(entries.size(), 1U);
+  EXPECT_EQ(entries[0], std::make_pair(std::string("a"), std::string("1")));
+
+  ASSERT_TRUE(db->Scan(ReadOptions{}, "", "", 1, &entries).ok());
+  ASSERT_EQ(entries.size(), 1U);
+  EXPECT_EQ(entries[0], std::make_pair(std::string("a"), std::string("1")));
+
+  EXPECT_TRUE(db->Scan(ReadOptions{}, "", "", 0, nullptr).IsInvalidArgument());
+}
+
+TEST(IteratorTest, ScanHonorsSnapshots) {
+  auto db = OpenDB(MakeDBOptions("scan_api_snapshot"));
+  ASSERT_TRUE(db->Put(WriteOptions{}, "key", "v1").ok());
+  const Snapshot* snapshot = db->GetSnapshot();
+  ASSERT_NE(snapshot, nullptr);
+  ASSERT_TRUE(db->Put(WriteOptions{}, "key", "v2").ok());
+
+  ReadOptions options;
+  options.snapshot = snapshot;
+  std::vector<std::pair<std::string, std::string>> entries;
+  ASSERT_TRUE(db->Scan(options, "", "", 0, &entries).ok());
+  ASSERT_EQ(entries.size(), 1U);
+  EXPECT_EQ(entries[0].second, "v1");
+  ASSERT_TRUE(db->ReleaseSnapshot(snapshot).ok());
+}
+
 }  // namespace
 
 class IteratorTestEnv {

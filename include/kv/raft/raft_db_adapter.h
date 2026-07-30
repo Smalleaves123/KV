@@ -37,6 +37,11 @@ public:
   Status ReleaseSnapshot(const Snapshot* snapshot) override;
   Status Close() override;
   std::unique_ptr<Iterator> NewIterator(const ReadOptions& options) override;
+  Status Scan(const ReadOptions& options,
+              const Slice& start_key,
+              const Slice& end_key,
+              size_t limit,
+              std::vector<std::pair<std::string, std::string>>* out) override;
 
 private:
   Status NotSupportedInRaft(const char* operation) const;

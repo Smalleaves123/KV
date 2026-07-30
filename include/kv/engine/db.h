@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "kv/cache/cache.h"
 #include "kv/common/slice.h"
@@ -149,6 +151,14 @@ class DB {
   // The iterator is created under a fixed snapshot of the DB state at call time:
   // entries added after NewIterator() are not visible.
   virtual std::unique_ptr<Iterator> NewIterator(const ReadOptions& options) = 0;
+
+  // Return entries in [start_key, end_key). An empty end_key has no upper
+  // bound; limit == 0 returns all visible entries in the range.
+  virtual Status Scan(const ReadOptions& options,
+                      const Slice& start_key,
+                      const Slice& end_key,
+                      size_t limit,
+                      std::vector<std::pair<std::string, std::string>>* out) = 0;
 
 };
 

@@ -722,6 +722,35 @@ std::unique_ptr<Iterator> DBImpl::NewIterator(const ReadOptions& options) {
                             read_seq);
 }
 
+Status DBImpl::Scan(
+    const ReadOptions& options,
+    const Slice& start_key,
+    const Slice& end_key,
+    size_t limit,
+    std::vector<std::pair<std::string, std::string>>* out) {
+  if (out == nullptr) {
+    return Status::InvalidArgument("scan output is null");
+  }
+  out->clear();
+
+  auto it = NewIterator(options);
+  if (it == nullptr) {
+    return Status::IOError("failed to create scan iterator");
+  }
+
+  const std::string end = end_key.ToString();
+  for (it->Seek(start_key); it->Valid(); it->Next()) {
+    if (!end.empty() && it->key().ToString() >= end) {
+      break;
+    }
+    out->emplace_back(it->key().ToString(), it->value().ToString());
+    if (limit != 0 && out->size() == limit) {
+      break;
+    }
+  }
+  return Status::OK();
+}
+
 Status DBImpl::Close() {
   std::unique_lock<std::mutex> lk(mu_);
 
