@@ -32,7 +32,7 @@ namespace kv {
 
 // Forward declaration of the merging iterator factory (defined in iterator.cpp).
 std::unique_ptr<Iterator> NewMergingIterator(
-    std::unique_ptr<MemTable::Iterator> mem_iter,
+    std::vector<std::unique_ptr<MemTable>> memtables,
     std::vector<std::unique_ptr<TableIterator>> sst_iters,
     uint64_t read_seq);
 
@@ -57,6 +57,31 @@ struct CompactionEntry {
   std::string value;
 };
 
+Status CopyMemTable(const MemTable& source,
+                    std::unique_ptr<MemTable>* destination) {
+  if (destination == nullptr) {
+    return Status::InvalidArgument("memtable copy destination is null");
+  }
+
+  auto copy = std::make_unique<MemTable>();
+  auto it = source.NewIterator();
+  for (it.SeekToFirst(); it.Valid(); it.Next()) {
+    const auto& entry = it.entry();
+    Status s;
+    if (entry.type == RecordType::kDeletion) {
+      s = copy->Delete(entry.seq, entry.key);
+    } else {
+      s = copy->Put(entry.seq, entry.key, entry.value, entry.expires_at_ms);
+    }
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  *destination = std::move(copy);
+  return Status::OK();
+}
+
 }  // namespace
 
 DBImpl::DBImpl(DBOptions options)
@@ -66,7 +91,8 @@ DBImpl::DBImpl(DBOptions options)
       sst_dir_(),
       manifest_path_(),
       sst_files_(),
-      memtable_(),
+      memtable_(std::make_unique<MemTable>()),
+      immutable_mems_(),
       wal_writer_(),
       wal_manager_(),
       using_segmented_wal_(false),
@@ -159,13 +185,13 @@ Status DBImpl::Init() {
   uint64_t max_seq = 0;
   if (using_segmented_wal_) {
     if (!wal_segments.empty()) {
-      s = LogRecovery::ReplayLogs(wal_segments, &memtable_, &max_seq);
+      s = LogRecovery::ReplayLogs(wal_segments, memtable_.get(), &max_seq);
       if (!s.ok()) {
         return s;
       }
     }
   } else if (wal_exists) {
-    s = Recovery::ReplayWAL(wal_path_, &memtable_, &max_seq);
+    s = Recovery::ReplayWAL(wal_path_, memtable_.get(), &max_seq);
     if (!s.ok()) {
       return s;
     }
@@ -520,14 +546,12 @@ Status DBImpl::Compact() {
     return Status::AlreadyExists("cannot compact with active snapshots");
   }
 
-  if (!memtable_.Empty()) {
-    std::string sst_file;
-    Status s = FlushMemTableToSST(&sst_file);
-    if (!s.ok()) {
-      return s;
-    }
-    sst_files_.push_back(std::move(sst_file));
-    memtable_.Clear();
+  if (!memtable_->Empty()) {
+    RotateMemTable();
+  }
+  Status flush_status = FlushImmutableMemTables();
+  if (!flush_status.ok()) {
+    return flush_status;
   }
 
   if (sst_files_.size() < options_.compaction_min_input_files) {
@@ -658,22 +682,39 @@ std::unique_ptr<Iterator> DBImpl::NewIterator(const ReadOptions& options) {
 
   const uint64_t read_seq = ResolveReadSequence(options);
 
-  // MemTable iterator.
-  auto mem_iter = std::make_unique<MemTable::Iterator>(memtable_.NewIterator());
+  // Copy in-memory tables so the returned iterator remains valid after a
+  // later rotation or synchronous flush.
+  std::vector<std::unique_ptr<MemTable>> memtables;
+  memtables.reserve(immutable_mems_.size() + 1);
+  std::unique_ptr<MemTable> memtable_copy;
+  Status s = CopyMemTable(*memtable_, &memtable_copy);
+  if (!s.ok()) {
+    return nullptr;
+  }
+  memtables.push_back(std::move(memtable_copy));
+  for (const auto& immutable_mem : immutable_mems_) {
+    std::unique_ptr<MemTable> immutable_copy;
+    s = CopyMemTable(*immutable_mem, &immutable_copy);
+    if (!s.ok()) {
+      return nullptr;
+    }
+    memtables.push_back(std::move(immutable_copy));
+  }
 
   // SST iterators.
   std::vector<std::unique_ptr<TableIterator>> sst_iters;
   sst_iters.reserve(sst_files_.size());
   for (const auto& file : sst_files_) {
     std::shared_ptr<const TableReader> reader;
-    Status s = table_cache_->Get(file, &reader);
+    s = table_cache_->Get(file, &reader);
     if (!s.ok()) {
       return nullptr;
     }
     sst_iters.push_back(std::make_unique<TableIterator>(*reader));
   }
 
-  return NewMergingIterator(std::move(mem_iter), std::move(sst_iters), read_seq);
+  return NewMergingIterator(std::move(memtables), std::move(sst_iters),
+                            read_seq);
 }
 
 Status DBImpl::Close() {
@@ -755,7 +796,7 @@ Status DBImpl::ApplyPutWithExpiry(uint64_t seq, const WriteOptions& options,
 
   Status s = AppendWALPutWithTTL(seq, key, value, expires_at_ms);
   if (!s.ok()) return s;
-  s = memtable_.Put(seq, key, value, expires_at_ms);
+  s = memtable_->Put(seq, key, value, expires_at_ms);
   if (!s.ok()) return s;
   InvalidateCacheEntry(key.ToString());
   latest_key_seq_[key.ToString()] = seq;
@@ -792,12 +833,12 @@ Status DBImpl::ApplyOperationLocked(
   if (operation.type == WriteBatch::ValueType::kPut) {
     s = AppendWALPut(seq, operation.key, operation.value);
     if (s.ok()) {
-      s = memtable_.Put(seq, operation.key, operation.value);
+      s = memtable_->Put(seq, operation.key, operation.value);
     }
   } else {
     s = AppendWALDelete(seq, operation.key);
     if (s.ok()) {
-      s = memtable_.Delete(seq, operation.key);
+      s = memtable_->Delete(seq, operation.key);
     }
   }
   if (!s.ok()) {
@@ -852,22 +893,24 @@ Status DBImpl::RemoveFlushedWAL(uint64_t max_flushed_seq) {
 }
 
 Status DBImpl::MaybeFlushMemTable() {
-  if (options_.memtable_write_buffer_size == 0 || memtable_.Empty()) {
+  bool flushed = false;
+  if (options_.memtable_write_buffer_size != 0 && !memtable_->Empty() &&
+      memtable_->ApproximateMemoryUsage() >=
+          options_.memtable_write_buffer_size) {
+    RotateMemTable();
+  }
+
+  if (!immutable_mems_.empty()) {
+    Status s = FlushImmutableMemTables();
+    if (!s.ok()) {
+      return s;
+    }
+    flushed = true;
+  }
+
+  if (!flushed) {
     return Status::OK();
   }
-
-  if (memtable_.ApproximateMemoryUsage() < options_.memtable_write_buffer_size) {
-    return Status::OK();
-  }
-
-  std::string sst_file;
-  Status s = FlushMemTableToSST(&sst_file);
-  if (!s.ok()) {
-    return s;
-  }
-
-  sst_files_.push_back(std::move(sst_file));
-  memtable_.Clear();
 
   if (!options_.auto_compaction_enabled) {
     return Status::OK();
@@ -893,12 +936,31 @@ Status DBImpl::MaybeFlushMemTable() {
   return Status::OK();
 }
 
-Status DBImpl::FlushMemTableToSST(std::string* out_file) {
+void DBImpl::RotateMemTable() {
+  immutable_mems_.push_back(std::move(memtable_));
+  memtable_ = std::make_unique<MemTable>();
+}
+
+Status DBImpl::FlushImmutableMemTables() {
+  while (!immutable_mems_.empty()) {
+    std::string sst_file;
+    Status s = FlushMemTableToSST(*immutable_mems_.front(), &sst_file);
+    if (!s.ok()) {
+      return s;
+    }
+    sst_files_.push_back(std::move(sst_file));
+    immutable_mems_.pop_front();
+  }
+  return Status::OK();
+}
+
+Status DBImpl::FlushMemTableToSST(const MemTable& memtable,
+                                  std::string* out_file) {
   if (out_file == nullptr) {
     return Status::InvalidArgument("out_file is null");
   }
 
-  if (memtable_.Empty()) {
+  if (memtable.Empty()) {
     return Status::NotFound("memtable is empty");
   }
 
@@ -914,7 +976,7 @@ Status DBImpl::FlushMemTableToSST(std::string* out_file) {
 
   TableBuilder builder(sst_path, options_.memtable_write_buffer_size);
 
-  auto it = memtable_.NewIterator();
+  auto it = memtable.NewIterator();
   uint64_t max_flushed_seq = 0;
 
   for (it.SeekToFirst(); it.Valid(); it.Next()) {
@@ -986,31 +1048,51 @@ Status DBImpl::GetFromMemTableAt(const Slice& key,
                                  bool* has_visible_version) const {
   const std::string target = key.ToString();
   if (has_visible_version != nullptr) *has_visible_version = false;
-  auto it = memtable_.NewIterator();
-  it.Seek(key);
 
-  while (it.Valid()) {
-    const auto& entry = it.entry();
-    if (entry.key != target) {
-      break;
+  const auto find_visible = [&](const MemTable& memtable) -> Status {
+    if (memtable.Empty() || memtable.MinSequence() > read_seq) {
+      return Status::NotFound("key not found");
     }
 
-    if (entry.seq <= read_seq) {
-      if (has_visible_version != nullptr) *has_visible_version = true;
-      if (entry.type == RecordType::kDeletion) {
-        return Status::NotFound("key deleted");
+    auto it = memtable.NewIterator();
+    it.Seek(key);
+    while (it.Valid()) {
+      const auto& entry = it.entry();
+      if (entry.key != target) {
+        break;
       }
-      if (expires_at_ms != nullptr) {
-        *expires_at_ms = entry.expires_at_ms;
-      }
-      if (IsExpired(entry.expires_at_ms, NowUnixMillis())) {
-        return Status::NotFound("key expired");
-      }
-      *value = entry.value;
-      return Status::OK();
-    }
 
-    it.Next();
+      if (entry.seq <= read_seq) {
+        if (has_visible_version != nullptr) *has_visible_version = true;
+        if (entry.type == RecordType::kDeletion) {
+          return Status::NotFound("key deleted");
+        }
+        if (expires_at_ms != nullptr) {
+          *expires_at_ms = entry.expires_at_ms;
+        }
+        if (IsExpired(entry.expires_at_ms, NowUnixMillis())) {
+          return Status::NotFound("key expired");
+        }
+        *value = entry.value;
+        return Status::OK();
+      }
+
+      it.Next();
+    }
+    return Status::NotFound("key not found");
+  };
+
+  Status s = find_visible(*memtable_);
+  if (s.ok() || (has_visible_version != nullptr && *has_visible_version)) {
+    return s;
+  }
+
+  for (auto it = immutable_mems_.rbegin(); it != immutable_mems_.rend();
+       ++it) {
+    s = find_visible(**it);
+    if (s.ok() || (has_visible_version != nullptr && *has_visible_version)) {
+      return s;
+    }
   }
 
   return Status::NotFound("key not found");
@@ -1145,14 +1227,21 @@ Status DBImpl::RebuildLatestKeySeqIndex() {
     }
   }
 
-  auto it = memtable_.NewIterator();
-  for (it.SeekToFirst(); it.Valid(); it.Next()) {
-    const auto& entry = it.entry();
-    auto found = latest_key_seq_.find(entry.key);
-    if (found == latest_key_seq_.end() || entry.seq > found->second) {
-      latest_key_seq_[entry.key] = entry.seq;
+  const auto add_memtable_sequences = [&](const MemTable& memtable) {
+    auto it = memtable.NewIterator();
+    for (it.SeekToFirst(); it.Valid(); it.Next()) {
+      const auto& entry = it.entry();
+      auto found = latest_key_seq_.find(entry.key);
+      if (found == latest_key_seq_.end() || entry.seq > found->second) {
+        latest_key_seq_[entry.key] = entry.seq;
+      }
     }
+  };
+
+  for (const auto& immutable_mem : immutable_mems_) {
+    add_memtable_sequences(*immutable_mem);
   }
+  add_memtable_sequences(*memtable_);
 
   return Status::OK();
 }

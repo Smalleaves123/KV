@@ -15,6 +15,7 @@ namespace {
 
 // Uniform wrapper over MemTable::Iterator and TableIterator.
 struct Source {
+  std::unique_ptr<MemTable> memtable;
   std::unique_ptr<MemTable::Iterator> mem_iter;
   std::unique_ptr<TableIterator> sst_iter;
   bool is_memtable = false;
@@ -75,13 +76,16 @@ struct Source {
 
 class MergingIterator final : public Iterator {
  public:
-  MergingIterator(std::unique_ptr<MemTable::Iterator> mem_iter,
+  MergingIterator(std::vector<std::unique_ptr<MemTable>> memtables,
                    std::vector<std::unique_ptr<TableIterator>> sst_iters,
                    uint64_t read_seq)
       : read_seq_(read_seq), valid_(false) {
-    if (mem_iter != nullptr) {
+    for (auto& memtable : memtables) {
+      if (memtable == nullptr) continue;
       Source src;
-      src.mem_iter = std::move(mem_iter);
+      src.memtable = std::move(memtable);
+      src.mem_iter = std::make_unique<MemTable::Iterator>(
+          src.memtable->NewIterator());
       src.is_memtable = true;
       sources_.push_back(std::move(src));
     }
@@ -205,11 +209,11 @@ class MergingIterator final : public Iterator {
 }  // namespace
 
 std::unique_ptr<Iterator> NewMergingIterator(
-    std::unique_ptr<MemTable::Iterator> mem_iter,
+    std::vector<std::unique_ptr<MemTable>> memtables,
     std::vector<std::unique_ptr<TableIterator>> sst_iters,
     uint64_t read_seq) {
   return std::make_unique<MergingIterator>(
-      std::move(mem_iter), std::move(sst_iters), read_seq);
+      std::move(memtables), std::move(sst_iters), read_seq);
 }
 
 }  // namespace kv

@@ -251,6 +251,26 @@ TEST(IteratorTest, ScanAfterFlushAcrossSSTAndMemtable) {
   EXPECT_EQ(entries[1].second, "2");
 }
 
+TEST(IteratorTest, CapturesMemTableStateBeforeLaterFlush) {
+  DBOptions options = MakeDBOptions("iterator_memtable_snapshot");
+  options.memtable_write_buffer_size = 4096;
+  options.auto_compaction_enabled = false;
+  auto db = OpenDB(std::move(options));
+
+  ASSERT_TRUE(db->Put(WriteOptions{}, "a", "before").ok());
+  auto it = db->NewIterator(ReadOptions{});
+  ASSERT_NE(it, nullptr);
+
+  ASSERT_TRUE(
+      db->Put(WriteOptions{}, "b", std::string(8192, 'x')).ok());
+
+  it->SeekToFirst();
+  const auto entries = CollectIterator(it.get());
+  ASSERT_EQ(entries.size(), 1U);
+  EXPECT_EQ(entries[0].first, "a");
+  EXPECT_EQ(entries[0].second, "before");
+}
+
 TEST(IteratorTest, ScanWithLimit) {
   auto db = OpenDB(MakeDBOptions("scan_limit"));
 

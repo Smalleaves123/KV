@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -109,7 +110,10 @@ class DBImpl final : public DB, public WriteApplier {
   Status CloseWAL();
   Status RemoveFlushedWAL(uint64_t max_flushed_seq);
   Status MaybeFlushMemTable();
-  Status FlushMemTableToSST(std::string* out_file);
+  Status FlushImmutableMemTables();
+  void RotateMemTable();
+  Status FlushMemTableToSST(const MemTable& memtable,
+                            std::string* out_file);
   Status GetFromMemTableAt(const Slice& key,
                            uint64_t read_seq,
                            std::string* value,
@@ -156,7 +160,8 @@ class DBImpl final : public DB, public WriteApplier {
   std::string manifest_path_;
   std::vector<std::string> sst_files_;
   Manifest manifest_;
-  MemTable memtable_;
+  std::unique_ptr<MemTable> memtable_;
+  std::deque<std::unique_ptr<MemTable>> immutable_mems_;
   WALWriter wal_writer_;
   WALManager wal_manager_;
   bool using_segmented_wal_;
