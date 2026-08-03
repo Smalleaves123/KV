@@ -115,6 +115,9 @@ int main(int argc, char** argv) {
     if (const char* v = std::getenv("KV_RAFT_PEERS"); v != nullptr) {
       raft_config->peers = kv::app::ParsePeers(v);
     }
+    if (const char* v = std::getenv("KV_RAFT_MEMBERS"); v != nullptr) {
+      raft_config->members = kv::app::ParseRaftMembers(v);
+    }
     if (const char* v = std::getenv("KV_RAFT_DATA_DIR"); v != nullptr) {
       raft_config->data_dir = v;
     }

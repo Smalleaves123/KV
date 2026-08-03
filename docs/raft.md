@@ -73,6 +73,8 @@ raft:
       host: 127.0.0.1
       raft_port: 9728
       client_port: 9727
+  # Optional bootstrap membership. If omitted, all peer ids are members.
+  members: [1, 2, 3]
 ```
 
 Environment format:
@@ -83,6 +85,7 @@ KV_RAFT_NODE_ID=1
 KV_RAFT_PORT=9528
 KV_RAFT_DATA_DIR=data/raft/node1
 KV_RAFT_PEERS=1:127.0.0.1:9528:9527,2:127.0.0.1:9628:9627,3:127.0.0.1:9728:9727
+KV_RAFT_MEMBERS=1,2,3
 ```
 
 ## Local Three-Node Example
@@ -147,12 +150,26 @@ node with the same `data_dir` and it will receive committed log entries again.
 With `server.metrics_port` enabled, `/metrics` exports `kv_raft_role`,
 `kv_raft_term`, `kv_raft_voted_for`, `kv_raft_leader_id`,
 `kv_raft_commit_index`, `kv_raft_applied_index`, and
-`kv_raft_last_log_index`, `kv_raft_snapshot_last_included_index`, and
+`kv_raft_last_log_index`, `kv_raft_snapshot_last_included_index`,
+`kv_raft_members`, `kv_raft_member`, and
 per-peer replication progress metrics for a server started in Raft mode.
 
 Snapshot transfer uses a bounded, single-message archive intended for small
 local clusters. The archive is limited by the Raft RPC frame size; larger
 state-machine checkpoints should be split into chunks before production use.
+
+On startup, a node first validates the persisted snapshot metadata, installs
+the matching DB checkpoint, and then replays retained committed entries after
+the snapshot index. This makes the checkpoint, Raft log boundary, and DB state
+recover as one chain. If metadata exists but its checkpoint is missing or
+invalid, startup fails instead of silently serving an incomplete database.
+
+Membership changes are submitted by the leader through
+`RaftServer::ChangeMembership({node_ids...})`. The configuration command is
+committed with the old quorum, applied on every node, and persisted separately
+from the log. Add the new node's address to `RaftConfig::peers` on all nodes
+before committing the change. Changes are intentionally single-step; issue
+one add/remove at a time and keep a majority available during the operation.
 
 ## Tests
 
@@ -165,10 +182,13 @@ In restricted environments, listener socket tests may skip.
 
 ## Current Limitations
 
-- No dynamic membership changes.
 - `RaftServer::CreateSnapshot()` creates a local, reopenable DB checkpoint at
   the latest applied Raft index and compacts the local Raft log. A lagging
-  follower can receive and install that checkpoint through InstallSnapshot.
+  follower can receive and install that checkpoint through InstallSnapshot;
+  restart recovery installs the same checkpoint before replaying the log tail.
+- Membership changes use single-step reconfiguration rather than joint
+  consensus; do not remove multiple members in one command or lose the old
+  majority while changing configuration.
 - Snapshot transfer currently uses one bounded message rather than a resumable
   chunk stream.
 - No production operational tooling.

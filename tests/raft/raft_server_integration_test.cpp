@@ -63,6 +63,7 @@ class RaftServerIntegrationTest : public ::testing::Test {
     config.raft_port = node.raft_port;
     config.data_dir = node.raft_dir;
     config.peers = peers_;
+    config.members = {1, 2, 3};
     return config;
   }
 
@@ -81,7 +82,8 @@ class RaftServerIntegrationTest : public ::testing::Test {
   void SetUp() override {
     constexpr uint16_t kBasePort = 21100;
     constexpr uint16_t kClientBasePort = 22100;
-    for (uint64_t id = 1; id <= 3; ++id) {
+    nodes_.reserve(4);
+    for (uint64_t id = 1; id <= 4; ++id) {
       peers_[id] = {"127.0.0.1", static_cast<uint16_t>(kBasePort + id),
                     static_cast<uint16_t>(kClientBasePort + id)};
     }
@@ -307,6 +309,54 @@ TEST_F(RaftServerIntegrationTest, LeaderCreatesReopenableLocalSnapshot) {
   ASSERT_TRUE(checkpoint_db->Close().ok());
 }
 
+TEST_F(RaftServerIntegrationTest, RestartRestoresSnapshotAndReplaysTail) {
+  TestNode* leader = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          if (node.raft->IsLeader()) {
+            leader = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  ASSERT_NE(leader, nullptr);
+
+  ASSERT_TRUE(leader->raft->Propose(
+                  raft::EncodePutCmd("snapshot-base", "base"))
+                  .ok());
+  ASSERT_TRUE(leader->raft->CreateSnapshot().ok());
+  const uint64_t snapshot_index =
+      leader->raft->GetStats().snapshot_last_included_index;
+  ASSERT_GT(snapshot_index, 0U);
+  ASSERT_TRUE(leader->raft->Propose(
+                  raft::EncodePutCmd("snapshot-tail", "tail"))
+                  .ok());
+
+  ASSERT_TRUE(leader->raft->Stop().ok());
+  leader->raft.reset();
+  ASSERT_TRUE(leader->db->Close().ok());
+  leader->db.reset();
+  RemoveDirIfExists(leader->db_options.db_path);
+  ASSERT_TRUE(DB::Open(leader->db_options, &leader->db).ok());
+  ASSERT_TRUE(StartNode(leader).ok());
+
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        std::string value;
+        return leader->db->Get(ReadOptions{}, "snapshot-base", &value).ok() &&
+               value == "base" &&
+               leader->db->Get(ReadOptions{}, "snapshot-tail", &value).ok() &&
+               value == "tail";
+      },
+      std::chrono::seconds(8)))
+      << "restart did not restore checkpoint and replay the retained log";
+  EXPECT_GE(leader->raft->GetStats().snapshot_last_included_index,
+            snapshot_index);
+}
+
 TEST_F(RaftServerIntegrationTest, LaggingFollowerInstallsCompactedSnapshot) {
   TestNode* leader = nullptr;
   ASSERT_TRUE(WaitUntil(
@@ -401,6 +451,87 @@ TEST_F(RaftServerIntegrationTest, NewLeaderCommitsAfterOldLeaderRestarts) {
           if (!node.db->Get(ReadOptions{}, "after-leader-failover", &value)
                    .ok() ||
               value != "value") {
+            return false;
+          }
+        }
+        return true;
+      },
+      std::chrono::seconds(5)));
+}
+
+TEST_F(RaftServerIntegrationTest, MembershipChangeAddsAndRemovesNode) {
+  TestNode* leader = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          if (node.raft->IsLeader()) {
+            leader = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  ASSERT_NE(leader, nullptr);
+
+  ASSERT_TRUE(leader->raft->ChangeMembership({1, 2, 3, 4}).ok());
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (uint64_t member : leader->raft->GetStats().members) {
+          if (member == 4) return true;
+        }
+        return false;
+      },
+      std::chrono::seconds(3)));
+
+  TestNode joining;
+  joining.node_id = 4;
+  joining.raft_port = 21104;
+  joining.client_port = 22104;
+  const std::string base = MakeBasePath("membership", 4);
+  joining.db_options.db_path = base + "_db";
+  joining.raft_dir = base + "_raft";
+  RemoveDirIfExists(joining.db_options.db_path);
+  RemoveDirIfExists(joining.raft_dir);
+  ASSERT_TRUE(DB::Open(joining.db_options, &joining.db).ok());
+  nodes_.push_back(std::move(joining));
+  TestNode* new_node = &nodes_.back();
+  ASSERT_TRUE(StartNode(new_node).ok());
+
+  ASSERT_TRUE(leader->raft->Propose(
+                  raft::EncodePutCmd("membership-add", "ok"))
+                  .ok());
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        std::string value;
+        return new_node->db->Get(ReadOptions{}, "membership-add", &value)
+                   .ok() &&
+               value == "ok";
+      },
+      std::chrono::seconds(8)));
+
+  ASSERT_TRUE(leader->raft->ChangeMembership({1, 2, 3}).ok());
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (uint64_t member : leader->raft->GetStats().members) {
+          if (member == 4) return false;
+        }
+        return true;
+      },
+      std::chrono::seconds(3)));
+  ASSERT_TRUE(new_node->raft->Stop().ok());
+  new_node->raft.reset();
+
+  ASSERT_TRUE(leader->raft->Propose(
+                  raft::EncodePutCmd("membership-remove", "ok"))
+                  .ok());
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          if (&node == new_node || node.raft == nullptr) continue;
+          std::string value;
+          if (!node.db->Get(ReadOptions{}, "membership-remove", &value).ok() ||
+              value != "ok") {
             return false;
           }
         }

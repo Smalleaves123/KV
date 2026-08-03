@@ -201,6 +201,7 @@ raft:
   node_id: 1
   raft_port: 9528
   data_dir: data/raft
+  members: [1, 2, 3]
   peers:
     - id: 1
       host: 127.0.0.1
@@ -224,6 +225,9 @@ Fields:
 - `client_port`: TCP command port used for redirects to this peer. When it is
   omitted, the server assumes `raft_port - 1`.
 - `data_dir`: directory for Raft persistent state.
+- `members`: optional bootstrap active-member ids. If omitted, every id in
+  `peers` is active. Runtime changes are committed with
+  `RaftServer::ChangeMembership` and persisted in `data_dir`.
 - `peers`: cluster peer list.
 
 Environment overrides:
@@ -234,6 +238,7 @@ KV_RAFT_NODE_ID=1
 KV_RAFT_PORT=9528
 KV_RAFT_DATA_DIR=data/raft/node1
 KV_RAFT_PEERS=1:127.0.0.1:9528:9527,2:127.0.0.1:9628:9627,3:127.0.0.1:9728:9727
+KV_RAFT_MEMBERS=1,2,3
 ```
 
 `KV_RAFT_PEERS` format:

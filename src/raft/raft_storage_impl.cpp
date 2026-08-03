@@ -13,9 +13,11 @@ FileRaftStorage::FileRaftStorage(const std::string& dir_path)
     : dir_path_(dir_path),
       state_path_(dir_path + "/raft_state"),
       snapshot_meta_path_(dir_path + "/snapshot_meta"),
+      members_path_(dir_path + "/raft_members"),
       log_path_(dir_path + "/raft_log"),
       hard_state_{},
       snapshot_meta_{},
+      members_(),
       first_index_(1),
       last_index_(0) {
   std::error_code ec;
@@ -47,6 +49,27 @@ FileRaftStorage::FileRaftStorage(const std::string& dir_path)
     }
   }
 
+  std::ifstream members_file(members_path_, std::ios::binary);
+  if (members_file.is_open()) {
+    char count_buf[4];
+    members_file.read(count_buf, sizeof(count_buf));
+    if (members_file.gcount() == static_cast<std::streamsize>(sizeof(count_buf))) {
+      const uint32_t count = DecodeFixed32(count_buf);
+      if (count <= 10000) {
+        members_.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+          char id_buf[8];
+          members_file.read(id_buf, sizeof(id_buf));
+          if (members_file.gcount() != static_cast<std::streamsize>(sizeof(id_buf))) {
+            members_.clear();
+            break;
+          }
+          members_.push_back(DecodeFixed64(id_buf));
+        }
+      }
+    }
+  }
+
   // Load log index
   LoadIndex();
 }
@@ -70,6 +93,36 @@ void FileRaftStorage::SaveHardState(const HardState& state) {
     sf.write(data.data(), static_cast<std::streamsize>(data.size()));
     sf.close();
   }
+}
+
+std::vector<uint64_t> FileRaftStorage::InitialMembers() const {
+  return members_;
+}
+
+void FileRaftStorage::SaveMembers(const std::vector<uint64_t>& members) {
+  if (members.empty()) return;
+
+  std::string data;
+  data.reserve(4 + members.size() * 8);
+  EncodeFixed32(&data, static_cast<uint32_t>(members.size()));
+  for (uint64_t member : members) EncodeFixed64(&data, member);
+
+  const std::string tmp_path = members_path_ + ".tmp";
+  {
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return;
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+    if (!out) return;
+  }
+
+  std::error_code ec;
+  std::filesystem::rename(tmp_path, members_path_, ec);
+  if (ec) {
+    std::filesystem::remove(members_path_, ec);
+    ec.clear();
+    std::filesystem::rename(tmp_path, members_path_, ec);
+  }
+  if (!ec) members_ = members;
 }
 
 RaftSnapshotMeta FileRaftStorage::SnapshotMeta() const {
@@ -123,6 +176,7 @@ void FileRaftStorage::LoadIndex() {
 
     uint64_t index = DecodeFixed64(rec_buf);
     uint32_t data_len = DecodeFixed32(rec_buf + 16);
+    if (data_len > rec_size - 20) break;
 
     lf.seekg(static_cast<std::streamoff>(data_len), std::ios::cur);
     if (!lf) break;
@@ -264,6 +318,9 @@ void FileRaftStorage::TruncateSuffix(uint64_t index) {
 
     std::error_code ec;
     std::filesystem::resize_file(log_path_, end_offset, ec);
+  } else {
+    std::error_code ec;
+    std::filesystem::resize_file(log_path_, 0, ec);
   }
 }
 

@@ -293,6 +293,30 @@ std::string EncodeNoopCmd() {
   return std::string(1, 'N');
 }
 
+std::string EncodeMembershipCmd(const std::vector<uint64_t>& members) {
+  std::string cmd;
+  cmd.reserve(1 + 4 + members.size() * 8);
+  cmd.push_back('M');
+  PushBE32(&cmd, static_cast<uint32_t>(members.size()));
+  for (uint64_t member : members) PushBE64(&cmd, member);
+  return cmd;
+}
+
+bool DecodeMembershipCmd(const std::string& data,
+                         std::vector<uint64_t>* members) {
+  if (members == nullptr || data.size() < 5 || data[0] != 'M') return false;
+  const uint32_t count = PopBE32(data.data() + 1);
+  if (count == 0 || count > 10000 || data.size() != 5 + count * 8ULL) {
+    return false;
+  }
+  members->clear();
+  members->reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    members->push_back(PopBE64(data.data() + 5 + i * 8));
+  }
+  return true;
+}
+
 bool DecodeCmd(const std::string& data, char* op, std::string* key,
                std::string* value, uint64_t* expires_at_ms) {
   if (data.empty()) return false;

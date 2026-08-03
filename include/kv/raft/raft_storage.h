@@ -18,6 +18,13 @@ class RaftStorage {
   virtual RaftSnapshotMeta SnapshotMeta() const { return {}; }
   virtual void SaveSnapshotMeta(const RaftSnapshotMeta&) {}
 
+  // The committed membership is persisted separately from the log so a
+  // restarted node uses the same quorum as before the restart.  Older/custom
+  // storage implementations can opt in later; an empty result means that the
+  // caller should use the configured bootstrap membership.
+  virtual std::vector<uint64_t> InitialMembers() const { return {}; }
+  virtual void SaveMembers(const std::vector<uint64_t>&) {}
+
   // 日志持久化
   virtual std::vector<LogEntry> Entries(uint64_t low, uint64_t high) const = 0;
   virtual uint64_t Term(uint64_t index) const = 0;

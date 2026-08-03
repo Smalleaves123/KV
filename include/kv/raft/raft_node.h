@@ -53,6 +53,9 @@ class RaftNode {
   bool CompactSnapshot(const RaftSnapshotMeta& meta) {
     return raft_log_->CompactTo(meta);
   }
+  // Apply a committed, single-step membership configuration.
+  bool UpdateMembership(const std::vector<uint64_t>& members);
+  const std::vector<uint64_t>& Members() const { return peers_; }
   
   // 处理接收到的Reply
   void HandleRequestVoteReply(uint64_t from, const RequestVoteReply& reply);
@@ -92,6 +95,7 @@ class RaftNode {
   void SendAppendEntries(uint64_t to);
 
   void ResetRandomizedElectionTimeout();
+  bool IsMember(uint64_t id) const;
 
   uint64_t id_;
   uint64_t term_;

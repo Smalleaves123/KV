@@ -34,6 +34,7 @@ struct RaftStats {
   uint64_t applied_index = 0;
   uint64_t last_log_index = 0;
   uint64_t snapshot_last_included_index = 0;
+  std::vector<uint64_t> members;
   struct PeerProgress {
     uint64_t peer_id = 0;
     uint64_t match_index = 0;
@@ -56,6 +57,10 @@ struct RaftConfig {
     uint16_t client_port = 0;
   };
   std::unordered_map<uint64_t, Peer> peers;
+
+  // Active membership at bootstrap. If omitted, all ids in `peers` are used.
+  // Runtime changes are committed through Raft and persisted by the server.
+  std::vector<uint64_t> members;
 
   // Data directory for Raft persistent state
   std::string data_dir = "data/raft";
@@ -84,6 +89,10 @@ class RaftServer {
   Status Propose(const std::string& cmd);
   Status LinearizableReadBarrier();
 
+  // Commit one membership change through the current quorum. The address book
+  // for every id must be present in RaftConfig::peers before adding it.
+  Status ChangeMembership(const std::vector<uint64_t>& members);
+
   // Persist a local DB checkpoint at the latest applied Raft index and compact
   // the local Raft log up to that index.
   Status CreateSnapshot();
@@ -105,6 +114,8 @@ class RaftServer {
   // Apply committed entries to the DB
   void ApplyCommitted();
   void PersistHardState();
+  Status RecoverSnapshotOnStart();
+  Status ApplyMembership(const std::vector<uint64_t>& members);
 
   // Send RPCs to peers (called by RaftNode callbacks)
   void SendRequestVote(uint64_t to, const raft::RequestVoteArgs& args);
@@ -150,6 +161,7 @@ class RaftServer {
 
   mutable std::mutex hard_state_mu_;
   mutable std::mutex apply_mu_;
+  std::mutex membership_mu_;
   std::condition_variable apply_cv_;
   std::unordered_map<uint64_t, Status> applied_results_;
 

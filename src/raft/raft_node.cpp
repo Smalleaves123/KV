@@ -1,4 +1,5 @@
 #include "kv/raft/raft_node.h"
+#include <algorithm>
 #include <random>
 #include <iostream>
 
@@ -19,6 +20,9 @@ RaftNode::RaftNode(const RaftOptions& options)
       election_timeout_(options.election_tick),
       heartbeat_timeout_(options.heartbeat_tick) {
 
+  std::sort(peers_.begin(), peers_.end());
+  peers_.erase(std::unique(peers_.begin(), peers_.end()), peers_.end());
+
   // 初始化从存储加载硬状态
   if (options.storage) {
     auto hs = options.storage->InitialState();
@@ -27,6 +31,10 @@ RaftNode::RaftNode(const RaftOptions& options)
   }
   
   ResetRandomizedElectionTimeout();
+}
+
+bool RaftNode::IsMember(uint64_t id) const {
+  return std::find(peers_.begin(), peers_.end(), id) != peers_.end();
 }
 
 void RaftNode::ResetRandomizedElectionTimeout() {
@@ -38,6 +46,11 @@ void RaftNode::ResetRandomizedElectionTimeout() {
 }
 
 void RaftNode::Tick() {
+  if (!IsMember(id_)) {
+    role_ = RaftRole::kFollower;
+    leader_id_ = 0;
+    return;
+  }
   if (role_ == RaftRole::kLeader) {
     heartbeat_elapsed_++;
     if (heartbeat_elapsed_ >= heartbeat_timeout_) {
@@ -55,15 +68,21 @@ void RaftNode::Tick() {
 }
 
 void RaftNode::BecomeFollower(uint64_t term, uint64_t leader_id) {
-  term_ = term;
+  if (term > term_) {
+    term_ = term;
+    voted_for_ = 0;
+  }
   leader_id_ = leader_id;
   role_ = RaftRole::kFollower;
-  voted_for_ = 0;
   election_elapsed_ = 0;
   ResetRandomizedElectionTimeout();
 }
 
 void RaftNode::BecomeCandidate() {
+  if (!IsMember(id_)) {
+    role_ = RaftRole::kFollower;
+    return;
+  }
   role_ = RaftRole::kCandidate;
   term_++;
   voted_for_ = id_; // 投自己一票
@@ -88,7 +107,12 @@ void RaftNode::BecomeLeader() {
   for (auto peer : peers_) {
     if (peer != id_) {
       Progress p;
-      p.next = raft_log_->LastIndex() + 1;
+      const uint64_t snapshot_index =
+          raft_log_->SnapshotMeta().last_included_index;
+      // A newly elected leader cannot infer follower progress. When the log
+      // is compacted, start at the snapshot boundary so lagging followers get
+      // InstallSnapshot instead of being stuck probing discarded entries.
+      p.next = snapshot_index > 0 ? snapshot_index : raft_log_->LastIndex() + 1;
       p.match = 0;
       progresses_[peer] = p;
     }
@@ -197,6 +221,11 @@ RequestVoteReply RaftNode::HandleRequestVote(const RequestVoteArgs& args) {
   }
 
   reply.term = term_;
+
+  if (!IsMember(args.candidate_id) || !IsMember(id_)) {
+    reply.vote_granted = false;
+    return reply;
+  }
   
   // 检查日志是不是够新
   uint64_t my_last_index = raft_log_->LastIndex();
@@ -265,6 +294,38 @@ bool RaftNode::RestoreSnapshot(const RaftSnapshotMeta& meta) {
   return raft_log_->RestoreSnapshot(meta);
 }
 
+bool RaftNode::UpdateMembership(const std::vector<uint64_t>& members) {
+  if (members.empty()) return false;
+  std::vector<uint64_t> normalized = members;
+  std::sort(normalized.begin(), normalized.end());
+  normalized.erase(std::unique(normalized.begin(), normalized.end()),
+                  normalized.end());
+  if (normalized.size() != members.size()) return false;
+
+  std::unordered_map<uint64_t, Progress> old_progress = progresses_;
+  peers_ = std::move(normalized);
+  progresses_.clear();
+  if (role_ == RaftRole::kLeader && !IsMember(id_)) {
+    role_ = RaftRole::kFollower;
+    leader_id_ = 0;
+  }
+  if (role_ == RaftRole::kLeader) {
+    for (uint64_t peer : peers_) {
+      if (peer == id_) continue;
+      auto old = old_progress.find(peer);
+      if (old != old_progress.end()) {
+        progresses_[peer] = old->second;
+      } else {
+        // A new member has no guaranteed log prefix. Normal AppendEntries
+        // backtracking will find the first retained entry or snapshot.
+        progresses_[peer] = Progress{0, 1};
+      }
+    }
+  }
+  votes_received_.clear();
+  return true;
+}
+
 void RaftNode::HandleRequestVoteReply(uint64_t from, const RequestVoteReply& reply) {
   if (role_ != RaftRole::kCandidate) {
     return;
@@ -274,6 +335,7 @@ void RaftNode::HandleRequestVoteReply(uint64_t from, const RequestVoteReply& rep
     BecomeFollower(reply.term, 0);
     return;
   }
+  if (reply.term < term_) return;
 
   if (reply.vote_granted) {
     votes_received_[from] = true;
@@ -298,6 +360,7 @@ void RaftNode::HandleAppendEntriesReply(uint64_t from, const AppendEntriesReply&
     BecomeFollower(reply.term, 0);
     return;
   }
+  if (reply.term < term_) return;
 
   if (progresses_.find(from) == progresses_.end()) return;
 
@@ -341,6 +404,7 @@ void RaftNode::HandleInstallSnapshotReply(
     BecomeFollower(reply.term, 0);
     return;
   }
+  if (reply.term < term_) return;
 
   auto it = progresses_.find(from);
   if (it == progresses_.end()) return;

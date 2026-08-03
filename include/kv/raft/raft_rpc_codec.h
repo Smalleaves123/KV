@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "kv/common/socket_compat.h"
 #include "kv/raft/raft_rpc.h"
@@ -80,6 +81,11 @@ std::string EncodeDelCmd(const std::string& key);
 
 // Encode a no-op barrier command: 'N'
 std::string EncodeNoopCmd();
+
+// Encode a committed single-step membership configuration: 'M' + count + ids.
+std::string EncodeMembershipCmd(const std::vector<uint64_t>& members);
+bool DecodeMembershipCmd(const std::string& data,
+                         std::vector<uint64_t>* members);
 
 // Decode a command. Sets *op ('S', 'D', 'T', 'E', or 'N'), *key, *value.
 // Returns false on parse error.

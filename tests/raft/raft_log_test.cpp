@@ -291,6 +291,24 @@ TEST(FileRaftStorageTest, SnapshotMetaPersistsAcrossReopen) {
   std::filesystem::remove_all(path, ec);
 }
 
+TEST(FileRaftStorageTest, MembershipPersistsAcrossReopen) {
+  const std::string path = "test_tmp/raft/membership_persistence";
+  std::error_code ec;
+  std::filesystem::remove_all(path, ec);
+
+  {
+    FileRaftStorage storage(path);
+    storage.SaveMembers({1, 2, 4});
+    EXPECT_EQ(storage.InitialMembers(), (std::vector<uint64_t>{1, 2, 4}));
+  }
+  {
+    FileRaftStorage storage(path);
+    EXPECT_EQ(storage.InitialMembers(), (std::vector<uint64_t>{1, 2, 4}));
+  }
+
+  std::filesystem::remove_all(path, ec);
+}
+
 TEST(RaftRpcCodecTest, InstallSnapshotRoundTrip) {
   InstallSnapshotArgs args;
   args.term = 4;
@@ -316,6 +334,15 @@ TEST(RaftRpcCodecTest, InstallSnapshotRoundTrip) {
   EXPECT_EQ(decoded_reply.term, 4U);
   EXPECT_TRUE(decoded_reply.success);
   EXPECT_EQ(decoded_reply.match_index, 17U);
+}
+
+TEST(RaftRpcCodecTest, MembershipCommandRoundTrip) {
+  const std::vector<uint64_t> members = {1, 3, 7};
+  const std::string encoded = EncodeMembershipCmd(members);
+  std::vector<uint64_t> decoded;
+  ASSERT_TRUE(DecodeMembershipCmd(encoded, &decoded));
+  EXPECT_EQ(decoded, members);
+  EXPECT_FALSE(DecodeMembershipCmd("M\0\0\0\1\0", &decoded));
 }
 
 }  // namespace

@@ -408,6 +408,8 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
         }
       } else if (key == "data_dir") {
         cfg.raft.data_dir = value;
+      } else if (key == "members") {
+        cfg.raft.members = ParseRaftMembers(value);
       }
       continue;
     }
@@ -468,6 +470,22 @@ std::unordered_map<uint64_t, kv::RaftConfig::Peer> ParsePeers(const std::string&
     }
   }
   return peers;
+}
+
+std::vector<uint64_t> ParseRaftMembers(const std::string& s) {
+  std::string list = Trim(s);
+  if (list.size() >= 2 && list.front() == '[' && list.back() == ']') {
+    list = list.substr(1, list.size() - 2);
+  }
+  std::vector<uint64_t> members;
+  std::istringstream iss(list);
+  std::string item;
+  while (std::getline(iss, item, ',')) {
+    const uint64_t id = ParseNodeId(Trim(item).c_str());
+    if (id == 0) return {};
+    members.push_back(id);
+  }
+  return members;
 }
 
 std::vector<kv::NodeInfo> ParseClusterNodes(const std::string& s) {

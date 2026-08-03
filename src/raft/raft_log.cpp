@@ -8,8 +8,12 @@ RaftLog::RaftLog(std::shared_ptr<RaftStorage> storage)
     : storage_(std::move(storage)), commit_index_(0), applied_(0) {
   if (storage_) {
     HardState hs = storage_->InitialState();
-    commit_index_ = hs.commit_index;
-    applied_ = storage_->FirstIndex() > 0 ? storage_->FirstIndex() - 1 : 0;
+    const uint64_t snapshot_index = storage_->SnapshotMeta().last_included_index;
+    commit_index_ = std::max(hs.commit_index, snapshot_index);
+    applied_ = std::max(
+        hs.applied_index,
+        storage_->FirstIndex() > 0 ? storage_->FirstIndex() - 1 : 0);
+    applied_ = std::max(applied_, snapshot_index);
   }
 }
 

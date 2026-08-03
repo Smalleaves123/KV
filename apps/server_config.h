@@ -46,6 +46,7 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
                                             std::string* error);
 
 std::unordered_map<uint64_t, kv::RaftConfig::Peer> ParsePeers(const std::string& value);
+std::vector<uint64_t> ParseRaftMembers(const std::string& value);
 std::vector<kv::NodeInfo> ParseClusterNodes(const std::string& value);
 void EnsureSelfNode(std::vector<kv::NodeInfo>* nodes, const std::string& self_id,
                     const std::string& self_host, uint16_t self_port);

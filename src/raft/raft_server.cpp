@@ -133,6 +133,7 @@ RaftServer::RaftServer(const RaftConfig& config, WriteApplier* applier)
       peer_fds_(),
       hard_state_mu_(),
       apply_mu_(),
+      membership_mu_(),
       apply_cv_(),
       applied_results_(),
       socket_runtime_(),
@@ -140,21 +141,34 @@ RaftServer::RaftServer(const RaftConfig& config, WriteApplier* applier)
   // Build RaftOptions and create RaftNode
   raft::RaftOptions opts;
   opts.node_id = config.node_id;
-  for (const auto& [id, peer] : config.peers) {
-    opts.peers.push_back(id);
+  const std::vector<uint64_t> persisted_members = storage_->InitialMembers();
+  const bool has_persisted_members = !persisted_members.empty();
+  opts.peers = persisted_members;
+  if (opts.peers.empty()) {
+    if (!config.members.empty()) {
+      opts.peers = config.members;
+    } else {
+      for (const auto& [id, peer] : config.peers) {
+        opts.peers.push_back(id);
+      }
+    }
   }
   bool self_in_peers = false;
   for (auto id : opts.peers) {
     if (id == config.node_id) { self_in_peers = true; break; }
   }
-  if (!self_in_peers) {
+  if (!self_in_peers && !has_persisted_members && config.members.empty()) {
     opts.peers.push_back(config.node_id);
   }
+  std::sort(opts.peers.begin(), opts.peers.end());
+  opts.peers.erase(std::unique(opts.peers.begin(), opts.peers.end()),
+                   opts.peers.end());
   opts.storage = storage_;
   opts.election_tick = 10;
   opts.heartbeat_tick = 3;
 
   raft_node_ = std::make_unique<raft::RaftNode>(opts);
+  storage_->SaveMembers(raft_node_->Members());
 
   // Wire Raft callbacks to our RPC sender
   raft_node_->set_send_request_vote_fn(
@@ -195,6 +209,12 @@ Status RaftServer::Start() {
     return Status::IOError("failed to initialize socket runtime");
   }
 
+  Status recovery_status = RecoverSnapshotOnStart();
+  if (!recovery_status.ok()) {
+    socket_runtime_.Stop();
+    return recovery_status;
+  }
+
   rpc_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
   if (!platform::IsValidSocket(rpc_fd_)) {
     socket_runtime_.Stop();
@@ -226,11 +246,6 @@ Status RaftServer::Start() {
     return Status::IOError("raft rpc listen: " +
                            platform::SocketErrorString(
                                platform::LastSocketError()));
-  }
-
-  {
-    std::lock_guard<std::mutex> lk(raft_mu_);
-    last_applied_ = storage_->InitialState().applied_index;
   }
 
   running_.store(true);
@@ -307,6 +322,86 @@ Status RaftServer::Propose(const std::string& cmd) {
 
 Status RaftServer::LinearizableReadBarrier() {
   return Propose(raft::EncodeNoopCmd());
+}
+
+Status RaftServer::ChangeMembership(const std::vector<uint64_t>& members) {
+  std::lock_guard<std::mutex> change_lk(membership_mu_);
+  if (!running_.load()) {
+    return Status::IOError("raft server not running");
+  }
+  if (members.empty()) {
+    return Status::InvalidArgument("raft membership cannot be empty");
+  }
+
+  std::vector<uint64_t> normalized = members;
+  std::sort(normalized.begin(), normalized.end());
+  normalized.erase(std::unique(normalized.begin(), normalized.end()),
+                  normalized.end());
+  if (normalized.size() != members.size() ||
+      std::any_of(normalized.begin(), normalized.end(),
+                  [](uint64_t id) { return id == 0; })) {
+    return Status::InvalidArgument("raft membership contains duplicate/invalid ids");
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(raft_mu_);
+    if (raft_node_->role() != raft::RaftRole::kLeader) {
+      return Status::AlreadyExists("not the leader");
+    }
+    for (uint64_t member : normalized) {
+      if (member != config_.node_id && config_.peers.find(member) ==
+                                           config_.peers.end()) {
+        return Status::NotFound("missing address for raft member " +
+                               std::to_string(member));
+      }
+    }
+    if (normalized == raft_node_->Members()) return Status::OK();
+  }
+  return Propose(raft::EncodeMembershipCmd(normalized));
+}
+
+Status RaftServer::RecoverSnapshotOnStart() {
+  const raft::RaftSnapshotMeta meta = storage_->SnapshotMeta();
+  const raft::HardState prior = storage_->InitialState();
+  if (meta.last_included_index == 0) {
+    std::lock_guard<std::mutex> lk(raft_mu_);
+    last_applied_ = prior.applied_index;
+    return Status::OK();
+  }
+  if (meta.last_included_term == 0) {
+    return Status::Corruption("raft snapshot metadata has no term");
+  }
+
+  const std::string snapshot_dir = SnapshotDirectory(meta);
+  std::error_code ec;
+  if (!std::filesystem::is_directory(snapshot_dir, ec) || ec) {
+    return Status::Corruption("raft snapshot checkpoint is missing: " +
+                             snapshot_dir);
+  }
+  Status s = applier_->InstallCheckpoint(snapshot_dir);
+  if (!s.ok()) return s;
+
+  raft::HardState recovered = prior;
+  recovered.commit_index = std::max(recovered.commit_index,
+                                    meta.last_included_index);
+  recovered.applied_index = meta.last_included_index;
+  {
+    std::lock_guard<std::mutex> lk(raft_mu_);
+    last_applied_ = meta.last_included_index;
+  }
+  {
+    std::lock_guard<std::mutex> lk(hard_state_mu_);
+    storage_->SaveHardState(recovered);
+  }
+  return Status::OK();
+}
+
+Status RaftServer::ApplyMembership(const std::vector<uint64_t>& members) {
+  if (!raft_node_->UpdateMembership(members)) {
+    return Status::Corruption("invalid committed raft membership");
+  }
+  storage_->SaveMembers(raft_node_->Members());
+  return Status::OK();
 }
 
 Status RaftServer::CreateSnapshot() {
@@ -472,6 +567,7 @@ RaftStats RaftServer::GetStats() const noexcept {
   stats.last_log_index = raft_node_->last_log_index();
   stats.snapshot_last_included_index =
       storage_->SnapshotMeta().last_included_index;
+  stats.members = raft_node_->Members();
   for (const auto& [peer_id, progress] : raft_node_->Progresses()) {
     stats.peers.push_back(
         RaftStats::PeerProgress{peer_id, progress.match, progress.next});
@@ -503,47 +599,38 @@ void RaftServer::ApplyCommitted() {
   while (last_applied_ < ci) {
     ++last_applied_;
     auto entries = storage_->Entries(last_applied_, last_applied_);
-    if (entries.empty()) {
-      std::lock_guard<std::mutex> lk(apply_mu_);
-      applied_results_[last_applied_] =
-          Status::Corruption("missing committed raft log entry");
-      apply_cv_.notify_all();
-      continue;
-    }
-
-    const auto& entry = entries[0];
-    const std::string& data = entry.data;
-    if (data.empty()) {
-      std::lock_guard<std::mutex> lk(apply_mu_);
-      applied_results_[last_applied_] =
-          Status::Corruption("empty committed raft log entry");
-      apply_cv_.notify_all();
-      continue;
-    }
-
-    char op = 0;
-    std::string key, value;
-    uint64_t expires_at_ms = 0;
-    if (!raft::DecodeCmd(data, &op, &key, &value, &expires_at_ms)) {
-      std::lock_guard<std::mutex> lk(apply_mu_);
-      applied_results_[last_applied_] =
-          Status::Corruption("failed to decode committed raft command");
-      apply_cv_.notify_all();
-      continue;
-    }
-
-    Status apply_status = Status::Corruption("unsupported raft command");
-    if (op == 'S') {
-      apply_status = applier_->ApplyPut(key, value);
-    } else if (op == 'T') {
-      apply_status =
-          applier_->ApplyPutWithExpiry(key, value, expires_at_ms);
-    } else if (op == 'E') {
-      apply_status = applier_->ApplyExpireAt(key, expires_at_ms);
-    } else if (op == 'D') {
-      apply_status = applier_->ApplyDelete(key);
-    } else if (op == 'N') {
-      apply_status = Status::OK();
+    Status apply_status = Status::Corruption("missing committed raft log entry");
+    if (!entries.empty() && !entries[0].data.empty()) {
+      const std::string& data = entries[0].data;
+      if (data[0] == 'M') {
+        std::vector<uint64_t> members;
+        if (raft::DecodeMembershipCmd(data, &members)) {
+          apply_status = ApplyMembership(members);
+        } else {
+          apply_status = Status::Corruption("failed to decode raft membership");
+        }
+      } else {
+        char op = 0;
+        std::string key, value;
+        uint64_t expires_at_ms = 0;
+        if (raft::DecodeCmd(data, &op, &key, &value, &expires_at_ms)) {
+          apply_status = Status::Corruption("unsupported raft command");
+          if (op == 'S') {
+            apply_status = applier_->ApplyPut(key, value);
+          } else if (op == 'T') {
+            apply_status =
+                applier_->ApplyPutWithExpiry(key, value, expires_at_ms);
+          } else if (op == 'E') {
+            apply_status = applier_->ApplyExpireAt(key, expires_at_ms);
+          } else if (op == 'D') {
+            apply_status = applier_->ApplyDelete(key);
+          } else if (op == 'N') {
+            apply_status = Status::OK();
+          }
+        } else {
+          apply_status = Status::Corruption("failed to decode committed raft command");
+        }
+      }
     }
 
     raft_node_->AdvanceApplied(last_applied_);

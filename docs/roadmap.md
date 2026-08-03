@@ -87,9 +87,12 @@ engine into a more complete storage-system project.
 
 - Persistent snapshots, InstallSnapshot RPC, and local log compaction are now
   implemented for bounded small-cluster archives.
-- Membership changes.
+- Single-step membership changes with persisted active-member state are now
+  implemented; joint-consensus reconfiguration remains a production-hardening
+  item.
 - Resumable/chunked snapshot transfer.
-- Better leader transfer and failover tests.
+- Snapshot-aware leader failover and restart recovery tests are now covered;
+  explicit leader transfer remains a future improvement.
 - Client-side routing helper.
 - Operational docs for running a local three-node cluster.
 
