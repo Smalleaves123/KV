@@ -211,5 +211,7 @@ gtest_discover_tests(kv_net_test)
 gtest_discover_tests(kv_cache_test)
 gtest_discover_tests(kv_cluster_test)
 gtest_discover_tests(kv_txn_test)
-gtest_discover_tests(kv_raft_test)
+# Raft integration tests use a fixed three-node port range. Serialize the
+# discovered cases while allowing unrelated test binaries to run in parallel.
+gtest_discover_tests(kv_raft_test PROPERTIES RESOURCE_LOCK raft_test_ports)
 gtest_discover_tests(kv_data_types_test)

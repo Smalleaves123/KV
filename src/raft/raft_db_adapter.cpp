@@ -122,6 +122,14 @@ Status RaftDBAdapter::CreateCheckpoint(const std::string& checkpoint_dir) {
   return local_db_->CreateCheckpoint(checkpoint_dir);
 }
 
+Status RaftDBAdapter::InstallCheckpoint(const std::string& checkpoint_dir) {
+  auto* applier = dynamic_cast<WriteApplier*>(local_db_);
+  if (applier == nullptr) {
+    return Status::InvalidArgument("local database cannot install checkpoints");
+  }
+  return applier->InstallCheckpoint(checkpoint_dir);
+}
+
 Status RaftDBAdapter::GetCacheStats(CacheStats* stats) const {
   return local_db_->GetCacheStats(stats);
 }

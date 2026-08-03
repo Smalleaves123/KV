@@ -9,6 +9,7 @@ learning and integration testing, but it is not production-ready.
 - `RaftLog`: in-memory/logical log management.
 - `RaftStorageImpl`: persistent hard-state and log storage support.
 - `RaftServer`: RPC listener, tick loop, peer RPC sending, commit apply loop.
+- `InstallSnapshot`: checkpoint transfer and follower state-machine restore.
 - `RaftDBAdapter`: server-side DB adapter that routes writes through Raft.
 - `WriteApplier`: small interface used by Raft to apply committed writes
   without coupling Raft to the full `DB` API.
@@ -149,6 +150,10 @@ With `server.metrics_port` enabled, `/metrics` exports `kv_raft_role`,
 `kv_raft_last_log_index`, `kv_raft_snapshot_last_included_index`, and
 per-peer replication progress metrics for a server started in Raft mode.
 
+Snapshot transfer uses a bounded, single-message archive intended for small
+local clusters. The archive is limited by the Raft RPC frame size; larger
+state-machine checkpoints should be split into chunks before production use.
+
 ## Tests
 
 ```bash
@@ -161,10 +166,11 @@ In restricted environments, listener socket tests may skip.
 ## Current Limitations
 
 - No dynamic membership changes.
-- `RaftServer::CreateSnapshot()` can create a local, reopenable DB checkpoint
-  at the latest applied Raft index. Snapshot recovery, InstallSnapshot RPC,
-  and Raft log compaction are not implemented, so a long-running cluster grows
-  its Raft log indefinitely.
+- `RaftServer::CreateSnapshot()` creates a local, reopenable DB checkpoint at
+  the latest applied Raft index and compacts the local Raft log. A lagging
+  follower can receive and install that checkpoint through InstallSnapshot.
+- Snapshot transfer currently uses one bounded message rather than a resumable
+  chunk stream.
 - No production operational tooling.
 - Redirects apply to follower writes; follower reads still return the adapter's
   leader error.

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "kv/engine/write_applier.h"
 
 namespace kv {
 namespace {
@@ -231,6 +232,47 @@ TEST(DBTest, CheckpointReopensWithoutSourceFiles) {
     ASSERT_TRUE(db->Close().ok());
   }
 
+  RemoveDirIfExists(checkpoint_dir);
+}
+
+TEST(DBTest, InstallCheckpointReplacesOpenState) {
+  DBOptions source_options = MakeDBOptions("install_checkpoint_source");
+  DBOptions target_options = MakeDBOptions("install_checkpoint_target");
+  const std::string checkpoint_dir = source_options.sst_dir + "_checkpoint";
+  RemovePathIfExists(source_options.wal_path);
+  RemovePathIfExists(source_options.manifest_path);
+  RemoveDirIfExists(source_options.sst_dir);
+  RemoveDirIfExists(checkpoint_dir);
+  RemovePathIfExists(target_options.wal_path);
+  RemovePathIfExists(target_options.manifest_path);
+  RemoveDirIfExists(target_options.sst_dir);
+
+  std::unique_ptr<DB> source;
+  ASSERT_TRUE(DB::Open(source_options, &source).ok());
+  ASSERT_TRUE(source->Put(WriteOptions{}, "snapshot-key", "snapshot-value")
+                  .ok());
+  ASSERT_TRUE(source->CreateCheckpoint(checkpoint_dir).ok());
+  ASSERT_TRUE(source->Close().ok());
+
+  std::unique_ptr<DB> target;
+  ASSERT_TRUE(DB::Open(target_options, &target).ok());
+  ASSERT_TRUE(target->Put(WriteOptions{}, "stale-key", "stale-value").ok());
+  auto* applier = dynamic_cast<WriteApplier*>(target.get());
+  ASSERT_NE(applier, nullptr);
+  ASSERT_TRUE(applier->InstallCheckpoint(checkpoint_dir).ok());
+
+  std::string value;
+  ASSERT_TRUE(target->Get(ReadOptions{}, "snapshot-key", &value).ok());
+  EXPECT_EQ(value, "snapshot-value");
+  EXPECT_TRUE(target->Get(ReadOptions{}, "stale-key", &value).IsNotFound());
+  ASSERT_TRUE(target->Close().ok());
+
+  RemovePathIfExists(source_options.wal_path);
+  RemovePathIfExists(source_options.manifest_path);
+  RemoveDirIfExists(source_options.sst_dir);
+  RemovePathIfExists(target_options.wal_path);
+  RemovePathIfExists(target_options.manifest_path);
+  RemoveDirIfExists(target_options.sst_dir);
   RemoveDirIfExists(checkpoint_dir);
 }
 

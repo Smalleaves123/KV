@@ -1,13 +1,120 @@
 #include "kv/raft/raft_server.h"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <thread>
 
 #include "kv/raft/raft_rpc_codec.h"
 #include "kv/raft/raft_storage_impl.h"
 
 namespace kv {
+
+namespace {
+
+constexpr char kSnapshotArchiveMagic[] = "KVRAFTSNAP1";
+
+void AppendBE32(std::string* out, uint32_t value) {
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    out->push_back(static_cast<char>((value >> shift) & 0xff));
+  }
+}
+
+void AppendBE64(std::string* out, uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8) {
+    out->push_back(static_cast<char>((value >> shift) & 0xff));
+  }
+}
+
+uint32_t ReadBE32(const char* data) {
+  uint32_t value = 0;
+  for (int i = 0; i < 4; ++i) {
+    value = (value << 8) | static_cast<uint8_t>(data[i]);
+  }
+  return value;
+}
+
+uint64_t ReadBE64(const char* data) {
+  uint64_t value = 0;
+  for (int i = 0; i < 8; ++i) {
+    value = (value << 8) | static_cast<uint8_t>(data[i]);
+  }
+  return value;
+}
+
+bool IsSafeRelativePath(const std::filesystem::path& path) {
+  if (path.empty() || path.is_absolute()) return false;
+  for (const auto& component : path) {
+    if (component == ".." || component == ".") return false;
+  }
+  return true;
+}
+
+Status ExtractSnapshotArchive(const std::string& archive,
+                              const std::string& destination) {
+  const size_t magic_size = sizeof(kSnapshotArchiveMagic) - 1;
+  if (archive.size() < magic_size + 4 ||
+      archive.compare(0, magic_size, kSnapshotArchiveMagic) != 0) {
+    return Status::Corruption("invalid raft snapshot archive");
+  }
+
+  const char* data = archive.data();
+  size_t offset = magic_size;
+  const uint32_t file_count = ReadBE32(data + offset);
+  offset += 4;
+  const std::filesystem::path destination_path(destination);
+  std::error_code ec;
+  std::filesystem::remove_all(destination_path, ec);
+  if (ec || !std::filesystem::create_directories(destination_path, ec) || ec) {
+    return Status::IOError("failed to create snapshot staging directory");
+  }
+
+  for (uint32_t i = 0; i < file_count; ++i) {
+    if (archive.size() - offset < 12) {
+      return Status::Corruption("truncated raft snapshot archive header");
+    }
+    const uint32_t path_size = ReadBE32(data + offset);
+    offset += 4;
+    const uint64_t content_size = ReadBE64(data + offset);
+    offset += 8;
+    if (path_size == 0 || content_size > archive.size() - offset ||
+        path_size > archive.size() - offset - content_size) {
+      return Status::Corruption("invalid raft snapshot archive entry");
+    }
+
+    const std::filesystem::path relative(
+        std::string(data + offset, path_size));
+    offset += path_size;
+    if (!IsSafeRelativePath(relative)) {
+      return Status::Corruption("unsafe path in raft snapshot archive");
+    }
+
+    const std::filesystem::path output = destination_path / relative;
+    std::filesystem::create_directories(output.parent_path(), ec);
+    if (ec) {
+      return Status::IOError("failed to create snapshot file directory");
+    }
+    std::ofstream file(output, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+      return Status::IOError("failed to open staged snapshot file");
+    }
+    file.write(data + offset, static_cast<std::streamsize>(content_size));
+    if (!file) {
+      return Status::IOError("failed to write staged snapshot file");
+    }
+    offset += static_cast<size_t>(content_size);
+  }
+
+  if (offset != archive.size()) {
+    return Status::Corruption("trailing data in raft snapshot archive");
+  }
+  return Status::OK();
+}
+
+}  // namespace
 
 // ==================== RaftServer ====================
 
@@ -63,6 +170,15 @@ RaftServer::RaftServer(const RaftConfig& config, WriteApplier* applier)
           return;
         }
         rpc_pool_->Execute([this, to, args]() { SendAppendEntries(to, args); });
+      });
+  raft_node_->set_send_install_snapshot_fn(
+      [this](uint64_t to, const raft::RaftSnapshotMeta& meta) {
+        if (!running_.load()) {
+          return;
+        }
+        rpc_pool_->Execute([this, to, meta]() {
+          SendInstallSnapshot(to, meta);
+        });
       });
 }
 
@@ -213,21 +329,103 @@ Status RaftServer::CreateSnapshot() {
     return Status::Corruption("cannot find term for applied raft entry");
   }
 
-  const std::string snapshot_dir =
-      config_.data_dir + "/snapshot/" + std::to_string(last_applied_) + "/db";
+  const std::string snapshot_dir = SnapshotDirectory(
+      raft::RaftSnapshotMeta{last_applied_, last_included_term});
   Status s = applier_->CreateCheckpoint(snapshot_dir);
   if (!s.ok()) {
     return s;
   }
 
   const raft::RaftSnapshotMeta meta{last_applied_, last_included_term};
-  storage_->SaveSnapshotMeta(meta);
+  if (!raft_node_->CompactSnapshot(meta)) {
+    return Status::Corruption("failed to compact raft log at snapshot");
+  }
   const raft::RaftSnapshotMeta persisted_meta = storage_->SnapshotMeta();
   if (persisted_meta.last_included_index != meta.last_included_index ||
       persisted_meta.last_included_term != meta.last_included_term) {
     return Status::IOError("failed to persist raft snapshot metadata");
   }
   return Status::OK();
+}
+
+std::string RaftServer::SnapshotDirectory(
+    const raft::RaftSnapshotMeta& meta) const {
+  return (std::filesystem::path(config_.data_dir) / "snapshot" /
+          std::to_string(meta.last_included_index) / "db")
+      .string();
+}
+
+Status RaftServer::BuildSnapshotArchive(const std::string& snapshot_dir,
+                                        std::string* archive) {
+  if (archive == nullptr) {
+    return Status::InvalidArgument("snapshot archive output is null");
+  }
+  const std::filesystem::path root(snapshot_dir);
+  std::error_code ec;
+  if (!std::filesystem::is_directory(root, ec) || ec) {
+    return Status::NotFound("raft snapshot directory does not exist");
+  }
+
+  std::vector<std::filesystem::path> files;
+  for (std::filesystem::recursive_directory_iterator it(root, ec), end;
+       it != end && !ec; it.increment(ec)) {
+    if (it->is_regular_file(ec) && !ec) {
+      files.push_back(it->path());
+    }
+  }
+  if (ec) {
+    return Status::IOError("failed to enumerate raft snapshot files");
+  }
+  std::sort(files.begin(), files.end());
+
+  const size_t magic_size = sizeof(kSnapshotArchiveMagic) - 1;
+  archive->clear();
+  archive->append(kSnapshotArchiveMagic, magic_size);
+  if (files.size() > std::numeric_limits<uint32_t>::max()) {
+    return Status::InvalidArgument("too many files in raft snapshot");
+  }
+  AppendBE32(archive, static_cast<uint32_t>(files.size()));
+
+  for (const auto& file_path : files) {
+    const std::filesystem::path relative = file_path.lexically_relative(root);
+    const std::string relative_name = relative.generic_string();
+    if (!IsSafeRelativePath(relative) ||
+        relative_name.size() > std::numeric_limits<uint32_t>::max()) {
+      return Status::Corruption("invalid raft snapshot file path");
+    }
+
+    std::ifstream input(file_path, std::ios::binary);
+    if (!input.is_open()) {
+      return Status::IOError("failed to open raft snapshot file");
+    }
+    const std::string content((std::istreambuf_iterator<char>(input)),
+                              std::istreambuf_iterator<char>());
+    if (content.size() > std::numeric_limits<uint64_t>::max()) {
+      return Status::InvalidArgument("raft snapshot file is too large");
+    }
+    AppendBE32(archive, static_cast<uint32_t>(relative_name.size()));
+    AppendBE64(archive, static_cast<uint64_t>(content.size()));
+    archive->append(relative_name);
+    archive->append(content);
+    if (archive->size() > raft::kMaxRaftMsgSize - 64) {
+      return Status::InvalidArgument("raft snapshot exceeds RPC size limit");
+    }
+  }
+  return Status::OK();
+}
+
+Status RaftServer::InstallSnapshotArchive(const raft::InstallSnapshotArgs& args) {
+  const std::filesystem::path staging =
+      std::filesystem::path(config_.data_dir) / "snapshot" /
+      ("incoming-" + std::to_string(args.meta.last_included_index));
+  Status s = ExtractSnapshotArchive(args.data, staging.string());
+  if (!s.ok()) {
+    return s;
+  }
+  s = applier_->InstallCheckpoint(staging.string());
+  std::error_code ec;
+  std::filesystem::remove_all(staging, ec);
+  return s;
 }
 
 bool RaftServer::IsLeader() const noexcept {
@@ -435,6 +633,40 @@ void RaftServer::HandleRpcConnection(platform::SocketHandle fd) {
       break;
     }
 
+    case raft::RaftMsgType::kInstallSnapshot: {
+      raft::InstallSnapshotArgs args;
+      if (!raft::DecodeInstallSnapshot(body.data(), body.size(), &args)) return;
+
+      raft::InstallSnapshotReply reply;
+      {
+        std::unique_lock<std::mutex> lk(raft_mu_);
+        reply.term = raft_node_->current_term();
+        if (args.term < reply.term) {
+          reply.success = false;
+        } else if (!raft_node_->PrepareInstallSnapshot(args)) {
+          reply.term = raft_node_->current_term();
+          reply.success = true;
+          reply.match_index = raft_node_->SnapshotMeta().last_included_index;
+        } else {
+          Status install_status = InstallSnapshotArchive(args);
+          if (install_status.ok() && raft_node_->RestoreSnapshot(args.meta)) {
+            last_applied_ = std::max(last_applied_, args.meta.last_included_index);
+            reply.success = true;
+            reply.match_index = args.meta.last_included_index;
+          } else {
+            reply.success = false;
+          }
+          reply.term = raft_node_->current_term();
+        }
+      }
+      PersistHardState();
+      std::string reply_body = raft::EncodeInstallSnapshotReply(reply);
+      std::string reply_msg = raft::EncodeMessage(
+          raft::RaftMsgType::kInstallSnapshotReply, reply_body);
+      (void)raft::WriteFull(fd, reply_msg.data(), reply_msg.size());
+      break;
+    }
+
     default:
       // Reply messages are handled by the sender side (SendRequestVote /
       // SendAppendEntries), not by the listener.
@@ -546,6 +778,72 @@ void RaftServer::SendAppendEntries(uint64_t to,
   {
     std::lock_guard<std::mutex> lk(raft_mu_);
     raft_node_->HandleAppendEntriesReply(to, reply);
+  }
+  PersistHardState();
+}
+
+void RaftServer::SendInstallSnapshot(uint64_t to,
+                                     const raft::RaftSnapshotMeta& meta) {
+  auto it = config_.peers.find(to);
+  if (it == config_.peers.end()) return;
+
+  std::string archive;
+  Status archive_status =
+      BuildSnapshotArchive(SnapshotDirectory(meta), &archive);
+  if (!archive_status.ok()) return;
+
+  raft::InstallSnapshotArgs args;
+  {
+    std::lock_guard<std::mutex> lk(raft_mu_);
+    args.term = raft_node_->current_term();
+    args.leader_id = config_.node_id;
+  }
+  args.meta = meta;
+  args.data = std::move(archive);
+
+  const std::string body = raft::EncodeInstallSnapshot(args);
+  const std::string msg = raft::EncodeMessage(
+      raft::RaftMsgType::kInstallSnapshot, body);
+
+  platform::SocketHandle fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (!platform::IsValidSocket(fd)) return;
+
+  (void)platform::SetSendTimeout(fd, 3000);
+  (void)platform::SetReceiveTimeout(fd, 3000);
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = inet_addr(it->second.host.c_str());
+  addr.sin_port = htons(it->second.raft_port);
+  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    (void)platform::CloseSocket(fd);
+    return;
+  }
+  if (raft::WriteFull(fd, msg.data(), msg.size()) < 0) {
+    (void)platform::CloseSocket(fd);
+    return;
+  }
+
+  const std::string reply_framed = raft::ReadMessage(fd);
+  (void)platform::CloseSocket(fd);
+  if (reply_framed.empty()) return;
+
+  raft::RaftMsgType reply_type;
+  std::string reply_body;
+  if (!raft::DecodeMessage(reply_framed.data(), reply_framed.size(),
+                           &reply_type, &reply_body) ||
+      reply_type != raft::RaftMsgType::kInstallSnapshotReply) {
+    return;
+  }
+
+  raft::InstallSnapshotReply reply;
+  if (!raft::DecodeInstallSnapshotReply(reply_body.data(), reply_body.size(),
+                                        &reply)) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lk(raft_mu_);
+    raft_node_->HandleInstallSnapshotReply(to, reply);
   }
   PersistHardState();
 }

@@ -17,6 +17,8 @@ enum class RaftMsgType : uint8_t {
   kRequestVoteReply = 0x02,
   kAppendEntries    = 0x03,
   kAppendEntriesReply = 0x04,
+  kInstallSnapshot = 0x05,
+  kInstallSnapshotReply = 0x06,
 };
 
 // Max message size (10 MB)
@@ -49,6 +51,15 @@ bool DecodeAppendEntries(const char* data, size_t len,
 std::string EncodeAppendEntriesReply(const AppendEntriesReply& reply);
 bool DecodeAppendEntriesReply(const char* data, size_t len,
                               AppendEntriesReply* reply);
+
+// InstallSnapshot
+std::string EncodeInstallSnapshot(const InstallSnapshotArgs& args);
+bool DecodeInstallSnapshot(const char* data, size_t len,
+                           InstallSnapshotArgs* args);
+
+std::string EncodeInstallSnapshotReply(const InstallSnapshotReply& reply);
+bool DecodeInstallSnapshotReply(const char* data, size_t len,
+                                InstallSnapshotReply* reply);
 
 // ---- Raft log command encoding (for Propose payload) ----
 

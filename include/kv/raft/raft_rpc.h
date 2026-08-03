@@ -37,5 +37,18 @@ struct AppendEntriesReply {
   uint64_t conflict_term{0};
 };
 
+struct InstallSnapshotArgs {
+  uint64_t term{0};
+  uint64_t leader_id{0};
+  RaftSnapshotMeta meta{};
+  std::string data;
+};
+
+struct InstallSnapshotReply {
+  uint64_t term{0};
+  bool success{false};
+  uint64_t match_index{0};
+};
+
 } // namespace raft
 } // namespace kv

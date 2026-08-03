@@ -18,6 +18,7 @@ class RaftLog {
   uint64_t FirstIndex() const;
   uint64_t LastIndex() const;
   uint64_t Term(uint64_t index) const;
+  RaftSnapshotMeta SnapshotMeta() const;
   std::vector<LogEntry> Entries(uint64_t low, uint64_t high) const;
 
   // 日志匹配
@@ -27,6 +28,8 @@ class RaftLog {
   void Append(const std::vector<LogEntry>& entries);
   void CommitTo(uint64_t index);
   void AppliedTo(uint64_t index);
+  bool CompactTo(const RaftSnapshotMeta& meta);
+  bool RestoreSnapshot(const RaftSnapshotMeta& meta);
 
   uint64_t commit_index() const { return commit_index_; }
   uint64_t applied() const { return applied_; }

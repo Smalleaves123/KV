@@ -34,6 +34,8 @@ struct RaftOptions {
 // 各种Raft RPC调用的发送回调，隔离网络层
 using SendRequestVoteMsgFn = std::function<void(uint64_t to, const RequestVoteArgs&)>;
 using SendAppendEntriesMsgFn = std::function<void(uint64_t to, const AppendEntriesArgs&)>;
+using SendInstallSnapshotMsgFn =
+    std::function<void(uint64_t to, const RaftSnapshotMeta&)>;
 
 class RaftNode {
  public:
@@ -46,10 +48,17 @@ class RaftNode {
   // 作为客户端处理RPC请求，生成Reply
   RequestVoteReply HandleRequestVote(const RequestVoteArgs& args);
   AppendEntriesReply HandleAppendEntries(const AppendEntriesArgs& args);
+  bool PrepareInstallSnapshot(const InstallSnapshotArgs& args);
+  bool RestoreSnapshot(const RaftSnapshotMeta& meta);
+  bool CompactSnapshot(const RaftSnapshotMeta& meta) {
+    return raft_log_->CompactTo(meta);
+  }
   
   // 处理接收到的Reply
   void HandleRequestVoteReply(uint64_t from, const RequestVoteReply& reply);
   void HandleAppendEntriesReply(uint64_t from, const AppendEntriesReply& reply);
+  void HandleInstallSnapshotReply(uint64_t from,
+                                  const InstallSnapshotReply& reply);
 
   // 状态查看
   uint64_t node_id() const { return id_; }
@@ -59,6 +68,7 @@ class RaftNode {
   uint64_t leader_id() const { return leader_id_; }
   uint64_t commit_index() const { return raft_log_->commit_index(); }
   uint64_t last_log_index() const { return raft_log_->LastIndex(); }
+  RaftSnapshotMeta SnapshotMeta() const { return raft_log_->SnapshotMeta(); }
   std::vector<std::pair<uint64_t, Progress>> Progresses() const;
   void AdvanceApplied(uint64_t index) { raft_log_->AppliedTo(index); }
 
@@ -68,6 +78,9 @@ class RaftNode {
   // 网络层发包回调设置
   void set_send_request_vote_fn(SendRequestVoteMsgFn fn) { send_rv_ = fn; }
   void set_send_append_entries_fn(SendAppendEntriesMsgFn fn) { send_ae_ = fn; }
+  void set_send_install_snapshot_fn(SendInstallSnapshotMsgFn fn) {
+    send_snapshot_ = fn;
+  }
 
  private:
   void BecomeFollower(uint64_t term, uint64_t leader_id);
@@ -106,6 +119,7 @@ class RaftNode {
   // Callbacks for networking
   SendRequestVoteMsgFn send_rv_;
   SendAppendEntriesMsgFn send_ae_;
+  SendInstallSnapshotMsgFn send_snapshot_;
 };
 
 } // namespace raft

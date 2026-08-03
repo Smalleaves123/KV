@@ -102,8 +102,8 @@ void FileRaftStorage::SaveSnapshotMeta(const RaftSnapshotMeta& meta) {
 
 void FileRaftStorage::LoadIndex() {
   index_offset_.clear();
-  first_index_ = 1;
-  last_index_ = 0;
+  first_index_ = snapshot_meta_.last_included_index + 1;
+  last_index_ = snapshot_meta_.last_included_index;
 
   std::ifstream lf(log_path_, std::ios::binary);
   if (!lf.is_open()) return;
@@ -127,8 +127,14 @@ void FileRaftStorage::LoadIndex() {
     lf.seekg(static_cast<std::streamoff>(data_len), std::ios::cur);
     if (!lf) break;
 
+    if (index <= snapshot_meta_.last_included_index) {
+      offset += 4 + 20 + data_len;
+      continue;
+    }
+
     index_offset_[index] = offset;
-    if (first_index_ == 1 && last_index_ == 0) {
+    if (first_index_ == snapshot_meta_.last_included_index + 1 &&
+        last_index_ == snapshot_meta_.last_included_index) {
       first_index_ = index;
     }
     last_index_ = index;
@@ -187,10 +193,13 @@ void FileRaftStorage::TruncatePrefix(uint64_t index) {
   }
 
   if (index > last_index_) {
-    last_index_ = 0;
-    first_index_ = 1;
-  } else {
+    last_index_ = snapshot_meta_.last_included_index;
+    first_index_ = snapshot_meta_.last_included_index + 1;
+  } else if (!index_offset_.empty()) {
     first_index_ = index;
+  } else {
+    last_index_ = snapshot_meta_.last_included_index;
+    first_index_ = snapshot_meta_.last_included_index + 1;
   }
 
   // Rewrite log file with remaining entries
@@ -234,10 +243,15 @@ void FileRaftStorage::TruncateSuffix(uint64_t index) {
   }
 
   if (index < first_index_) {
-    last_index_ = 0;
-    first_index_ = 1;
+    last_index_ = snapshot_meta_.last_included_index;
+    first_index_ = snapshot_meta_.last_included_index + 1;
   } else {
     last_index_ = index;
+  }
+
+  if (index_offset_.empty()) {
+    last_index_ = snapshot_meta_.last_included_index;
+    first_index_ = snapshot_meta_.last_included_index + 1;
   }
 
   // Truncate the file
@@ -254,6 +268,9 @@ void FileRaftStorage::TruncateSuffix(uint64_t index) {
 }
 
 void FileRaftStorage::WriteEntry(const LogEntry& entry) {
+  if (entry.index <= snapshot_meta_.last_included_index) {
+    return;
+  }
   std::ofstream lf(log_path_, std::ios::binary | std::ios::app);
   if (!lf.is_open()) return;
 
@@ -274,7 +291,8 @@ void FileRaftStorage::WriteEntry(const LogEntry& entry) {
   lf.close();
 
   index_offset_[entry.index] = offset;
-  if (first_index_ == 1 && last_index_ == 0) {
+  if (first_index_ == snapshot_meta_.last_included_index + 1 &&
+      last_index_ == snapshot_meta_.last_included_index) {
     first_index_ = entry.index;
   }
   if (entry.index > last_index_) {

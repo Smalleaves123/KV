@@ -307,6 +307,54 @@ TEST_F(RaftServerIntegrationTest, LeaderCreatesReopenableLocalSnapshot) {
   ASSERT_TRUE(checkpoint_db->Close().ok());
 }
 
+TEST_F(RaftServerIntegrationTest, LaggingFollowerInstallsCompactedSnapshot) {
+  TestNode* leader = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        for (auto& node : nodes_) {
+          if (node.raft->IsLeader()) {
+            leader = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  ASSERT_NE(leader, nullptr);
+
+  TestNode* lagging = nullptr;
+  for (auto& node : nodes_) {
+    if (&node != leader) {
+      lagging = &node;
+      break;
+    }
+  }
+  ASSERT_NE(lagging, nullptr);
+  ASSERT_TRUE(lagging->raft->Stop().ok());
+  lagging->raft.reset();
+
+  ASSERT_TRUE(leader->raft->Propose(
+                  raft::EncodePutCmd("snapshot-catch-up", "installed"))
+                  .ok());
+  ASSERT_TRUE(leader->raft->CreateSnapshot().ok());
+  const RaftStats snapshot_stats = leader->raft->GetStats();
+  ASSERT_GT(snapshot_stats.snapshot_last_included_index, 0U);
+  EXPECT_EQ(snapshot_stats.last_log_index,
+            snapshot_stats.snapshot_last_included_index);
+
+  ASSERT_TRUE(StartNode(lagging).ok());
+  ASSERT_TRUE(WaitUntil(
+      [&]() {
+        std::string value;
+        return lagging->db->Get(ReadOptions{}, "snapshot-catch-up", &value)
+                   .ok() &&
+               value == "installed";
+      },
+      std::chrono::seconds(8)));
+  EXPECT_GE(lagging->raft->GetStats().snapshot_last_included_index,
+            snapshot_stats.snapshot_last_included_index);
+}
+
 TEST_F(RaftServerIntegrationTest, NewLeaderCommitsAfterOldLeaderRestarts) {
   TestNode* old_leader = nullptr;
   ASSERT_TRUE(WaitUntil(

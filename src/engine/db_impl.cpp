@@ -118,6 +118,15 @@ Status DBImpl::Init() {
     return Status::AlreadyExists("db is already open");
   }
 
+  shutting_down_ = false;
+  background_error_ = Status::OK();
+  immutable_mems_.clear();
+  memtable_ = std::make_unique<MemTable>();
+  latest_key_seq_.clear();
+  active_transactions_.clear();
+  active_snapshots_.clear();
+  owned_snapshots_.clear();
+
   using_segmented_wal_ = options_.wal_path.empty() && options_.wal_segmented;
   wal_path_ = using_segmented_wal_ ? std::string{} : BuildWalPath(options_);
   wal_dir_ = using_segmented_wal_ ? BuildWalDirPath(options_) : std::string{};
@@ -668,6 +677,104 @@ Status DBImpl::CreateCheckpoint(const std::string& checkpoint_dir) {
     return Status::IOError("failed to publish checkpoint: " + checkpoint_dir);
   }
   return Status::OK();
+}
+
+Status DBImpl::InstallCheckpoint(const std::string& checkpoint_dir) {
+  if (checkpoint_dir.empty()) {
+    return Status::InvalidArgument("checkpoint directory is empty");
+  }
+
+  const std::filesystem::path source(checkpoint_dir);
+  const std::filesystem::path source_manifest = source / "MANIFEST";
+  const std::filesystem::path source_sst = source / "sst";
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(source_manifest, ec) || ec ||
+      !std::filesystem::is_directory(source_sst, ec) || ec) {
+    return Status::Corruption("checkpoint is incomplete: " + checkpoint_dir);
+  }
+
+  Status close_status = Close();
+  if (!close_status.ok()) {
+    return close_status;
+  }
+
+  Manifest source_manifest_reader;
+  Status s = source_manifest_reader.Open(source_manifest.string(), false);
+  if (!s.ok()) {
+    return s;
+  }
+  std::vector<ManifestFileMeta> files;
+  s = source_manifest_reader.Recover(&files);
+  Status source_close_status = source_manifest_reader.Close();
+  if (s.ok() && !source_close_status.ok()) {
+    s = source_close_status;
+  }
+  if (!s.ok()) {
+    return s;
+  }
+
+  const std::filesystem::path target_sst(sst_dir_);
+  const std::filesystem::path target_manifest(manifest_path_);
+  if (target_sst.empty() || target_manifest.empty()) {
+    return Status::InvalidArgument("database paths are not initialized");
+  }
+
+  std::filesystem::remove_all(target_sst, ec);
+  if (ec) {
+    return Status::IOError("failed to clear local sst directory");
+  }
+  std::filesystem::create_directories(target_sst, ec);
+  if (ec) {
+    return Status::IOError("failed to create local sst directory");
+  }
+  std::filesystem::remove(target_manifest, ec);
+  if (ec) {
+    return Status::IOError("failed to clear local manifest");
+  }
+
+  Manifest target_manifest_writer;
+  s = target_manifest_writer.Open(target_manifest.string(), true);
+  if (!s.ok()) {
+    return s;
+  }
+  for (const auto& file : files) {
+    const std::filesystem::path destination =
+        target_sst / std::filesystem::path(file.file_path).filename();
+    std::filesystem::copy_file(file.file_path, destination,
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+    if (ec) {
+      (void)target_manifest_writer.Close();
+      return Status::IOError("failed to copy checkpoint sst");
+    }
+
+    ManifestFileMeta target_file = file;
+    target_file.file_path = destination.string();
+    s = target_manifest_writer.AddFile(target_file);
+    if (!s.ok()) {
+      (void)target_manifest_writer.Close();
+      return s;
+    }
+  }
+  s = target_manifest_writer.Sync();
+  Status manifest_close_status = target_manifest_writer.Close();
+  if (s.ok() && !manifest_close_status.ok()) {
+    s = manifest_close_status;
+  }
+  if (!s.ok()) {
+    return s;
+  }
+
+  if (using_segmented_wal_) {
+    std::filesystem::remove_all(wal_dir_, ec);
+  } else {
+    std::filesystem::remove(wal_path_, ec);
+  }
+  if (ec) {
+    return Status::IOError("failed to clear local wal");
+  }
+
+  return Init();
 }
 
 Status DBImpl::GetCacheStats(CacheStats* stats) const {

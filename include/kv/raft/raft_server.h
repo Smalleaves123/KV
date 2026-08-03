@@ -84,8 +84,8 @@ class RaftServer {
   Status Propose(const std::string& cmd);
   Status LinearizableReadBarrier();
 
-  // Persist a local DB checkpoint at the latest applied Raft index. This does
-  // not yet compact the Raft log or replicate the snapshot to peers.
+  // Persist a local DB checkpoint at the latest applied Raft index and compact
+  // the local Raft log up to that index.
   Status CreateSnapshot();
 
   bool IsLeader() const noexcept;
@@ -109,6 +109,12 @@ class RaftServer {
   // Send RPCs to peers (called by RaftNode callbacks)
   void SendRequestVote(uint64_t to, const raft::RequestVoteArgs& args);
   void SendAppendEntries(uint64_t to, const raft::AppendEntriesArgs& args);
+  void SendInstallSnapshot(uint64_t to, const raft::RaftSnapshotMeta& meta);
+
+  static Status BuildSnapshotArchive(const std::string& snapshot_dir,
+                                     std::string* archive);
+  Status InstallSnapshotArchive(const raft::InstallSnapshotArgs& args);
+  std::string SnapshotDirectory(const raft::RaftSnapshotMeta& meta) const;
 
   // Serialization helpers for RPC messages
   static std::string EncodeMessage(uint8_t type, const std::string& body);

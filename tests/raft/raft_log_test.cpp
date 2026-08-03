@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include "kv/raft/raft_storage_impl.h"
+#include "kv/raft/raft_rpc_codec.h"
 
 namespace kv {
 namespace raft {
@@ -19,6 +20,12 @@ class MemStorage : public RaftStorage {
 
   void SaveHardState(const HardState& state) override {
     hs_ = state;
+  }
+
+  RaftSnapshotMeta SnapshotMeta() const override { return snapshot_meta_; }
+
+  void SaveSnapshotMeta(const RaftSnapshotMeta& meta) override {
+    snapshot_meta_ = meta;
   }
 
   std::vector<LogEntry> Entries(uint64_t low, uint64_t high) const override {
@@ -40,12 +47,12 @@ class MemStorage : public RaftStorage {
   }
 
   uint64_t FirstIndex() const override {
-    if (logs_.empty()) return 1;
+    if (logs_.empty()) return snapshot_meta_.last_included_index + 1;
     return logs_.begin()->first;
   }
 
   uint64_t LastIndex() const override {
-    if (logs_.empty()) return 0;
+    if (logs_.empty()) return snapshot_meta_.last_included_index;
     return logs_.rbegin()->first;
   }
 
@@ -69,6 +76,7 @@ class MemStorage : public RaftStorage {
 
  private:
   HardState hs_;
+  RaftSnapshotMeta snapshot_meta_;
   std::map<uint64_t, LogEntry> logs_;
 };
 
@@ -231,6 +239,35 @@ TEST(RaftLogTest, CommitToBoundary) {
   EXPECT_EQ(log.commit_index(), 1u);
 }
 
+TEST(RaftLogTest, CompactionKeepsSnapshotBoundaryTerm) {
+  auto storage = std::make_shared<MemStorage>();
+  RaftLog log(storage);
+  log.Append({{1, 1, "a"}, {1, 2, "b"}, {2, 3, "c"}});
+  log.CommitTo(2);
+  log.AppliedTo(2);
+
+  ASSERT_TRUE(log.CompactTo(RaftSnapshotMeta{2, 1}));
+  EXPECT_EQ(log.FirstIndex(), 3u);
+  EXPECT_EQ(log.LastIndex(), 3u);
+  EXPECT_EQ(log.Term(2), 1u);
+  EXPECT_TRUE(log.MatchLog(2, 1));
+  EXPECT_TRUE(log.Entries(1, 3).empty());
+  ASSERT_EQ(log.Entries(3, 4).size(), 1u);
+  EXPECT_EQ(log.Entries(3, 4)[0].data, "c");
+}
+
+TEST(RaftLogTest, RestoreSnapshotDropsOlderEntries) {
+  auto storage = std::make_shared<MemStorage>();
+  RaftLog log(storage);
+  log.Append({{1, 1, "a"}, {1, 2, "b"}, {1, 3, "c"}});
+
+  ASSERT_TRUE(log.RestoreSnapshot(RaftSnapshotMeta{5, 3}));
+  EXPECT_EQ(log.FirstIndex(), 6u);
+  EXPECT_EQ(log.LastIndex(), 5u);
+  EXPECT_EQ(log.Term(5), 3u);
+  EXPECT_TRUE(log.Entries(1, 6).empty());
+}
+
 TEST(FileRaftStorageTest, SnapshotMetaPersistsAcrossReopen) {
   const std::string path = "test_tmp/raft/snapshot_meta_persistence";
   std::error_code ec;
@@ -252,6 +289,33 @@ TEST(FileRaftStorageTest, SnapshotMetaPersistsAcrossReopen) {
   }
 
   std::filesystem::remove_all(path, ec);
+}
+
+TEST(RaftRpcCodecTest, InstallSnapshotRoundTrip) {
+  InstallSnapshotArgs args;
+  args.term = 4;
+  args.leader_id = 2;
+  args.meta = RaftSnapshotMeta{17, 3};
+  args.data = "checkpoint-bytes";
+
+  const std::string body = EncodeInstallSnapshot(args);
+  InstallSnapshotArgs decoded;
+  ASSERT_TRUE(DecodeInstallSnapshot(body.data(), body.size(), &decoded));
+  EXPECT_EQ(decoded.term, args.term);
+  EXPECT_EQ(decoded.leader_id, args.leader_id);
+  EXPECT_EQ(decoded.meta.last_included_index,
+            args.meta.last_included_index);
+  EXPECT_EQ(decoded.meta.last_included_term, args.meta.last_included_term);
+  EXPECT_EQ(decoded.data, args.data);
+
+  InstallSnapshotReply reply{4, true, 17};
+  const std::string reply_body = EncodeInstallSnapshotReply(reply);
+  InstallSnapshotReply decoded_reply;
+  ASSERT_TRUE(DecodeInstallSnapshotReply(reply_body.data(), reply_body.size(),
+                                          &decoded_reply));
+  EXPECT_EQ(decoded_reply.term, 4U);
+  EXPECT_TRUE(decoded_reply.success);
+  EXPECT_EQ(decoded_reply.match_index, 17U);
 }
 
 }  // namespace

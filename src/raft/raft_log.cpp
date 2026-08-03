@@ -18,14 +18,23 @@ uint64_t RaftLog::FirstIndex() const {
 }
 
 uint64_t RaftLog::LastIndex() const {
-  return storage_->LastIndex();
+  return std::max(storage_->LastIndex(), storage_->SnapshotMeta().last_included_index);
 }
 
 uint64_t RaftLog::Term(uint64_t index) const {
-  if (index > LastIndex() || index < FirstIndex() - 1) {
+  const RaftSnapshotMeta snapshot = storage_->SnapshotMeta();
+  if (index == snapshot.last_included_index) {
+    return snapshot.last_included_term;
+  }
+  if (index > LastIndex() ||
+      (index < FirstIndex() && index != snapshot.last_included_index)) {
     return 0;
   }
   return storage_->Term(index);
+}
+
+RaftSnapshotMeta RaftLog::SnapshotMeta() const {
+  return storage_->SnapshotMeta();
 }
 
 std::vector<LogEntry> RaftLog::Entries(uint64_t low, uint64_t high) const {
@@ -47,8 +56,12 @@ void RaftLog::Append(const std::vector<LogEntry>& entries) {
   if (entries.empty()) {
     return;
   }
-  
+
+  const RaftSnapshotMeta snapshot = SnapshotMeta();
   uint64_t first_append_index = entries[0].index;
+  if (first_append_index <= snapshot.last_included_index) {
+    return;
+  }
   if (first_append_index <= LastIndex()) {
     // 存在冲突，截断后缀
     storage_->TruncateSuffix(first_append_index - 1);
@@ -73,6 +86,46 @@ void RaftLog::AppliedTo(uint64_t index) {
   if (applied_ < index && index <= commit_index_) {
     applied_ = index;
   }
+}
+
+bool RaftLog::CompactTo(const RaftSnapshotMeta& meta) {
+  if (meta.last_included_index == 0 || meta.last_included_term == 0) {
+    return false;
+  }
+  const RaftSnapshotMeta current = SnapshotMeta();
+  if (meta.last_included_index <= current.last_included_index) {
+    return meta.last_included_index == current.last_included_index &&
+           meta.last_included_term == current.last_included_term;
+  }
+  if (meta.last_included_index > LastIndex() ||
+      Term(meta.last_included_index) != meta.last_included_term) {
+    return false;
+  }
+
+  storage_->SaveSnapshotMeta(meta);
+  storage_->TruncatePrefix(meta.last_included_index + 1);
+  commit_index_ = std::max(commit_index_, meta.last_included_index);
+  applied_ = std::max(applied_, meta.last_included_index);
+  return true;
+}
+
+bool RaftLog::RestoreSnapshot(const RaftSnapshotMeta& meta) {
+  if (meta.last_included_index == 0 || meta.last_included_term == 0) {
+    return false;
+  }
+  const RaftSnapshotMeta current = SnapshotMeta();
+  if (meta.last_included_index < current.last_included_index) {
+    return false;
+  }
+  if (meta.last_included_index == current.last_included_index) {
+    return meta.last_included_term == current.last_included_term;
+  }
+
+  storage_->SaveSnapshotMeta(meta);
+  storage_->TruncatePrefix(meta.last_included_index + 1);
+  commit_index_ = std::max(commit_index_, meta.last_included_index);
+  applied_ = std::max(applied_, meta.last_included_index);
+  return true;
 }
 
 } // namespace raft

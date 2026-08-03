@@ -60,6 +60,8 @@ bool DecodeMessage(const char* data, size_t len,
     case 0x02: *type = RaftMsgType::kRequestVoteReply; break;
     case 0x03: *type = RaftMsgType::kAppendEntries; break;
     case 0x04: *type = RaftMsgType::kAppendEntriesReply; break;
+    case 0x05: *type = RaftMsgType::kInstallSnapshot; break;
+    case 0x06: *type = RaftMsgType::kInstallSnapshotReply; break;
     default: return false;
   }
 
@@ -193,6 +195,51 @@ bool DecodeAppendEntriesReply(const char* data, size_t len,
   if (len >= 33) {
     reply->conflict_term = PopBE64(data + 25);
   }
+  return true;
+}
+
+// ======================== InstallSnapshot ========================
+
+std::string EncodeInstallSnapshot(const InstallSnapshotArgs& args) {
+  std::string out;
+  out.reserve(36 + args.data.size());
+  PushBE64(&out, args.term);
+  PushBE64(&out, args.leader_id);
+  PushBE64(&out, args.meta.last_included_index);
+  PushBE64(&out, args.meta.last_included_term);
+  PushBE32(&out, static_cast<uint32_t>(args.data.size()));
+  out.append(args.data);
+  return out;
+}
+
+bool DecodeInstallSnapshot(const char* data, size_t len,
+                           InstallSnapshotArgs* args) {
+  if (len < 36) return false;
+  args->term = PopBE64(data);
+  args->leader_id = PopBE64(data + 8);
+  args->meta.last_included_index = PopBE64(data + 16);
+  args->meta.last_included_term = PopBE64(data + 24);
+  const uint32_t data_len = PopBE32(data + 32);
+  if (data_len > len - 36) return false;
+  args->data.assign(data + 36, data_len);
+  return true;
+}
+
+std::string EncodeInstallSnapshotReply(const InstallSnapshotReply& reply) {
+  std::string out;
+  out.reserve(17);
+  PushBE64(&out, reply.term);
+  PushBE8(&out, reply.success ? 1 : 0);
+  PushBE64(&out, reply.match_index);
+  return out;
+}
+
+bool DecodeInstallSnapshotReply(const char* data, size_t len,
+                                InstallSnapshotReply* reply) {
+  if (len < 17) return false;
+  reply->term = PopBE64(data);
+  reply->success = data[8] != 0;
+  reply->match_index = PopBE64(data + 9);
   return true;
 }
 

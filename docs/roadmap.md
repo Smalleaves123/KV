@@ -85,9 +85,10 @@ engine into a more complete storage-system project.
 
 ## Raft And Cluster
 
-- Persistent snapshots and InstallSnapshot RPC.
+- Persistent snapshots, InstallSnapshot RPC, and local log compaction are now
+  implemented for bounded small-cluster archives.
 - Membership changes.
-- Log compaction.
+- Resumable/chunked snapshot transfer.
 - Better leader transfer and failover tests.
 - Client-side routing helper.
 - Operational docs for running a local three-node cluster.

@@ -28,6 +28,9 @@ public:
   virtual Status CreateCheckpoint(const std::string&) {
     return Status::InvalidArgument("state machine does not support checkpoints");
   }
+  virtual Status InstallCheckpoint(const std::string&) {
+    return Status::InvalidArgument("state machine does not support checkpoint install");
+  }
 };
 
 } // namespace kv

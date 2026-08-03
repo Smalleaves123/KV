@@ -123,12 +123,20 @@ void RaftNode::BcastAppendEntries() {
 }
 
 void RaftNode::SendAppendEntries(uint64_t to) {
+  if (progresses_.find(to) == progresses_.end()) return;
+  uint64_t next_index = progresses_[to].next;
+  const RaftSnapshotMeta snapshot = raft_log_->SnapshotMeta();
+  if (snapshot.last_included_index > 0 &&
+      next_index <= snapshot.last_included_index) {
+    if (send_snapshot_) {
+      send_snapshot_(to, snapshot);
+    }
+    return;
+  }
+
   AppendEntriesArgs args;
   args.term = term_;
   args.leader_id = id_;
-  
-  if (progresses_.find(to) == progresses_.end()) return;
-  uint64_t next_index = progresses_[to].next;
   
   args.prev_log_index = next_index - 1;
   args.prev_log_term = raft_log_->Term(args.prev_log_index);
@@ -244,6 +252,19 @@ AppendEntriesReply RaftNode::HandleAppendEntries(const AppendEntriesArgs& args) 
   return reply;
 }
 
+bool RaftNode::PrepareInstallSnapshot(const InstallSnapshotArgs& args) {
+  if (args.term < term_) {
+    return false;
+  }
+  BecomeFollower(args.term, args.leader_id);
+  return args.meta.last_included_index >
+         raft_log_->SnapshotMeta().last_included_index;
+}
+
+bool RaftNode::RestoreSnapshot(const RaftSnapshotMeta& meta) {
+  return raft_log_->RestoreSnapshot(meta);
+}
+
 void RaftNode::HandleRequestVoteReply(uint64_t from, const RequestVoteReply& reply) {
   if (role_ != RaftRole::kCandidate) {
     return;
@@ -307,6 +328,27 @@ void RaftNode::HandleAppendEntriesReply(uint64_t from, const AppendEntriesReply&
       progresses_[from].next--;
       SendAppendEntries(from);
     }
+  }
+}
+
+void RaftNode::HandleInstallSnapshotReply(
+    uint64_t from, const InstallSnapshotReply& reply) {
+  if (role_ != RaftRole::kLeader) {
+    return;
+  }
+
+  if (reply.term > term_) {
+    BecomeFollower(reply.term, 0);
+    return;
+  }
+
+  auto it = progresses_.find(from);
+  if (it == progresses_.end()) return;
+
+  if (reply.success) {
+    it->second.match = std::max(it->second.match, reply.match_index);
+    it->second.next = it->second.match + 1;
+    SendAppendEntries(from);
   }
 }
 
