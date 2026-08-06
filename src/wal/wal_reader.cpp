@@ -74,6 +74,11 @@ Status WALReader::ReadNext(LogRecord* record) {
 
   const uint32_t key_size = DecodeFixed32(header.data() + 13);
   const uint32_t value_size = DecodeFixed32(header.data() + 17);
+  if (key_size > LogRecordCodec::kMaxPayloadSize ||
+      value_size > LogRecordCodec::kMaxPayloadSize ||
+      key_size > LogRecordCodec::kMaxPayloadSize - value_size) {
+    return Status::Corruption("wal record payload is too large");
+  }
   const size_t payload_size =
       static_cast<size_t>(key_size) + static_cast<size_t>(value_size);
 

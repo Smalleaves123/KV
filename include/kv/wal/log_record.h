@@ -27,6 +27,7 @@ class LogRecordCodec {
  public:
   // | checksum:4 | type:1 | seq:8 | key_size:4 | value_size:4 | key | value |
   static constexpr size_t kHeaderSize = 4 + 1 + 8 + 4 + 4;
+  static constexpr size_t kMaxPayloadSize = 64 * 1024 * 1024;
 
   static Status Encode(const LogRecord& record, std::string* out);
 

@@ -1,6 +1,7 @@
 #include "kv/version/manifest.h"
 
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -181,6 +182,38 @@ TEST(ManifestTest, RecoverIgnoresPartialTrailingAddFileRecord) {
   EXPECT_EQ(files[0].file_number, f1.file_number);
   EXPECT_EQ(files[0].file_path, f1.file_path);
   EXPECT_EQ(files[0].max_seq, f1.max_seq);
+}
+
+TEST(ManifestTest, RejectsOversizedPathBeforeAllocation) {
+  const std::string path = MakeManifestPath("oversized_path");
+  RemovePathIfExists(path);
+
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(out.is_open());
+  const char add_tag = 1;
+  out.write(&add_tag, 1);
+  auto write_u64 = [&out](uint64_t value) {
+    for (size_t i = 0; i < sizeof(uint64_t); ++i) {
+      const char byte = static_cast<char>((value >> (8 * i)) & 0xFF);
+      out.write(&byte, 1);
+    }
+  };
+  auto write_u32 = [&out](uint32_t value) {
+    for (size_t i = 0; i < sizeof(uint32_t); ++i) {
+      const char byte = static_cast<char>((value >> (8 * i)) & 0xFF);
+      out.write(&byte, 1);
+    }
+  };
+  write_u64(1);
+  write_u64(1);
+  write_u32(static_cast<uint32_t>(Manifest::kMaxFilePathSize + 1));
+  out.close();
+
+  Manifest manifest;
+  ASSERT_TRUE(manifest.Open(path, false).ok());
+  std::vector<ManifestFileMeta> files;
+  Status s = manifest.Recover(&files);
+  EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
 }  // namespace

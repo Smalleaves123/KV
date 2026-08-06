@@ -140,5 +140,23 @@ TEST(RequestCodecTest, MalformedFramesReturnErrorWithoutConsumption) {
   }
 }
 
+TEST(RequestCodecTest, RejectsOversizedAndOverlongRequests) {
+  const std::vector<std::string> oversized = {
+      "*" + std::to_string(RequestCodec::kMaxArguments + 1) + "\r\n",
+      "*1\r\n$" +
+          std::to_string(RequestCodec::kMaxBulkStringBytes + 1) + "\r\n",
+      std::string(RequestCodec::kMaxLineBytes + 1, 'x')};
+
+  for (const std::string& frame : oversized) {
+    std::string buffer = frame;
+    std::vector<std::string> tokens;
+    std::string error;
+    EXPECT_EQ(RequestCodec::TryDecode(&buffer, &tokens, &error),
+              RequestDecodeResult::kError);
+    EXPECT_FALSE(error.empty());
+    EXPECT_TRUE(tokens.empty());
+  }
+}
+
 }  // namespace
 }  // namespace kv::net

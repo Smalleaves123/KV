@@ -1941,7 +1941,8 @@ Status DBImpl::CompactSSTFilesLocked() {
       sst_dir_ + "/" + BuildSSTFileName(next_file_number_);
   const uint64_t file_number = next_file_number_;
 
-  TableBuilder builder(sst_path);
+  TableBuilder builder(sst_path, options_.sstable_block_size_bytes,
+                       options_.bloom_bits_per_key);
   for (const auto& [key, entry] : latest) {
     Status s = builder.Add(key, entry.seq, entry.type, entry.expires_at_ms,
                            entry.value);

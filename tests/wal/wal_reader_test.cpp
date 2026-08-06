@@ -1,70 +1,76 @@
-#include "kv/engine/recovery.h"
-
-#include <algorithm>
-#include <cstdint>
-
-#include "kv/memtable/memtable.h"
 #include "kv/wal/log_record.h"
 #include "kv/wal/wal_reader.h"
+#include "kv/wal/wal_writer.h"
+
+#include "gtest/gtest.h"
+#include <cstdio>
+#include <fstream>
+#include <sstream>
 
 namespace kv {
+namespace {
 
-Status Recovery::ReplayWAL(const std::string& wal_path, MemTable* memtable) {
-  return ReplayWAL(wal_path, memtable, nullptr);
+std::string MakeTestPath(const std::string& name) {
+  static int counter = 0;
+  std::ostringstream oss;
+  oss << "test_tmp/wal/reader_" << name << "_" << ++counter << ".log";
+  return oss.str();
 }
 
-Status Recovery::ReplayWAL(const std::string& wal_path,
-                           MemTable* memtable,
-                           uint64_t* max_seq) {
-  if (memtable == nullptr) {
-    return Status::InvalidArgument("memtable is null");
+TEST(WALReaderTest, ReadsRecordsAndTracksOffset) {
+  const std::string path = MakeTestPath("records");
+  std::remove(path.c_str());
+
+  {
+    WALWriter writer;
+    ASSERT_TRUE(writer.Open(path, false).ok());
+    ASSERT_TRUE(writer.AppendPut(1, "key", "value").ok());
+    ASSERT_TRUE(writer.AppendDelete(2, "key").ok());
+    ASSERT_TRUE(writer.Close().ok());
   }
 
   WALReader reader;
-  Status s = reader.Open(wal_path);
-  if (!s.ok()) {
-    return s;
-  }
+  ASSERT_TRUE(reader.Open(path).ok());
+  LogRecord record;
+  ASSERT_TRUE(reader.ReadNext(&record).ok());
+  EXPECT_EQ(record.type, LogRecordType::kPut);
+  EXPECT_EQ(record.key, "key");
+  EXPECT_EQ(record.value, "value");
+  EXPECT_GT(reader.offset(), 0U);
 
-  uint64_t local_max_seq = 0;
-
-  while (true) {
-    LogRecord record;
-    s = reader.ReadNext(&record);
-
-    if (s.ok()) {
-      if (record.type == LogRecordType::kPut) {
-        s = memtable->Put(record.seq, record.key, record.value);
-      } else if (record.type == LogRecordType::kDelete) {
-        s = memtable->Delete(record.seq, record.key);
-      } else {
-        s = Status::Corruption("unknown log record type during recovery");
-      }
-
-      if (!s.ok()) {
-        reader.Close();
-        return s;
-      }
-
-      local_max_seq = std::max(local_max_seq, record.seq);
-      continue;
-    }
-
-    if (s.IsNotFound()) {
-      break;
-    }
-
-    reader.Close();
-    return s;
-  }
-
-  reader.Close();
-
-  if (max_seq != nullptr) {
-    *max_seq = local_max_seq;
-  }
-
-  return Status::OK();
+  const uint64_t first_offset = reader.offset();
+  ASSERT_TRUE(reader.ReadNext(&record).ok());
+  EXPECT_EQ(record.type, LogRecordType::kDelete);
+  EXPECT_GT(reader.offset(), first_offset);
+  EXPECT_TRUE(reader.ReadNext(&record).IsNotFound());
+  ASSERT_TRUE(reader.Close().ok());
 }
 
-}  // namespace kv
+TEST(WALReaderTest, RejectsOversizedPayloadHeaderBeforeAllocation) {
+  const std::string path = MakeTestPath("oversized");
+  std::remove(path.c_str());
+
+  std::string header(LogRecordCodec::kHeaderSize, '\0');
+  header[4] = static_cast<char>(LogRecordType::kPut);
+  auto put32 = [&header](size_t offset, uint32_t value) {
+    for (size_t i = 0; i < sizeof(uint32_t); ++i) {
+      header[offset + i] = static_cast<char>((value >> (8 * i)) & 0xFF);
+    }
+  };
+  put32(13, static_cast<uint32_t>(LogRecordCodec::kMaxPayloadSize));
+  put32(17, 1);
+
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(out.is_open());
+  out.write(header.data(), static_cast<std::streamsize>(header.size()));
+  out.close();
+
+  WALReader reader;
+  ASSERT_TRUE(reader.Open(path).ok());
+  LogRecord record;
+  Status s = reader.ReadNext(&record);
+  EXPECT_TRUE(s.IsCorruption()) << s.ToString();
+}
+
+} // namespace
+} // namespace kv

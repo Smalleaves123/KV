@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <string>
@@ -17,6 +18,8 @@ struct ManifestFileMeta {
 
 class Manifest {
  public:
+  static constexpr size_t kMaxFilePathSize = 4096;
+
   Manifest();
   ~Manifest();
 

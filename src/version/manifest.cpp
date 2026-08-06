@@ -135,6 +135,9 @@ Status Manifest::AddFile(const ManifestFileMeta& file_meta) {
   if (file_meta.file_path.empty()) {
     return Status::InvalidArgument("manifest file path is empty");
   }
+  if (file_meta.file_path.size() > Manifest::kMaxFilePathSize) {
+    return Status::InvalidArgument("manifest file path is too long");
+  }
 
   std::string record;
   record.reserve(1 + 8 + 8 + 4 + file_meta.file_path.size());
@@ -248,6 +251,9 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
       const uint32_t path_len = DecodeFixed32(header.data() + 16);
       if (path_len == 0) {
         return Status::Corruption("manifest add-file path is empty");
+      }
+      if (path_len > Manifest::kMaxFilePathSize) {
+        return Status::Corruption("manifest add-file path is too long");
       }
 
       meta.file_path.assign(path_len, '\0');

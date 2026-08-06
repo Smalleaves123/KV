@@ -46,7 +46,8 @@ class Server {
 
   Status Start(uint16_t port, DB* db, ClusterManager* cluster_manager = nullptr,
                const std::string& requirepass = "",
-               RaftServer* raft_server = nullptr);
+               RaftServer* raft_server = nullptr,
+               const std::string& bind_address = "127.0.0.1");
   Status Stop();
 
   bool IsRunning() const noexcept;
@@ -55,7 +56,7 @@ class Server {
   bool GetRaftStats(RaftStats* stats) const noexcept;
 
  private:
-  Status SetupListenSocket(uint16_t port);
+  Status SetupListenSocket(uint16_t port, const std::string& bind_address);
   void AcceptLoop(DB* db, ClusterManager* cluster_manager);
   static void HandleClient(platform::SocketHandle client_fd,
                            DB* db,

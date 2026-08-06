@@ -43,7 +43,8 @@ Server::~Server() {
 }
 
 Status Server::Start(uint16_t port, DB* db, ClusterManager* cluster_manager,
-                     const std::string& requirepass, RaftServer* raft_server) {
+                     const std::string& requirepass, RaftServer* raft_server,
+                     const std::string& bind_address) {
   if (db == nullptr) {
     return Status::InvalidArgument("db is null");
   }
@@ -55,7 +56,7 @@ Status Server::Start(uint16_t port, DB* db, ClusterManager* cluster_manager,
     return Status::IOError("failed to initialize socket runtime");
   }
 
-  Status s = SetupListenSocket(port);
+  Status s = SetupListenSocket(port, bind_address);
   if (!s.ok()) {
     socket_runtime_.Stop();
     return s;
@@ -126,7 +127,8 @@ bool Server::GetRaftStats(RaftStats* stats) const noexcept {
   return true;
 }
 
-Status Server::SetupListenSocket(uint16_t port) {
+Status Server::SetupListenSocket(uint16_t port,
+                                 const std::string& bind_address) {
   const platform::SocketHandle fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (!platform::IsValidSocket(fd)) {
     const int error = platform::LastSocketError();
@@ -138,7 +140,12 @@ Status Server::SetupListenSocket(uint16_t port) {
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  if (bind_address.empty() ||
+      ::inet_pton(AF_INET, bind_address.c_str(), &addr.sin_addr) != 1) {
+    (void)platform::CloseSocket(fd);
+    return Status::InvalidArgument("invalid server bind address: " +
+                                   bind_address);
+  }
   addr.sin_port = htons(port);
 
   if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {

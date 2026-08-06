@@ -366,6 +366,8 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
     if (section == Section::kServer) {
       if (key == "port") {
         ParseIntValue(value, &cfg.server_port);
+      } else if (key == "bind_address") {
+        cfg.bind_address = UnquoteScalar(value);
       } else if (key == "metrics_port") {
         const int port = ParseOptionalPort(value.c_str());
         if (port >= 0) cfg.metrics_port = port;

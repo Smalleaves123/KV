@@ -65,6 +65,9 @@ Status Connection::ReadLine(std::string* line) {
     }
 
     read_buffer_.append(buf, static_cast<size_t>(n));
+    if (read_buffer_.size() > RequestCodec::kMaxLineBytes) {
+      return Status::InvalidArgument("line request is too large");
+    }
     if (LineCodec::TryDecodeLine(&read_buffer_, line)) {
       return Status::OK();
     }

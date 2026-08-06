@@ -65,6 +65,8 @@ target_include_directories(kv_engine_test
 )
 
 add_executable(kv_sstable_test
+  sstable/block_test.cpp
+  sstable/table_builder_test.cpp
   sstable/table_reader_test.cpp
 )
 

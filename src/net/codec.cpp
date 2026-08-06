@@ -65,12 +65,24 @@ RequestDecodeResult RequestCodec::TryDecode(
   if (buffer->empty()) {
     return RequestDecodeResult::kNeedMore;
   }
+  if (buffer->size() > RequestCodec::kMaxRequestBytes) {
+    if (error != nullptr) *error = "request is too large";
+    return RequestDecodeResult::kError;
+  }
 
   if ((*buffer)[0] != '*') {
     std::string line;
     const size_t newline = buffer->find('\n');
     if (newline == std::string::npos) {
+      if (buffer->size() > RequestCodec::kMaxLineBytes) {
+        if (error != nullptr) *error = "line request is too large";
+        return RequestDecodeResult::kError;
+      }
       return RequestDecodeResult::kNeedMore;
+    }
+    if (newline > RequestCodec::kMaxLineBytes) {
+      if (error != nullptr) *error = "line request is too large";
+      return RequestDecodeResult::kError;
     }
     line = buffer->substr(0, newline);
     if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -101,6 +113,10 @@ RequestDecodeResult RequestCodec::TryDecode(
           if (error != nullptr) *error = "invalid RESP array length";
           return RequestDecodeResult::kError;
         }
+        if (static_cast<uint64_t>(count) > RequestCodec::kMaxArguments) {
+          if (error != nullptr) *error = "too many RESP arguments";
+          return RequestDecodeResult::kError;
+        }
         state = ParseState::kBulkLen;
         if (count == 0) {
           buffer->erase(0, pos);
@@ -127,6 +143,11 @@ RequestDecodeResult RequestCodec::TryDecode(
         }
         if (static_cast<uint64_t>(bulk_len) >
             std::numeric_limits<size_t>::max()) {
+          if (error != nullptr) *error = "RESP bulk string is too large";
+          return RequestDecodeResult::kError;
+        }
+        if (static_cast<uint64_t>(bulk_len) >
+            RequestCodec::kMaxBulkStringBytes) {
           if (error != nullptr) *error = "RESP bulk string is too large";
           return RequestDecodeResult::kError;
         }

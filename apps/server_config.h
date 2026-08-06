@@ -15,6 +15,7 @@ namespace kv::app {
 
 struct AppConfigFile {
   int server_port = 9527;
+  std::string bind_address = "127.0.0.1";
   int metrics_port = 0;
   std::string requirepass;
   std::string db_path = "data/db";

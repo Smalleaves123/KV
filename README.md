@@ -270,6 +270,8 @@ The default config file is [config/server.yaml](config/server.yaml).
 Important sections:
 
 - `server.port`: TCP client port.
+- `server.bind_address`: IPv4 address for the client listener; defaults to
+  `127.0.0.1`.
 - `server.db_path`: DB directory.
 - `storage.sync_on_write`, `storage.memtable_write_buffer_size`,
   `storage.compaction_min_input_files`,
@@ -283,6 +285,7 @@ Environment variables override selected settings:
 
 ```bash
 KV_CONFIG=config/server.yaml
+KV_BIND_ADDRESS=127.0.0.1
 KV_CACHE=1
 KV_CACHE_POLICY=lru
 KV_CACHE_CAPACITY=4096
@@ -315,12 +318,15 @@ KV_RAFT_PEERS=1:127.0.0.1:9528,2:127.0.0.1:9628,3:127.0.0.1:9728
 
 ## Current Limitations
 
-- Range scans are not exposed through the public DB API.
-- The command parser is whitespace-token based; values with spaces are not
-  supported by the TCP command layer.
+- The line-oriented command parser is whitespace-token based; use RESP bulk
+  strings when values contain spaces or embedded newlines.
 - Raft support is experimental. Replicated writes are implemented, but
   production-grade membership changes, snapshots, and operational tooling are
   still future work.
 - A basic DB benchmark binary is available, but broader benchmark coverage is
   still planned.
 - The project is not yet packaged as an installable library.
+
+## License
+
+KVEngine is licensed under the [MIT License](LICENSE).

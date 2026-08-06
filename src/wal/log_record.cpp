@@ -63,6 +63,12 @@ Status LogRecordCodec::Encode(const LogRecord& record, std::string* out) {
     return Status::InvalidArgument("log record payload is too large");
   }
   const size_t encoded_value_size = record.value.size() + ttl_prefix;
+  if (record.key.size() > LogRecordCodec::kMaxPayloadSize ||
+      encoded_value_size > LogRecordCodec::kMaxPayloadSize ||
+      record.key.size() >
+          LogRecordCodec::kMaxPayloadSize - encoded_value_size) {
+    return Status::InvalidArgument("log record payload is too large");
+  }
   payload.reserve(1 + 8 + 4 + 4 + record.key.size() + encoded_value_size);
 
   payload.push_back(static_cast<char>(record.type));
@@ -113,6 +119,12 @@ Status LogRecordCodec::Decode(const Slice& input,
 
   const size_t total_size =
       kHeaderSize + static_cast<size_t>(key_size) + static_cast<size_t>(value_size);
+
+  if (key_size > LogRecordCodec::kMaxPayloadSize ||
+      value_size > LogRecordCodec::kMaxPayloadSize ||
+      key_size > LogRecordCodec::kMaxPayloadSize - value_size) {
+    return Status::Corruption("log record payload is too large");
+  }
 
   if (input.size() < total_size) {
     return Status::Corruption("incomplete log record payload");

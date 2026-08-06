@@ -41,6 +41,7 @@ and DB path:
 ```yaml
 server:
   port: 9527
+  bind_address: 127.0.0.1
   metrics_port: 9090
   requirepass: ""
   db_path: data/db
@@ -49,6 +50,8 @@ server:
 Fields:
 
 - `port`: TCP client port for line-oriented commands.
+- `bind_address`: IPv4 address for the client listener; defaults to
+  loopback.
 - `metrics_port`: optional HTTP port for `/health`, `/ready`, and `/metrics`;
   `0` disables the monitoring server.
 - `requirepass`: optional password required by every TCP client before it can
@@ -68,6 +71,7 @@ Environment override:
 ```bash
 KV_METRICS_PORT=9090
 KV_REQUIREPASS=secret
+KV_BIND_ADDRESS=127.0.0.1
 ```
 
 ## Storage Section

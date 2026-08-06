@@ -53,6 +53,7 @@ int main(int argc, char** argv) {
   }
 
   int port = file_config.server_port;
+  std::string bind_address = file_config.bind_address;
   int metrics_port = file_config.metrics_port;
   std::string requirepass = file_config.requirepass;
   std::string db_path = file_config.db_path;
@@ -79,6 +80,10 @@ int main(int argc, char** argv) {
   }
   if (const char* v = std::getenv("KV_REQUIREPASS"); v != nullptr) {
     requirepass = v;
+  }
+  if (const char* v = std::getenv("KV_BIND_ADDRESS"); v != nullptr &&
+      !std::string(v).empty()) {
+    bind_address = v;
   }
 
   // ---- Raft config from file/env ----
@@ -260,7 +265,8 @@ int main(int argc, char** argv) {
 
   kv::net::Server server;
   s = server.Start(static_cast<uint16_t>(port), server_db,
-                   cluster_manager.get(), requirepass, raft_server.get());
+                   cluster_manager.get(), requirepass, raft_server.get(),
+                   bind_address);
   if (!s.ok()) {
     std::cerr << "server start failed: " << s.ToString() << "\n";
     return 1;
@@ -282,7 +288,7 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, OnSignal);
   std::signal(SIGTERM, OnSignal);
 
-  std::cout << "kv_server listening on 0.0.0.0:" << port
+  std::cout << "kv_server listening on " << bind_address << ":" << port
             << " db_path=" << db_path;
   if (monitoring_server.IsRunning()) {
     std::cout << " metrics_port=" << monitoring_server.port();

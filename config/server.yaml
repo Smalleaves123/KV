@@ -12,9 +12,13 @@
 #   KV_CACHE_TTL_MS=0             Default TTL (0=no expiry)
 #   KV_METRICS_PORT=9090          Prometheus/health HTTP port (0=disabled)
 #   KV_REQUIREPASS=secret         Require AUTH before executing commands
+#   KV_BIND_ADDRESS=127.0.0.1    Client listener IPv4 address
 
 server:
   port: 9527
+  # Bind the client server to loopback by default. Set to 0.0.0.0 for
+  # intentional remote access and configure requirepass.
+  bind_address: 127.0.0.1
   # Prometheus/health HTTP port; 0 disables the endpoint.
   metrics_port: 0
   # Empty disables authentication.
