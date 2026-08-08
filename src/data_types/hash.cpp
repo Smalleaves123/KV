@@ -54,6 +54,10 @@ bool Hash::Decode(const std::string& data,
   size_t pos = 0;
   uint32_t count = 0;
   if (!GetU32(data.data(), data.size(), &pos, &count)) return false;
+  constexpr uint32_t kMaxHashFields = 1U << 20;
+  if (count > kMaxHashFields || count > (data.size() - pos) / 8) {
+    return false;
+  }
 
   for (uint32_t i = 0; i < count; ++i) {
     uint32_t flen = 0, vlen = 0;
@@ -69,7 +73,7 @@ bool Hash::Decode(const std::string& data,
 
     (*fields)[f] = v;
   }
-  return true;
+  return pos == data.size();
 }
 
 // ── 公共接口 ──────────────────────────────────────

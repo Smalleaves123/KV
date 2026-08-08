@@ -46,6 +46,8 @@ struct RaftStats {
 // Raft cluster configuration for a single node.
 struct RaftConfig {
   uint64_t node_id = 1;
+  // Set to a specific interface in deployments that do not use an internal
+  // network; the default preserves existing multi-node bootstrap behavior.
   std::string host = "0.0.0.0";
   uint16_t client_port = 9527;   // client-facing port
   uint16_t raft_port = 9528;     // Raft RPC port (client_port + 1)
@@ -113,7 +115,7 @@ class RaftServer {
 
   // Apply committed entries to the DB
   void ApplyCommitted();
-  void PersistHardState();
+  Status PersistHardState();
   Status RecoverSnapshotOnStart();
   Status ApplyMembership(const std::vector<uint64_t>& members);
 
@@ -151,6 +153,8 @@ class RaftServer {
   std::thread rpc_thread_;
   std::atomic<bool> running_;
   std::unique_ptr<ThreadPool> rpc_pool_;
+  std::unique_ptr<ThreadPool> inbound_rpc_pool_;
+  std::atomic<uint32_t> inbound_rpc_connections_;
 
   // RPC listener
   platform::SocketHandle rpc_fd_;

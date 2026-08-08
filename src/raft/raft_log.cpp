@@ -56,21 +56,23 @@ bool RaftLog::MatchLog(uint64_t index, uint64_t term) const {
   return log_term == term;
 }
 
-void RaftLog::Append(const std::vector<LogEntry>& entries) {
+Status RaftLog::Append(const std::vector<LogEntry>& entries) {
   if (entries.empty()) {
-    return;
+    return Status::OK();
   }
+  if (!storage_) return Status::IOError("raft storage is null");
 
   const RaftSnapshotMeta snapshot = SnapshotMeta();
   uint64_t first_append_index = entries[0].index;
   if (first_append_index <= snapshot.last_included_index) {
-    return;
+    return Status::InvalidArgument("raft append precedes snapshot boundary");
   }
   if (first_append_index <= LastIndex()) {
     // 存在冲突，截断后缀
-    storage_->TruncateSuffix(first_append_index - 1);
+    Status s = storage_->TruncateSuffix(first_append_index - 1);
+    if (!s.ok()) return s;
   }
-  storage_->Append(entries);
+  return storage_->Append(entries);
 }
 
 void RaftLog::CommitTo(uint64_t index) {
@@ -92,44 +94,52 @@ void RaftLog::AppliedTo(uint64_t index) {
   }
 }
 
-bool RaftLog::CompactTo(const RaftSnapshotMeta& meta) {
+Status RaftLog::CompactTo(const RaftSnapshotMeta& meta) {
   if (meta.last_included_index == 0 || meta.last_included_term == 0) {
-    return false;
+    return Status::InvalidArgument("raft snapshot metadata is incomplete");
   }
   const RaftSnapshotMeta current = SnapshotMeta();
   if (meta.last_included_index <= current.last_included_index) {
     return meta.last_included_index == current.last_included_index &&
-           meta.last_included_term == current.last_included_term;
+                   meta.last_included_term == current.last_included_term
+               ? Status::OK()
+               : Status::Corruption("raft snapshot term conflicts with current state");
   }
   if (meta.last_included_index > LastIndex() ||
       Term(meta.last_included_index) != meta.last_included_term) {
-    return false;
+    return Status::Corruption("raft snapshot does not match local log");
   }
 
-  storage_->SaveSnapshotMeta(meta);
-  storage_->TruncatePrefix(meta.last_included_index + 1);
+  Status s = storage_->SaveSnapshotMeta(meta);
+  if (!s.ok()) return s;
+  s = storage_->TruncatePrefix(meta.last_included_index + 1);
+  if (!s.ok()) return s;
   commit_index_ = std::max(commit_index_, meta.last_included_index);
   applied_ = std::max(applied_, meta.last_included_index);
-  return true;
+  return Status::OK();
 }
 
-bool RaftLog::RestoreSnapshot(const RaftSnapshotMeta& meta) {
+Status RaftLog::RestoreSnapshot(const RaftSnapshotMeta& meta) {
   if (meta.last_included_index == 0 || meta.last_included_term == 0) {
-    return false;
+    return Status::InvalidArgument("raft snapshot metadata is incomplete");
   }
   const RaftSnapshotMeta current = SnapshotMeta();
   if (meta.last_included_index < current.last_included_index) {
-    return false;
+    return Status::Corruption("stale raft snapshot");
   }
   if (meta.last_included_index == current.last_included_index) {
-    return meta.last_included_term == current.last_included_term;
+    return meta.last_included_term == current.last_included_term
+               ? Status::OK()
+               : Status::Corruption("raft snapshot term conflicts with current state");
   }
 
-  storage_->SaveSnapshotMeta(meta);
-  storage_->TruncatePrefix(meta.last_included_index + 1);
+  Status s = storage_->SaveSnapshotMeta(meta);
+  if (!s.ok()) return s;
+  s = storage_->TruncatePrefix(meta.last_included_index + 1);
+  if (!s.ok()) return s;
   commit_index_ = std::max(commit_index_, meta.last_included_index);
   applied_ = std::max(applied_, meta.last_included_index);
-  return true;
+  return Status::OK();
 }
 
 } // namespace raft

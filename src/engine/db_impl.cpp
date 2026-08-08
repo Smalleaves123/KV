@@ -274,7 +274,9 @@ Status DBImpl::ApplyPut(const std::string& key, const std::string& value) {
   const uint64_t seq = next_seq_;
   Status s = ValidateKey(Slice(key));
   if (!s.ok()) return s;
-  s = ApplyPut(seq, WriteOptions{}, Slice(key), Slice(value));
+  WriteOptions durable_options;
+  durable_options.sync = true;
+  s = ApplyPut(seq, durable_options, Slice(key), Slice(value));
   if (!s.ok()) return s;
   ++next_seq_;
   return MaybeFlushMemTable(lk);
@@ -289,7 +291,9 @@ Status DBImpl::ApplyDelete(const std::string& key) {
   const uint64_t seq = next_seq_;
   Status s = ValidateKey(Slice(key));
   if (!s.ok()) return s;
-  s = ApplyDelete(seq, WriteOptions{}, Slice(key));
+  WriteOptions durable_options;
+  durable_options.sync = true;
+  s = ApplyDelete(seq, durable_options, Slice(key));
   if (!s.ok()) return s;
   ++next_seq_;
   return MaybeFlushMemTable(lk);
@@ -304,7 +308,9 @@ Status DBImpl::ApplyPutWithExpiry(const std::string& key,
   if (!open_status.ok()) return open_status;
   Status s = ValidateKey(Slice(key));
   if (!s.ok()) return s;
-  s = ApplyPutWithExpiry(next_seq_, WriteOptions{}, Slice(key), Slice(value),
+  WriteOptions durable_options;
+  durable_options.sync = true;
+  s = ApplyPutWithExpiry(next_seq_, durable_options, Slice(key), Slice(value),
                          expires_at_ms);
   if (!s.ok()) return s;
   ++next_seq_;
@@ -322,7 +328,9 @@ Status DBImpl::ApplyExpireAt(const std::string& key, uint64_t expires_at_ms) {
   std::string value;
   s = GetAtSequence(Slice(key), std::numeric_limits<uint64_t>::max(), &value);
   if (!s.ok()) return s;
-  s = ApplyPutWithExpiry(next_seq_, WriteOptions{}, Slice(key), Slice(value),
+  WriteOptions durable_options;
+  durable_options.sync = true;
+  s = ApplyPutWithExpiry(next_seq_, durable_options, Slice(key), Slice(value),
                          expires_at_ms);
   if (!s.ok()) return s;
   ++next_seq_;

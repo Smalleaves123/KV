@@ -49,8 +49,8 @@ class RaftNode {
   RequestVoteReply HandleRequestVote(const RequestVoteArgs& args);
   AppendEntriesReply HandleAppendEntries(const AppendEntriesArgs& args);
   bool PrepareInstallSnapshot(const InstallSnapshotArgs& args);
-  bool RestoreSnapshot(const RaftSnapshotMeta& meta);
-  bool CompactSnapshot(const RaftSnapshotMeta& meta) {
+  Status RestoreSnapshot(const RaftSnapshotMeta& meta);
+  Status CompactSnapshot(const RaftSnapshotMeta& meta) {
     return raft_log_->CompactTo(meta);
   }
   // Apply a committed, single-step membership configuration.
@@ -75,8 +75,8 @@ class RaftNode {
   std::vector<std::pair<uint64_t, Progress>> Progresses() const;
   void AdvanceApplied(uint64_t index) { raft_log_->AppliedTo(index); }
 
-  // 接收上层应用的日志写入请求，返回新日志索引；非 leader 时返回 0。
-  uint64_t Propose(const std::string& data);
+  // 接收上层应用的日志写入请求。成功时写入新日志索引。
+  Status Propose(const std::string& data, uint64_t* index);
 
   // 网络层发包回调设置
   void set_send_request_vote_fn(SendRequestVoteMsgFn fn) { send_rv_ = fn; }

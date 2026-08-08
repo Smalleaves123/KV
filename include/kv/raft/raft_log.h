@@ -25,11 +25,11 @@ class RaftLog {
   bool MatchLog(uint64_t index, uint64_t term) const;
   
   // 变更状态
-  void Append(const std::vector<LogEntry>& entries);
+  Status Append(const std::vector<LogEntry>& entries);
   void CommitTo(uint64_t index);
   void AppliedTo(uint64_t index);
-  bool CompactTo(const RaftSnapshotMeta& meta);
-  bool RestoreSnapshot(const RaftSnapshotMeta& meta);
+  Status CompactTo(const RaftSnapshotMeta& meta);
+  Status RestoreSnapshot(const RaftSnapshotMeta& meta);
 
   uint64_t commit_index() const { return commit_index_; }
   uint64_t applied() const { return applied_; }

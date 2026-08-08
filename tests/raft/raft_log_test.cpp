@@ -1,6 +1,7 @@
 #include "kv/raft/raft_log.h"
 
 #include <filesystem>
+#include <fstream>
 
 #include <gtest/gtest.h>
 
@@ -18,14 +19,16 @@ class MemStorage : public RaftStorage {
     return hs_;
   }
 
-  void SaveHardState(const HardState& state) override {
+  Status SaveHardState(const HardState& state) override {
     hs_ = state;
+    return Status::OK();
   }
 
   RaftSnapshotMeta SnapshotMeta() const override { return snapshot_meta_; }
 
-  void SaveSnapshotMeta(const RaftSnapshotMeta& meta) override {
+  Status SaveSnapshotMeta(const RaftSnapshotMeta& meta) override {
     snapshot_meta_ = meta;
+    return Status::OK();
   }
 
   std::vector<LogEntry> Entries(uint64_t low, uint64_t high) const override {
@@ -56,22 +59,25 @@ class MemStorage : public RaftStorage {
     return logs_.rbegin()->first;
   }
 
-  void Append(const std::vector<LogEntry>& entries) override {
+  Status Append(const std::vector<LogEntry>& entries) override {
     for (const auto& e : entries) {
       logs_[e.index] = e;
     }
+    return Status::OK();
   }
 
-  void TruncatePrefix(uint64_t index) override {
+  Status TruncatePrefix(uint64_t index) override {
     auto it = logs_.begin();
     while (it != logs_.end() && it->first < index) {
       it = logs_.erase(it);
     }
+    return Status::OK();
   }
 
-  void TruncateSuffix(uint64_t index) override {
+  Status TruncateSuffix(uint64_t index) override {
     auto it = logs_.upper_bound(index);
     logs_.erase(it, logs_.end());
+    return Status::OK();
   }
 
  private:
@@ -246,7 +252,7 @@ TEST(RaftLogTest, CompactionKeepsSnapshotBoundaryTerm) {
   log.CommitTo(2);
   log.AppliedTo(2);
 
-  ASSERT_TRUE(log.CompactTo(RaftSnapshotMeta{2, 1}));
+  ASSERT_TRUE(log.CompactTo(RaftSnapshotMeta{2, 1}).ok());
   EXPECT_EQ(log.FirstIndex(), 3u);
   EXPECT_EQ(log.LastIndex(), 3u);
   EXPECT_EQ(log.Term(2), 1u);
@@ -261,7 +267,7 @@ TEST(RaftLogTest, RestoreSnapshotDropsOlderEntries) {
   RaftLog log(storage);
   log.Append({{1, 1, "a"}, {1, 2, "b"}, {1, 3, "c"}});
 
-  ASSERT_TRUE(log.RestoreSnapshot(RaftSnapshotMeta{5, 3}));
+  ASSERT_TRUE(log.RestoreSnapshot(RaftSnapshotMeta{5, 3}).ok());
   EXPECT_EQ(log.FirstIndex(), 6u);
   EXPECT_EQ(log.LastIndex(), 5u);
   EXPECT_EQ(log.Term(5), 3u);
@@ -275,7 +281,7 @@ TEST(FileRaftStorageTest, SnapshotMetaPersistsAcrossReopen) {
 
   {
     FileRaftStorage storage(path);
-    storage.SaveSnapshotMeta(RaftSnapshotMeta{42, 7});
+    ASSERT_TRUE(storage.SaveSnapshotMeta(RaftSnapshotMeta{42, 7}).ok());
     const RaftSnapshotMeta meta = storage.SnapshotMeta();
     EXPECT_EQ(meta.last_included_index, 42U);
     EXPECT_EQ(meta.last_included_term, 7U);
@@ -298,7 +304,7 @@ TEST(FileRaftStorageTest, MembershipPersistsAcrossReopen) {
 
   {
     FileRaftStorage storage(path);
-    storage.SaveMembers({1, 2, 4});
+    ASSERT_TRUE(storage.SaveMembers({1, 2, 4}).ok());
     EXPECT_EQ(storage.InitialMembers(), (std::vector<uint64_t>{1, 2, 4}));
   }
   {
@@ -307,6 +313,25 @@ TEST(FileRaftStorageTest, MembershipPersistsAcrossReopen) {
   }
 
   std::filesystem::remove_all(path, ec);
+}
+
+TEST(FileRaftStorageTest, RejectsCorruptLogLengthOnOpen) {
+  const std::string dir = "test_tmp/raft/corrupt_log_length";
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  std::filesystem::create_directories(dir, ec);
+  ASSERT_FALSE(ec);
+
+  {
+    std::ofstream out(dir + "/raft_log", std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(out.is_open());
+    const char partial_length[] = {1, 2};
+    out.write(partial_length, sizeof(partial_length));
+  }
+
+  FileRaftStorage storage(dir);
+  EXPECT_TRUE(storage.InitialStatus().IsCorruption());
+  std::filesystem::remove_all(dir, ec);
 }
 
 TEST(RaftRpcCodecTest, InstallSnapshotRoundTrip) {

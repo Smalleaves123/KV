@@ -19,26 +19,27 @@ class FileRaftStorage : public RaftStorage {
   explicit FileRaftStorage(const std::string& dir_path);
   ~FileRaftStorage() override = default;
 
+  Status InitialStatus() const override;
   HardState InitialState() const override;
-  void SaveHardState(const HardState& state) override;
+  Status SaveHardState(const HardState& state) override;
   RaftSnapshotMeta SnapshotMeta() const override;
-  void SaveSnapshotMeta(const RaftSnapshotMeta& meta) override;
+  Status SaveSnapshotMeta(const RaftSnapshotMeta& meta) override;
   std::vector<uint64_t> InitialMembers() const override;
-  void SaveMembers(const std::vector<uint64_t>& members) override;
+  Status SaveMembers(const std::vector<uint64_t>& members) override;
 
   std::vector<LogEntry> Entries(uint64_t low, uint64_t high) const override;
   uint64_t Term(uint64_t index) const override;
   uint64_t FirstIndex() const override;
   uint64_t LastIndex() const override;
 
-  void Append(const std::vector<LogEntry>& entries) override;
-  void TruncatePrefix(uint64_t index) override;
-  void TruncateSuffix(uint64_t index) override;
+  Status Append(const std::vector<LogEntry>& entries) override;
+  Status TruncatePrefix(uint64_t index) override;
+  Status TruncateSuffix(uint64_t index) override;
 
  private:
   void LoadIndex();
-  void WriteEntry(const LogEntry& entry);
-  LogEntry ReadEntryAt(uint64_t offset) const;
+  Status WriteEntry(const LogEntry& entry);
+  Status ReadEntryAt(uint64_t offset, LogEntry* entry) const;
 
   std::string dir_path_;
   std::string state_path_;
@@ -52,6 +53,7 @@ class FileRaftStorage : public RaftStorage {
   uint64_t first_index_;
   uint64_t last_index_;
   std::map<uint64_t, uint64_t> index_offset_;  // index -> file offset
+  Status initial_status_;
 };
 
 }  // namespace raft

@@ -176,10 +176,13 @@ void RaftNode::SendAppendEntries(uint64_t to) {
   }
 }
 
-uint64_t RaftNode::Propose(const std::string& data) {
+Status RaftNode::Propose(const std::string& data, uint64_t* index_out) {
+  if (index_out == nullptr) {
+    return Status::InvalidArgument("raft proposal index output is null");
+  }
+  *index_out = 0;
   if (role_ != RaftRole::kLeader) {
-    // 应该将请求重定向给Leader
-    return 0;
+    return Status::AlreadyExists("not the raft leader");
   }
   
   LogEntry entry;
@@ -188,14 +191,16 @@ uint64_t RaftNode::Propose(const std::string& data) {
   entry.data = data;
   
   std::vector<LogEntry> entries{entry};
-  raft_log_->Append(entries);
+  Status s = raft_log_->Append(entries);
+  if (!s.ok()) return s;
 
   if (peers_.size() == 1) {
     raft_log_->CommitTo(entry.index);
   }
   
   BcastAppendEntries();
-  return entry.index;
+  *index_out = entry.index;
+  return Status::OK();
 }
 
 std::vector<std::pair<uint64_t, Progress>> RaftNode::Progresses() const {
@@ -254,7 +259,25 @@ AppendEntriesReply RaftNode::HandleAppendEntries(const AppendEntriesArgs& args) 
     return reply;
   }
 
-  // 如果收到>=当前任期的AppenEntries，自己肯定是Follower
+  if (!IsMember(args.leader_id)) {
+    reply.term = term_;
+    reply.success = false;
+    return reply;
+  }
+
+  if (!args.entries.empty()) {
+    uint64_t expected_index = args.prev_log_index + 1;
+    for (const auto& entry : args.entries) {
+      if (entry.index != expected_index || entry.term == 0) {
+        reply.term = term_;
+        reply.success = false;
+        return reply;
+      }
+      ++expected_index;
+    }
+  }
+
+  // 如果收到>=当前任期的AppendEntries，自己肯定是Follower
   BecomeFollower(args.term, args.leader_id);
   reply.term = term_;
   
@@ -267,7 +290,11 @@ AppendEntriesReply RaftNode::HandleAppendEntries(const AppendEntriesArgs& args) 
 
   // 冲突的后半部分直接截断后追加
   if (!args.entries.empty()) {
-     raft_log_->Append(args.entries);
+    Status s = raft_log_->Append(args.entries);
+    if (!s.ok()) {
+      reply.success = false;
+      return reply;
+    }
   }
 
   // 更新commit_index
@@ -285,12 +312,16 @@ bool RaftNode::PrepareInstallSnapshot(const InstallSnapshotArgs& args) {
   if (args.term < term_) {
     return false;
   }
+  if (!IsMember(args.leader_id) ||
+      args.meta.last_included_index == 0 || args.meta.last_included_term == 0) {
+    return false;
+  }
   BecomeFollower(args.term, args.leader_id);
   return args.meta.last_included_index >
          raft_log_->SnapshotMeta().last_included_index;
 }
 
-bool RaftNode::RestoreSnapshot(const RaftSnapshotMeta& meta) {
+Status RaftNode::RestoreSnapshot(const RaftSnapshotMeta& meta) {
   return raft_log_->RestoreSnapshot(meta);
 }
 

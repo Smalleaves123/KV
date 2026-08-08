@@ -52,7 +52,7 @@ bool DecodeMessage(const char* data, size_t len,
 
   uint32_t total = PopBE32(data);
   if (total < 1 || total > kMaxRaftMsgSize) return false;
-  if (4 + total > len) return false;
+  if (4 + total != len || type == nullptr || body == nullptr) return false;
 
   uint8_t t = static_cast<uint8_t>(data[4]);
   switch (t) {
@@ -133,7 +133,7 @@ std::string EncodeAppendEntries(const AppendEntriesArgs& args) {
 
 bool DecodeAppendEntries(const char* data, size_t len,
                          AppendEntriesArgs* args) {
-  if (len < 44) return false;
+  if (data == nullptr || args == nullptr || len < 44) return false;
 
   args->term           = PopBE64(data);
   args->leader_id      = PopBE64(data + 8);
@@ -162,7 +162,7 @@ bool DecodeAppendEntries(const char* data, size_t len,
 
     args->entries.push_back(std::move(e));
   }
-  return true;
+  return p == data + len;
 }
 
 // ======================== AppendEntriesReply ========================
@@ -214,13 +214,13 @@ std::string EncodeInstallSnapshot(const InstallSnapshotArgs& args) {
 
 bool DecodeInstallSnapshot(const char* data, size_t len,
                            InstallSnapshotArgs* args) {
-  if (len < 36) return false;
+  if (data == nullptr || args == nullptr || len < 36) return false;
   args->term = PopBE64(data);
   args->leader_id = PopBE64(data + 8);
   args->meta.last_included_index = PopBE64(data + 16);
   args->meta.last_included_term = PopBE64(data + 24);
   const uint32_t data_len = PopBE32(data + 32);
-  if (data_len > len - 36) return false;
+  if (data_len != len - 36) return false;
   args->data.assign(data + 36, data_len);
   return true;
 }
@@ -319,7 +319,9 @@ bool DecodeMembershipCmd(const std::string& data,
 
 bool DecodeCmd(const std::string& data, char* op, std::string* key,
                std::string* value, uint64_t* expires_at_ms) {
-  if (data.empty()) return false;
+  if (data.empty() || op == nullptr || key == nullptr || value == nullptr) {
+    return false;
+  }
 
   *op = data[0];
   if (expires_at_ms != nullptr) *expires_at_ms = 0;
@@ -341,6 +343,7 @@ bool DecodeCmd(const std::string& data, char* op, std::string* key,
     if (ep + 8 > data.data() + data.size()) return false;
     value->clear();
     if (expires_at_ms != nullptr) *expires_at_ms = PopBE64(ep);
+    return ep + 8 == data.data() + data.size();
   } else if (*op == 'S' || *op == 'T') {
     const char* vp = data.data() + 5 + key_len;
     if (vp + 4 > data.data() + data.size()) return false;
@@ -352,11 +355,13 @@ bool DecodeCmd(const std::string& data, char* op, std::string* key,
       const char* ep = vp + value_len;
       if (ep + 8 > data.data() + data.size()) return false;
       if (expires_at_ms != nullptr) *expires_at_ms = PopBE64(ep);
+      return ep + 8 == data.data() + data.size();
     }
+    return vp + value_len == data.data() + data.size();
   } else {
     value->clear();
+    return 5 + key_len == data.size();
   }
-  return true;
 }
 
 // ======================== I/O helpers ========================
@@ -391,6 +396,7 @@ platform::SocketIoResult WriteFull(platform::SocketHandle fd,
         continue;
       return -1;
     }
+    if (n == 0) return -1;
     written += static_cast<size_t>(n);
   }
   return static_cast<platform::SocketIoResult>(written);

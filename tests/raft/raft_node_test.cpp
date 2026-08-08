@@ -15,8 +15,9 @@ class MemStorage : public RaftStorage {
     return hs_;
   }
 
-  void SaveHardState(const HardState& state) override {
+  Status SaveHardState(const HardState& state) override {
     hs_ = state;
+    return Status::OK();
   }
 
   std::vector<LogEntry> Entries(uint64_t low, uint64_t high) const override {
@@ -49,22 +50,25 @@ class MemStorage : public RaftStorage {
     return logs_.rbegin()->first;
   }
 
-  void Append(const std::vector<LogEntry>& entries) override {
+  Status Append(const std::vector<LogEntry>& entries) override {
     for (const auto& e : entries) {
       logs_[e.index] = e;
     }
+    return Status::OK();
   }
 
-  void TruncatePrefix(uint64_t index) override {
+  Status TruncatePrefix(uint64_t index) override {
     auto it = logs_.begin();
     while (it != logs_.end() && it->first < index) {
       it = logs_.erase(it);
     }
+    return Status::OK();
   }
 
-  void TruncateSuffix(uint64_t index) override {
+  Status TruncateSuffix(uint64_t index) override {
     auto it = logs_.upper_bound(index);
     logs_.erase(it, logs_.end());
+    return Status::OK();
   }
 
  private:
@@ -126,7 +130,8 @@ TEST(RaftNodeTest, SingleNodeProposeIncreasesLog) {
   ASSERT_EQ(node.role(), RaftRole::kLeader);
 
   // Propose 一条日志
-  node.Propose("hello");
+  uint64_t proposal_index = 0;
+  ASSERT_TRUE(node.Propose("hello", &proposal_index).ok());
   EXPECT_EQ(node.commit_index(), 1u);
 }
 
@@ -296,6 +301,26 @@ TEST(RaftNodeTest, HandleAppendEntriesOlderTermRejected) {
   auto reply = node.HandleAppendEntries(args);
   EXPECT_FALSE(reply.success);
   EXPECT_EQ(reply.term, current_term);
+}
+
+TEST(RaftNodeTest, HandleAppendEntriesRejectsUnknownLeader) {
+  auto storage = std::make_shared<MemStorage>();
+  RaftOptions opts;
+  opts.node_id = 1;
+  opts.peers = {1, 2};
+  opts.storage = storage;
+  RaftNode node(opts);
+
+  AppendEntriesArgs args;
+  args.term = 1;
+  args.leader_id = 99;
+  args.prev_log_index = 0;
+  args.prev_log_term = 0;
+  const AppendEntriesReply reply = node.HandleAppendEntries(args);
+
+  EXPECT_FALSE(reply.success);
+  EXPECT_EQ(node.current_term(), 0u);
+  EXPECT_EQ(node.role(), RaftRole::kFollower);
 }
 
 // ===== 消息捕获测试 =====
@@ -617,9 +642,13 @@ TEST(RaftNodeTest, AppendEntriesReplyAdvancesCommitOnlyToAcknowledgedIndex) {
   node.HandleRequestVoteReply(2, vote);
   ASSERT_EQ(node.role(), RaftRole::kLeader);
 
-  ASSERT_EQ(node.Propose("v1"), 1u);
-  ASSERT_EQ(node.Propose("v2"), 2u);
-  ASSERT_EQ(node.Propose("v3"), 3u);
+  uint64_t proposal_index = 0;
+  ASSERT_TRUE(node.Propose("v1", &proposal_index).ok());
+  ASSERT_EQ(proposal_index, 1u);
+  ASSERT_TRUE(node.Propose("v2", &proposal_index).ok());
+  ASSERT_EQ(proposal_index, 2u);
+  ASSERT_TRUE(node.Propose("v3", &proposal_index).ok());
+  ASSERT_EQ(proposal_index, 3u);
 
   AppendEntriesReply ack;
   ack.term = node.current_term();

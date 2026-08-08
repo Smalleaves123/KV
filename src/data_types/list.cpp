@@ -53,6 +53,10 @@ bool List::Decode(const std::string& data,
   size_t pos = 0;
   uint32_t count = 0;
   if (!GetU32(data.data(), data.size(), &pos, &count)) return false;
+  constexpr uint32_t kMaxListElements = 1U << 20;
+  if (count > kMaxListElements || count > (data.size() - pos) / 4) {
+    return false;
+  }
 
   elems->reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
@@ -62,7 +66,7 @@ bool List::Decode(const std::string& data,
     elems->push_back(std::string(data.data() + pos, len));
     pos += len;
   }
-  return true;
+  return pos == data.size();
 }
 
 // ── 内部辅助 ──────────────────────────────────────

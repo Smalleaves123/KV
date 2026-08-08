@@ -128,6 +128,8 @@ RaftServer::RaftServer(const RaftConfig& config, WriteApplier* applier)
       rpc_thread_(),
       running_(false),
       rpc_pool_(std::make_unique<ThreadPool>(2)),
+      inbound_rpc_pool_(std::make_unique<ThreadPool>(2)),
+      inbound_rpc_connections_(0),
       rpc_fd_(platform::kInvalidSocket),
       conn_mu_(),
       peer_fds_(),
@@ -168,7 +170,6 @@ RaftServer::RaftServer(const RaftConfig& config, WriteApplier* applier)
   opts.heartbeat_tick = 3;
 
   raft_node_ = std::make_unique<raft::RaftNode>(opts);
-  storage_->SaveMembers(raft_node_->Members());
 
   // Wire Raft callbacks to our RPC sender
   raft_node_->set_send_request_vote_fn(
@@ -209,6 +210,19 @@ Status RaftServer::Start() {
     return Status::IOError("failed to initialize socket runtime");
   }
 
+  Status storage_status = storage_->InitialStatus();
+  if (!storage_status.ok()) {
+    socket_runtime_.Stop();
+    return storage_status;
+  }
+  if (storage_->InitialMembers().empty()) {
+    storage_status = storage_->SaveMembers(raft_node_->Members());
+    if (!storage_status.ok()) {
+      socket_runtime_.Stop();
+      return storage_status;
+    }
+  }
+
   Status recovery_status = RecoverSnapshotOnStart();
   if (!recovery_status.ok()) {
     socket_runtime_.Stop();
@@ -227,7 +241,13 @@ Status RaftServer::Start() {
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  if (config_.host.empty() ||
+      ::inet_pton(AF_INET, config_.host.c_str(), &addr.sin_addr) != 1) {
+    (void)platform::CloseSocket(rpc_fd_);
+    rpc_fd_ = platform::kInvalidSocket;
+    socket_runtime_.Stop();
+    return Status::InvalidArgument("invalid raft bind address: " + config_.host);
+  }
   addr.sin_port = htons(config_.raft_port);
 
   if (::bind(rpc_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
@@ -249,7 +269,14 @@ Status RaftServer::Start() {
   }
 
   running_.store(true);
-  PersistHardState();
+  storage_status = PersistHardState();
+  if (!storage_status.ok()) {
+    running_.store(false);
+    (void)platform::CloseSocket(rpc_fd_);
+    rpc_fd_ = platform::kInvalidSocket;
+    socket_runtime_.Stop();
+    return storage_status;
+  }
   tick_thread_ = std::thread(&RaftServer::TickLoop, this);
   rpc_thread_ = std::thread(&RaftServer::RpcListenLoop, this);
 
@@ -276,13 +303,12 @@ Status RaftServer::Stop() {
 
   if (tick_thread_.joinable()) tick_thread_.join();
   if (rpc_thread_.joinable()) rpc_thread_.join();
+  if (inbound_rpc_pool_ != nullptr) inbound_rpc_pool_->WaitAndStop();
   rpc_pool_->WaitAndStop();
 
   socket_runtime_.Stop();
 
-  PersistHardState();
-
-  return Status::OK();
+  return PersistHardState();
 }
 
 Status RaftServer::Propose(const std::string& cmd) {
@@ -291,16 +317,17 @@ Status RaftServer::Propose(const std::string& cmd) {
   }
 
   uint64_t index = 0;
+  Status propose_status;
   {
     std::lock_guard<std::mutex> lk(raft_mu_);
     if (raft_node_->role() != raft::RaftRole::kLeader) {
       return Status::AlreadyExists("not the leader");
     }
-    index = raft_node_->Propose(cmd);
-    if (index == 0) {
-      return Status::AlreadyExists("not the leader");
-    }
+    propose_status = raft_node_->Propose(cmd, &index);
   }
+  if (!propose_status.ok()) return propose_status;
+  Status persist_status = PersistHardState();
+  if (!persist_status.ok()) return persist_status;
 
   std::unique_lock<std::mutex> lk(apply_mu_);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -391,17 +418,16 @@ Status RaftServer::RecoverSnapshotOnStart() {
   }
   {
     std::lock_guard<std::mutex> lk(hard_state_mu_);
-    storage_->SaveHardState(recovered);
+    s = storage_->SaveHardState(recovered);
   }
-  return Status::OK();
+  return s;
 }
 
 Status RaftServer::ApplyMembership(const std::vector<uint64_t>& members) {
   if (!raft_node_->UpdateMembership(members)) {
     return Status::Corruption("invalid committed raft membership");
   }
-  storage_->SaveMembers(raft_node_->Members());
-  return Status::OK();
+  return storage_->SaveMembers(raft_node_->Members());
 }
 
 Status RaftServer::CreateSnapshot() {
@@ -432,9 +458,8 @@ Status RaftServer::CreateSnapshot() {
   }
 
   const raft::RaftSnapshotMeta meta{last_applied_, last_included_term};
-  if (!raft_node_->CompactSnapshot(meta)) {
-    return Status::Corruption("failed to compact raft log at snapshot");
-  }
+  s = raft_node_->CompactSnapshot(meta);
+  if (!s.ok()) return s;
   const raft::RaftSnapshotMeta persisted_meta = storage_->SnapshotMeta();
   if (persisted_meta.last_included_index != meta.last_included_index ||
       persisted_meta.last_included_term != meta.last_included_term) {
@@ -597,8 +622,8 @@ void RaftServer::TickLoop() {
 void RaftServer::ApplyCommitted() {
   uint64_t ci = raft_node_->commit_index();
   while (last_applied_ < ci) {
-    ++last_applied_;
-    auto entries = storage_->Entries(last_applied_, last_applied_);
+    const uint64_t next_index = last_applied_ + 1;
+    auto entries = storage_->Entries(next_index, next_index);
     Status apply_status = Status::Corruption("missing committed raft log entry");
     if (!entries.empty() && !entries[0].data.empty()) {
       const std::string& data = entries[0].data;
@@ -633,17 +658,36 @@ void RaftServer::ApplyCommitted() {
       }
     }
 
+    if (!apply_status.ok()) {
+      std::lock_guard<std::mutex> lk(apply_mu_);
+      applied_results_[next_index] = std::move(apply_status);
+      apply_cv_.notify_all();
+      return;
+    }
+
+    last_applied_ = next_index;
     raft_node_->AdvanceApplied(last_applied_);
 
     {
       std::lock_guard<std::mutex> lk(apply_mu_);
-      applied_results_[last_applied_] = std::move(apply_status);
+      applied_results_[last_applied_] = Status::OK();
+      constexpr size_t kMaxTrackedApplyResults = 1024;
+      if (applied_results_.size() > kMaxTrackedApplyResults) {
+        const uint64_t retain_after = last_applied_ - kMaxTrackedApplyResults;
+        for (auto it = applied_results_.begin(); it != applied_results_.end();) {
+          if (it->first < retain_after) {
+            it = applied_results_.erase(it);
+          } else {
+            ++it;
+          }
+        }
+      }
     }
     apply_cv_.notify_all();
   }
 }
 
-void RaftServer::PersistHardState() {
+Status RaftServer::PersistHardState() {
   raft::HardState hs;
   {
     std::lock_guard<std::mutex> lk(raft_mu_);
@@ -654,7 +698,7 @@ void RaftServer::PersistHardState() {
   }
 
   std::lock_guard<std::mutex> lk(hard_state_mu_);
-  storage_->SaveHardState(hs);
+  return storage_->SaveHardState(hs);
 }
 
 // ---- RPC Listener ----
@@ -671,8 +715,20 @@ void RaftServer::RpcListenLoop() {
         continue;
       continue;
     }
-    HandleRpcConnection(client_fd);
-    (void)platform::CloseSocket(client_fd);
+    constexpr uint32_t kMaxInboundRpcConnections = 64;
+    const uint32_t previous = inbound_rpc_connections_.fetch_add(1);
+    if (previous >= kMaxInboundRpcConnections) {
+      inbound_rpc_connections_.fetch_sub(1);
+      (void)platform::CloseSocket(client_fd);
+      continue;
+    }
+    (void)platform::SetReceiveTimeout(client_fd, 1000);
+    (void)platform::SetSendTimeout(client_fd, 1000);
+    inbound_rpc_pool_->Execute([this, client_fd]() {
+      HandleRpcConnection(client_fd);
+      (void)platform::CloseSocket(client_fd);
+      inbound_rpc_connections_.fetch_sub(1);
+    });
   }
 }
 
@@ -736,7 +792,10 @@ void RaftServer::HandleRpcConnection(platform::SocketHandle fd) {
           reply.match_index = raft_node_->SnapshotMeta().last_included_index;
         } else {
           Status install_status = InstallSnapshotArchive(args);
-          if (install_status.ok() && raft_node_->RestoreSnapshot(args.meta)) {
+          if (install_status.ok()) {
+            install_status = raft_node_->RestoreSnapshot(args.meta);
+          }
+          if (install_status.ok()) {
             last_applied_ = std::max(last_applied_, args.meta.last_included_index);
             reply.success = true;
             reply.match_index = args.meta.last_included_index;
