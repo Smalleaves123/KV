@@ -1,9 +1,11 @@
 #include "kv/net/command.h"
 
 #include <filesystem>
+#include <chrono>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "gtest/gtest.h"
@@ -110,6 +112,56 @@ TEST(CommandExecutorTest, SetGetDelFlow) {
   EXPECT_EQ(exec.Execute(del_cmd), "+OK\r\n");
 
   EXPECT_EQ(exec.Execute(get_cmd), "$-1\r\n");
+}
+
+TEST(SessionTest, AtomicSetExpiryAndMillisecondRenewal) {
+  auto db = OpenDBForTest("session_ttl_commands");
+  Session session(db.get());
+  EXPECT_EQ(session.HandleLine("SET session payload EX 10"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("GET session"), "$7\r\npayload\r\n");
+  int64_t ttl = -2;
+  ASSERT_TRUE(db->PTTL(ReadOptions{}, "session", &ttl).ok());
+  EXPECT_GT(ttl, 0);
+  EXPECT_LE(ttl, 10000);
+  EXPECT_EQ(session.HandleLine("PEXPIRE session 20000"), ":1\r\n");
+  ASSERT_TRUE(db->PTTL(ReadOptions{}, "session", &ttl).ok());
+  EXPECT_GT(ttl, 10000);
+  EXPECT_EQ(session.HandleLine("PEXPIRE missing 1000"), ":0\r\n");
+  EXPECT_EQ(session.HandleLine("PTTL missing"), ":-2\r\n");
+  EXPECT_EQ(session.HandleLine("SET session replacement"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("PTTL session"), ":-1\r\n");
+  EXPECT_EQ(session.HandleLine("SET session short px 20"), "+OK\r\n");
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  EXPECT_EQ(session.HandleLine("GET session"), "$-1\r\n");
+  EXPECT_EQ(session.HandleLine("PTTL session"), ":-2\r\n");
+  EXPECT_EQ(session.HandleLine("PEXPIRE session 1000"), ":0\r\n");
+}
+
+TEST(SessionTest, InvalidExpiryCommandsLeaveSessionUnchanged) {
+  auto db = OpenDBForTest("session_invalid_ttl");
+  Session session(db.get());
+  ASSERT_EQ(session.HandleLine("SET session original"), "+OK\r\n");
+  for (const auto& command : {
+      "SET session other PX 0", "SET session other EX -1",
+      "SET session other EX 9223372036854775807",
+      "SET session other PX 9223372036854775808",
+      "SET session other PX 10junk", "SET session other XX 10",
+      "SET session other EX 10 PX 20", "PEXPIRE session nope",
+      "PEXPIRE session 9223372036854775808", "PTTL session extra"}) {
+    EXPECT_EQ(session.HandleLine(command).front(), '-') << command;
+    EXPECT_EQ(session.HandleLine("GET session"), "$8\r\noriginal\r\n");
+    EXPECT_EQ(session.HandleLine("PTTL session"), ":-1\r\n");
+  }
+}
+
+TEST(SessionTest, ExpiringSetIsRejectedInsideTransactionWithoutWriting) {
+  auto db = OpenDBForTest("session_ttl_transaction");
+  Session session(db.get());
+  ASSERT_EQ(session.HandleLine("BEGIN"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("SET session payload PX 1000"),
+            "-ERRSET with expiry is not supported in transactions\r\n");
+  EXPECT_EQ(session.HandleLine("EXEC"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("GET session"), "$-1\r\n");
 }
 
 TEST(CommandExecutorTest, DataTTLCommands) {

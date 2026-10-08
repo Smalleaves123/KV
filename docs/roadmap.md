@@ -35,8 +35,9 @@ engine into a more complete storage-system project.
   Raft-backed DB access.
 - TTL is persisted through WAL replay and compatible SST value envelopes.
 - Reads, snapshots, iterators, scans, and compaction preserve TTL semantics.
-- A future background expiry reaper can add physical tombstone cleanup without
-  changing the logical read behavior.
+- Atomic `SET EX/PX`, millisecond `PEXPIRE`/`PTTL`, and configurable background
+  SST expiry cleanup support the session-storage use case.
+- See [Session storage](session_storage.md) for the first business example.
 
 ### WAL
 

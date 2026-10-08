@@ -243,6 +243,12 @@ Status DBImpl::Init() {
   if (options_.max_immutable_memtables == 0) {
     return Status::InvalidArgument("max immutable memtables must be positive");
   }
+  const auto max_cleanup_interval = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::duration::max() / 2).count();
+  if (options_.expiry_cleanup_interval_ms >
+      static_cast<uint64_t>(max_cleanup_interval)) {
+    return Status::InvalidArgument("expiry cleanup interval is too large");
+  }
 
   uint64_t max_sst_seq = 0;
   Status s = manifest_.Open(manifest_path_, options_.create_if_missing);
@@ -338,7 +344,10 @@ Status DBImpl::Put(const WriteOptions& options,
   }
 
   const uint64_t seq = next_seq_;
-  Status s = ApplyPut(seq, options, key, value);
+  uint64_t expires_at_ms = 0;
+  Status s = ExpiryFromTTL(options.ttl_ms, &expires_at_ms);
+  if (!s.ok()) return s;
+  s = ApplyPutWithExpiry(seq, options, key, value, expires_at_ms);
   if (!s.ok()) {
     return s;
   }
@@ -428,6 +437,9 @@ Status DBImpl::ApplyExpireAt(const std::string& key, uint64_t expires_at_ms) {
 
   std::string value;
   s = GetAtSequence(Slice(key), std::numeric_limits<uint64_t>::max(), &value);
+  // A replica may apply this committed renewal after the old value expired
+  // or was reclaimed. Treat it as a no-op so replication can keep advancing.
+  if (s.IsNotFound()) return Status::OK();
   if (!s.ok()) return s;
   WriteOptions durable_options;
   durable_options.sync = true;
@@ -521,6 +533,14 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
 
 Status DBImpl::Expire(const WriteOptions& options, const Slice& key,
                       int64_t ttl_seconds) {
+  int64_t ttl_ms = 0;
+  Status s = TTLSecondsToMillis(ttl_seconds, &ttl_ms);
+  if (!s.ok()) return s;
+  return ExpireMillis(options, key, ttl_ms);
+}
+
+Status DBImpl::ExpireMillis(const WriteOptions& options, const Slice& key,
+                            int64_t ttl_ms) {
   std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
@@ -533,19 +553,13 @@ Status DBImpl::Expire(const WriteOptions& options, const Slice& key,
   if (!s.ok()) return s;
 
   const uint64_t seq = next_seq_;
-  if (ttl_seconds <= 0) {
+  if (ttl_ms <= 0) {
     s = ApplyDelete(seq, options, key);
   } else {
-    if (static_cast<uint64_t>(ttl_seconds) >
-        std::numeric_limits<uint64_t>::max() / 1000ULL) {
-      return Status::InvalidArgument("ttl is too large");
-    }
-    const uint64_t ttl_ms = static_cast<uint64_t>(ttl_seconds) * 1000ULL;
-    const uint64_t now_ms = NowUnixMillis();
-    if (ttl_ms > std::numeric_limits<uint64_t>::max() - now_ms) {
-      return Status::InvalidArgument("ttl is too large");
-    }
-    s = ApplyPutWithExpiry(seq, options, key, Slice(value), now_ms + ttl_ms);
+    uint64_t expires_at_ms = 0;
+    s = ExpiryFromTTL(ttl_ms, &expires_at_ms);
+    if (!s.ok()) return s;
+    s = ApplyPutWithExpiry(seq, options, key, Slice(value), expires_at_ms);
   }
   if (!s.ok()) return s;
 
@@ -559,11 +573,22 @@ Status DBImpl::Expire(const WriteOptions& options, const Slice& key,
 
 Status DBImpl::TTL(const ReadOptions& options, const Slice& key,
                    int64_t* ttl_seconds) {
+  if (ttl_seconds == nullptr) {
+    return Status::InvalidArgument("ttl output pointer is null");
+  }
+  int64_t ttl_ms = 0;
+  Status s = PTTL(options, key, &ttl_ms);
+  if (s.ok()) *ttl_seconds = ttl_ms < 0 ? ttl_ms : ttl_ms / 1000;
+  return s;
+}
+
+Status DBImpl::PTTL(const ReadOptions& options, const Slice& key,
+                    int64_t* ttl_ms) {
   std::lock_guard<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) return open_status;
-  if (ttl_seconds == nullptr) {
+  if (ttl_ms == nullptr) {
     return Status::InvalidArgument("ttl output pointer is null");
   }
   Status validate_status = ValidateKey(key);
@@ -576,19 +601,21 @@ Status DBImpl::TTL(const ReadOptions& options, const Slice& key,
   const uint64_t read_seq = ResolveReadSequence(options);
   Status s = GetAtSequence(key, read_seq, &value, &expires_at_ms);
   if (!s.ok()) {
-    if (s.IsNotFound()) *ttl_seconds = -2;
+    if (s.IsNotFound()) *ttl_ms = -2;
     return s.IsNotFound() ? Status::OK() : s;
   }
 
   if (expires_at_ms == 0) {
-    *ttl_seconds = -1;
+    *ttl_ms = -1;
     return Status::OK();
   }
 
   const uint64_t now_ms = NowUnixMillis();
-  *ttl_seconds = IsExpired(expires_at_ms, now_ms)
-                     ? -2
-                     : static_cast<int64_t>((expires_at_ms - now_ms) / 1000ULL);
+  *ttl_ms = IsExpired(expires_at_ms, now_ms)
+                ? -2
+                : static_cast<int64_t>(std::min(
+                      expires_at_ms - now_ms,
+                      static_cast<uint64_t>(std::numeric_limits<int64_t>::max())));
   return Status::OK();
 }
 
@@ -1389,6 +1416,7 @@ Status DBImpl::ApplyPutWithExpiry(uint64_t seq, const WriteOptions& options,
   if (!s.ok()) return s;
   InvalidateCacheEntry(key.ToString());
   latest_key_seq_[key.ToString()] = seq;
+  UpdateKeyExpiry(key.ToString(), expires_at_ms, seq);
   (void)options;
   return Status::OK();
 }
@@ -1433,6 +1461,7 @@ Status DBImpl::ApplyOperationLocked(
 
   InvalidateCacheEntry(operation.key);
   latest_key_seq_[operation.key] = seq;
+  UpdateKeyExpiry(operation.key, 0, seq);
   return Status::OK();
 }
 
@@ -1673,10 +1702,16 @@ void DBImpl::RotateMemTable() {
 void DBImpl::FlushWorker() {
   while (true) {
     std::unique_lock<std::mutex> lock(mu_);
-    flush_cv_.wait(lock, [this] {
+    const auto ready = [this] {
       return shutting_down_ ||
              (!immutable_mems_.empty() && background_error_.ok());
-    });
+    };
+    if (options_.expiry_cleanup_interval_ms == 0) {
+      flush_cv_.wait(lock, ready);
+    } else {
+      flush_cv_.wait_for(lock, std::chrono::milliseconds(
+                                  options_.expiry_cleanup_interval_ms), ready);
+    }
 
     if (!background_error_.ok()) {
       return;
@@ -1685,7 +1720,16 @@ void DBImpl::FlushWorker() {
       if (shutting_down_) {
         return;
       }
-      continue;
+      if (!HasExpiredKeys() || compaction_in_progress_ ||
+          !active_snapshots_.empty() || !active_transactions_.empty()) {
+        continue;
+      }
+      if (memtable_->Empty()) {
+        (void)ReclaimExpiredKeys(lock);
+        continue;
+      }
+      // Flush mutable versions before the complete-input reclamation pass.
+      RotateMemTable();
     }
 
     ImmutableMemTable& immutable_mem = immutable_mems_.front();
@@ -1994,6 +2038,17 @@ Status DBImpl::GetAtSequence(const Slice& key,
 
 Status DBImpl::RebuildLatestKeySeqIndex() {
   latest_key_seq_.clear();
+  key_expirations_.clear();
+  expiry_schedule_.clear();
+
+  const auto record_latest = [&](const std::string& key, uint64_t seq,
+                                 uint8_t type, uint64_t expires_at_ms) {
+    const auto found = latest_key_seq_.find(key);
+    if (found == latest_key_seq_.end() || seq > found->second) {
+      latest_key_seq_[key] = seq;
+      UpdateKeyExpiry(key, type == 1 ? 0 : expires_at_ms, seq);
+    }
+  };
 
   for (const auto& state : sst_files_) {
     const auto& file = state.file_path;
@@ -2006,37 +2061,21 @@ Status DBImpl::RebuildLatestKeySeqIndex() {
       if (!s.ok()) {
         return s;
       }
-      // Scan the file to build sequence index
-      TableIterator iter(*direct_reader);
-      for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
-        const std::string& k = iter.key();
-        const uint64_t seq = iter.seq();
-        auto it = latest_key_seq_.find(k);
-        if (it == latest_key_seq_.end() || seq > it->second) {
-          latest_key_seq_[k] = seq;
-        }
-      }
-    } else {
-      TableIterator iter(*reader);
-      for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
-        const std::string& k = iter.key();
-        const uint64_t seq = iter.seq();
-        auto it = latest_key_seq_.find(k);
-        if (it == latest_key_seq_.end() || seq > it->second) {
-          latest_key_seq_[k] = seq;
-        }
-      }
+      reader = std::move(direct_reader);
     }
+    TableIterator iter(*reader);
+    for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
+      record_latest(iter.key(), iter.seq(), iter.type(), iter.expires_at_ms());
+    }
+    if (!iter.status().ok()) return iter.status();
   }
 
   const auto add_memtable_sequences = [&](const MemTable& memtable) {
     auto it = memtable.NewIterator();
     for (it.SeekToFirst(); it.Valid(); it.Next()) {
       const auto& entry = it.entry();
-      auto found = latest_key_seq_.find(entry.key);
-      if (found == latest_key_seq_.end() || entry.seq > found->second) {
-        latest_key_seq_[entry.key] = entry.seq;
-      }
+      record_latest(entry.key, entry.seq, static_cast<uint8_t>(entry.type),
+                    entry.expires_at_ms);
     }
   };
 
@@ -2045,6 +2084,49 @@ Status DBImpl::RebuildLatestKeySeqIndex() {
   }
   add_memtable_sequences(*memtable_);
 
+  return Status::OK();
+}
+
+void DBImpl::UpdateKeyExpiry(const std::string& key, uint64_t expires_at_ms,
+                             uint64_t seq) {
+  if (options_.expiry_cleanup_interval_ms == 0) return;
+  const auto found = key_expirations_.find(key);
+  if (found != key_expirations_.end()) {
+    expiry_schedule_.erase({found->second, key});
+    key_expirations_.erase(found);
+  }
+  if (expires_at_ms != 0) {
+    key_expirations_[key] = expires_at_ms;
+    expiry_schedule_[{expires_at_ms, key}] = seq;
+  }
+}
+
+bool DBImpl::HasExpiredKeys() const {
+  return !expiry_schedule_.empty() &&
+         expiry_schedule_.begin()->first.first <= NowUnixMillis();
+}
+
+Status DBImpl::ReclaimExpiredKeys(std::unique_lock<std::mutex>& lock) {
+  std::vector<std::pair<std::string, uint64_t>> expired_versions;
+  const uint64_t now_ms = NowUnixMillis();
+  for (auto it = expiry_schedule_.begin(); it != expiry_schedule_.end() &&
+       it->first.first <= now_ms; ++it) {
+    expired_versions.emplace_back(it->first.second, it->second);
+  }
+  ++compaction_stats_.trigger_attempts;
+  // Include every disk level before dropping tombstones or expired values.
+  Status s = CompactSSTFiles(lock, true);
+  if (!s.ok()) {
+    ++compaction_stats_.failed;
+    return s;
+  }
+  ++compaction_stats_.succeeded;
+  for (const auto& entry : expired_versions) {
+    const auto latest = latest_key_seq_.find(entry.first);
+    if (latest != latest_key_seq_.end() && latest->second == entry.second) {
+      UpdateKeyExpiry(entry.first, 0, entry.second);
+    }
+  }
   return Status::OK();
 }
 
@@ -2354,7 +2436,8 @@ std::string DBImpl::BuildSSTCacheKey(const std::string& sst_file,
   return out;
 }
 
-Status DBImpl::CompactSSTFiles(std::unique_lock<std::mutex>& lock) {
+Status DBImpl::CompactSSTFiles(std::unique_lock<std::mutex>& lock,
+                               bool reclaim_expired) {
   if (compaction_in_progress_) {
     return Status::AlreadyExists("compaction already in progress");
   }
@@ -2366,52 +2449,59 @@ Status DBImpl::CompactSSTFiles(std::unique_lock<std::mutex>& lock) {
   // form an immutable plan; flushes may append newer files while I/O runs.
   std::vector<size_t> selected_indices;
   uint32_t input_level = 0;
-  if (std::none_of(sst_files_.begin(), sst_files_.end(),
-                   [](const SSTFileState& state) {
-                     return state.metadata.level == 0;
-                   })) {
-    input_level = 1;
-  }
-  bool have_range = false;
-  bool unknown_input_range = false;
-  std::string input_smallest;
-  std::string input_largest;
-  for (size_t i = 0; i < sst_files_.size(); ++i) {
-    const auto& meta = sst_files_[i].metadata;
-    if (meta.level != input_level) {
-      continue;
-    }
-    selected_indices.push_back(i);
-    if (!meta.HasKeyRange()) {
-      unknown_input_range = true;
-      continue;
-    }
-    if (!have_range) {
-      input_smallest = meta.smallest_key;
-      input_largest = meta.largest_key;
-      have_range = true;
-    } else {
-      input_smallest = std::min(input_smallest, meta.smallest_key);
-      input_largest = std::max(input_largest, meta.largest_key);
-    }
-  }
-  if (selected_indices.empty()) {
-    return Status::NotFound("no L0 files to compact");
-  }
-  for (size_t i = 0; i < sst_files_.size(); ++i) {
-    const auto& meta = sst_files_[i].metadata;
-    if (meta.level != input_level + 1) {
-      continue;
-    }
-    const bool overlaps = unknown_input_range || !have_range ||
-                          !meta.HasKeyRange() ||
-                          !(meta.largest_key < input_smallest ||
-                            meta.smallest_key > input_largest);
-    if (overlaps) {
+  if (reclaim_expired) {
+    for (size_t i = 0; i < sst_files_.size(); ++i) {
       selected_indices.push_back(i);
     }
+    input_level = 1;  // A complete-input pass publishes at L2.
+  } else {
+    if (std::none_of(sst_files_.begin(), sst_files_.end(),
+                     [](const SSTFileState& state) {
+                       return state.metadata.level == 0;
+                     })) {
+      input_level = 1;
+    }
+    bool have_range = false;
+    bool unknown_input_range = false;
+    std::string input_smallest;
+    std::string input_largest;
+    for (size_t i = 0; i < sst_files_.size(); ++i) {
+      const auto& meta = sst_files_[i].metadata;
+      if (meta.level != input_level) {
+        continue;
+      }
+      selected_indices.push_back(i);
+      if (!meta.HasKeyRange()) {
+        unknown_input_range = true;
+        continue;
+      }
+      if (!have_range) {
+        input_smallest = meta.smallest_key;
+        input_largest = meta.largest_key;
+        have_range = true;
+      } else {
+        input_smallest = std::min(input_smallest, meta.smallest_key);
+        input_largest = std::max(input_largest, meta.largest_key);
+      }
+    }
+    if (selected_indices.empty()) {
+      return Status::NotFound("no L0 files to compact");
+    }
+    for (size_t i = 0; i < sst_files_.size(); ++i) {
+      const auto& meta = sst_files_[i].metadata;
+      if (meta.level != input_level + 1) {
+        continue;
+      }
+      const bool overlaps = unknown_input_range || !have_range ||
+                            !meta.HasKeyRange() ||
+                            !(meta.largest_key < input_smallest ||
+                              meta.smallest_key > input_largest);
+      if (overlaps) {
+        selected_indices.push_back(i);
+      }
+    }
+    std::sort(selected_indices.begin(), selected_indices.end());
   }
-  std::sort(selected_indices.begin(), selected_indices.end());
 
   CompactionPlan plan;
   plan.old_files.reserve(selected_indices.size());

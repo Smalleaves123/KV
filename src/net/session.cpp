@@ -69,7 +69,9 @@ std::string Session::HandleCommand(const Command& cmd) {
     case CommandType::kSet:
     case CommandType::kDel:
     case CommandType::kExpire:
+    case CommandType::kPExpire:
     case CommandType::kTTL:
+    case CommandType::kPTTL:
     case CommandType::kPersist:
     case CommandType::kMGet:
     case CommandType::kInfo:
@@ -116,6 +118,7 @@ std::string Session::MaybeRedirectWrite(const Command& cmd) const {
     case CommandType::kSet:
     case CommandType::kDel:
     case CommandType::kExpire:
+    case CommandType::kPExpire:
     case CommandType::kPersist:
     case CommandType::kIncr:
     case CommandType::kIncrBy:
@@ -251,7 +254,7 @@ std::string Session::HandleDataCommandInTxn(const Command& cmd) {
 
     case CommandType::kSet: {
       if (cmd.args.size() != 2) {
-        return Error("wrong number of arguments for 'SET'");
+        return Error("SET with expiry is not supported in transactions");
       }
       Status s = active_txn_->Put(cmd.args[0], cmd.args[1]);
       if (!s.ok()) {

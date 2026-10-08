@@ -13,6 +13,7 @@
 #include "kv/engine/write_applier.h"
 #include "kv/common/time.h"
 #include "kv/raft/raft_rpc_codec.h"
+#include "kv/raft/raft_db_adapter.h"
 #include "kv/net/session.h"
 
 namespace kv {
@@ -263,6 +264,71 @@ TEST_F(RaftServerIntegrationTest, RestartedFollowerCatchesUpCommittedWrite) {
                value == "value";
       },
       std::chrono::seconds(5)));
+}
+
+TEST_F(RaftServerIntegrationTest, SessionRenewalRestoresAReclaimedLaggingFollower) {
+  TestNode* leader = nullptr;
+  ASSERT_TRUE(WaitUntil([&] {
+    for (auto& node : nodes_) {
+      if (node.raft->IsLeader()) {
+        leader = &node;
+        return true;
+      }
+    }
+    return false;
+  }, std::chrono::seconds(5)));
+  RaftDBAdapter adapter(leader->db.get(), leader->raft.get());
+  net::Session session(&adapter, nullptr, "", leader->raft.get());
+  ASSERT_EQ(session.HandleLine("SET session payload PX 2000"), "+OK\r\n");
+  ASSERT_TRUE(WaitUntil([&] {
+    for (auto& node : nodes_) {
+      std::string value;
+      if (!node.db->Get(ReadOptions{}, "session", &value).ok() ||
+          value != "payload") return false;
+    }
+    return true;
+  }, std::chrono::seconds(5)));
+  TestNode* follower = nullptr;
+  for (auto& node : nodes_) {
+    if (&node != leader) {
+      follower = &node;
+      break;
+    }
+  }
+  ASSERT_NE(follower, nullptr);
+  ASSERT_TRUE(follower->raft->Stop().ok());
+  follower->raft.reset();
+  ASSERT_TRUE(follower->db->Close().ok());
+  follower->db.reset();
+  follower->db_options.expiry_cleanup_interval_ms = 5;
+  ASSERT_TRUE(DB::Open(follower->db_options, &follower->db).ok());
+  ASSERT_EQ(session.HandleLine("PEXPIRE session 20000"), ":1\r\n");
+  ASSERT_TRUE(WaitUntil([&] {
+    CompactionStats stats;
+    return follower->db->GetCompactionStats(&stats).ok() && stats.succeeded > 0;
+  }, std::chrono::seconds(5)));
+  std::string value;
+  EXPECT_TRUE(follower->db->Get(ReadOptions{}, "session", &value).IsNotFound());
+  EXPECT_TRUE(std::filesystem::is_empty(follower->db_options.db_path + "/sst"));
+  // Renewal records carry the payload and original absolute deadline, so the
+  // missing old local value cannot stall or corrupt the resumed replication.
+  ASSERT_TRUE(StartNode(follower).ok());
+  ASSERT_TRUE(WaitUntil([&] {
+    std::string replicated;
+    return follower->db->Get(ReadOptions{}, "session", &replicated).ok() &&
+           replicated == "payload";
+  }, std::chrono::seconds(5)));
+  for (auto& node : nodes_) {
+    int64_t ttl = -2;
+    ASSERT_TRUE(node.db->PTTL(ReadOptions{}, "session", &ttl).ok());
+    EXPECT_GT(ttl, 10000);
+    EXPECT_LE(ttl, 20000);
+  }
+  EXPECT_EQ(session.HandleLine("PTTL missing"), ":-2\r\n");
+  EXPECT_EQ(session.HandleLine("PERSIST session"), ":1\r\n");
+  EXPECT_EQ(session.HandleLine("PTTL session"), ":-1\r\n");
+  EXPECT_EQ(session.HandleLine("PEXPIRE session 0"), ":1\r\n");
+  EXPECT_EQ(session.HandleLine("GET session"), "$-1\r\n");
 }
 
 TEST_F(RaftServerIntegrationTest, LeaderCreatesReopenableLocalSnapshot) {

@@ -116,7 +116,7 @@ bool ReadResp(platform::SocketHandle fd, std::string* encoded) {
   encoded->append(line);
   encoded->append("\r\n");
 
-  if (prefix == '+' || prefix == '-') {
+  if (prefix == '+' || prefix == '-' || prefix == ':') {
     return true;
   }
 
@@ -369,6 +369,39 @@ TEST_F(ServerIntegrationTest, RespArrayRequestSupportsValuesWithSpaces) {
   EXPECT_EQ(resp, "$11\r\nhello world\r\n");
 
   (void)platform::CloseSocket(fd);
+}
+
+TEST_F(ServerIntegrationTest, RespSessionCreationRenewalAndRevocation) {
+  if (!started_) GTEST_SKIP() << last_status_.ToString();
+  struct ScopedSocket {
+    platform::SocketHandle fd;
+    ~ScopedSocket() { (void)platform::CloseSocket(fd); }
+  } client{ConnectWithRetry(port_)};
+  const platform::SocketHandle fd = client.fd;
+  ASSERT_TRUE(platform::IsValidSocket(fd));
+  std::string response;
+  ASSERT_TRUE(SendRaw(fd, "*5\r\n$3\r\nSET\r\n$7\r\nsession\r\n"
+                          "$7\r\npayload\r\n$2\r\nPX\r\n$4\r\n5000\r\n"));
+  ASSERT_TRUE(ReadResp(fd, &response));
+  EXPECT_EQ(response, "+OK\r\n");
+  ASSERT_TRUE(SendLine(fd, "PTTL session"));
+  ASSERT_TRUE(ReadResp(fd, &response));
+  ASSERT_EQ(response.front(), ':');
+  const int64_t ttl = std::stoll(response.substr(1));
+  EXPECT_GT(ttl, 0);
+  EXPECT_LE(ttl, 5000);
+  ASSERT_TRUE(SendLine(fd, "PEXPIRE session 20000"));
+  ASSERT_TRUE(ReadResp(fd, &response));
+  EXPECT_EQ(response, ":1\r\n");
+  ASSERT_TRUE(SendLine(fd, "GET session"));
+  ASSERT_TRUE(ReadResp(fd, &response));
+  EXPECT_EQ(response, "$7\r\npayload\r\n");
+  ASSERT_TRUE(SendLine(fd, "PEXPIRE session 0"));
+  ASSERT_TRUE(ReadResp(fd, &response));
+  EXPECT_EQ(response, ":1\r\n");
+  ASSERT_TRUE(SendLine(fd, "PTTL session"));
+  ASSERT_TRUE(ReadResp(fd, &response));
+  EXPECT_EQ(response, ":-2\r\n");
 }
 
 TEST_F(ServerIntegrationTest, RespFramesCanBeSplitAndPipelined) {

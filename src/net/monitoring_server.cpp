@@ -62,8 +62,12 @@ const char* CommandMetricName(CommandType type) {
       return "DEL";
     case CommandType::kExpire:
       return "EXPIRE";
+    case CommandType::kPExpire:
+      return "PEXPIRE";
     case CommandType::kTTL:
       return "TTL";
+    case CommandType::kPTTL:
+      return "PTTL";
     case CommandType::kPersist:
       return "PERSIST";
     case CommandType::kMGet:

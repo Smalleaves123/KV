@@ -3,6 +3,7 @@
 #include "kv/engine/db.h"
 
 #include <memory>
+#include <mutex>
 
 namespace kv {
 
@@ -23,8 +24,12 @@ public:
   Status Delete(const WriteOptions& options, const Slice& key) override;
   Status Expire(const WriteOptions& options, const Slice& key,
                 int64_t ttl_seconds) override;
+  Status ExpireMillis(const WriteOptions& options, const Slice& key,
+                      int64_t ttl_ms) override;
   Status TTL(const ReadOptions& options, const Slice& key,
              int64_t* ttl_seconds) override;
+  Status PTTL(const ReadOptions& options, const Slice& key,
+              int64_t* ttl_ms) override;
   Status Persist(const WriteOptions& options, const Slice& key) override;
   Status Write(const WriteOptions& options, const WriteBatch& batch) override;
   Status BeginTransaction(const TxnOptions& options,
@@ -52,6 +57,8 @@ private:
 
   DB* local_db_;
   RaftServer* raft_;
+  // Serialize client writes with read-modify-write renewal/persist requests.
+  std::mutex write_mutex_;
 };
 
 } // namespace kv

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <deque>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -47,8 +48,12 @@ class DBImpl final : public DB, public WriteApplier {
                 const Slice& key) override;
   Status Expire(const WriteOptions& options, const Slice& key,
                 int64_t ttl_seconds) override;
+  Status ExpireMillis(const WriteOptions& options, const Slice& key,
+                      int64_t ttl_ms) override;
   Status TTL(const ReadOptions& options, const Slice& key,
              int64_t* ttl_seconds) override;
+  Status PTTL(const ReadOptions& options, const Slice& key,
+              int64_t* ttl_ms) override;
   Status Persist(const WriteOptions& options, const Slice& key) override;
 
   Status Write(const WriteOptions& options, const WriteBatch& batch) override;
@@ -149,6 +154,10 @@ class DBImpl final : public DB, public WriteApplier {
   Status LoadSSTFilesFromManifest(uint64_t* max_seq);
   Status LoadSSTFilesFromDir(uint64_t* max_seq);
   Status RebuildLatestKeySeqIndex();
+  void UpdateKeyExpiry(const std::string& key, uint64_t expires_at_ms,
+                       uint64_t seq);
+  bool HasExpiredKeys() const;
+  Status ReclaimExpiredKeys(std::unique_lock<std::mutex>& lock);
   Status ValidateSnapshot(const Snapshot* snapshot) const;
   uint64_t ResolveReadSequence(const ReadOptions& options) const;
   Status CommitOCCTransaction(const TxnOptions& options,
@@ -176,7 +185,8 @@ class DBImpl final : public DB, public WriteApplier {
     uint32_t output_level = 1;
   };
 
-  Status CompactSSTFiles(std::unique_lock<std::mutex>& lock);
+  Status CompactSSTFiles(std::unique_lock<std::mutex>& lock,
+                         bool reclaim_expired = false);
   Status ExecuteCompaction(const CompactionPlan& plan,
                            std::vector<ManifestFileMeta>* output_metadata);
   Status CommitCompaction(const CompactionPlan& plan,
@@ -226,6 +236,9 @@ class DBImpl final : public DB, public WriteApplier {
   Status background_error_;
   std::unordered_set<Transaction*> active_transactions_;
   std::unordered_map<std::string, uint64_t> latest_key_seq_;
+  std::unordered_map<std::string, uint64_t> key_expirations_;
+  // One deadline per key; renewal replaces the previous deadline.
+  std::map<std::pair<uint64_t, std::string>, uint64_t> expiry_schedule_;
   std::unordered_set<const Snapshot*> active_snapshots_;
   std::vector<std::unique_ptr<Snapshot>> owned_snapshots_;
   mutable std::unique_ptr<Cache> cache_;

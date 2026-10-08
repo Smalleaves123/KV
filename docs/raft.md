@@ -42,6 +42,8 @@ Supported through the server wrapper:
 - `SET`
 - `GET`
 - `DEL`
+- `SET key value EX seconds` / `PX milliseconds`
+- `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, and `PERSIST`
 - `INFO`
 - `STATS`
 
@@ -49,6 +51,12 @@ Not supported in Raft mode:
 
 - write batches;
 - transactions.
+
+Session writes carry an absolute expiry chosen once by the leader. Renewal
+and `PERSIST` carry the current payload as well as the updated expiry, so a
+lagging replica can apply them even after its old local value was reclaimed.
+The server adapter serializes client writes with renewal/persist requests to
+avoid overwriting a concurrent replacement with a previously read payload.
 
 ## Configuration
 

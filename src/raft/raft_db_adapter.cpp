@@ -29,11 +29,19 @@ Status RaftDBAdapter::NotSupportedInRaft(const char* operation) const {
                                  " is not supported when raft is enabled");
 }
 
-Status RaftDBAdapter::Put(const WriteOptions&, const Slice& key, const Slice& value) {
+Status RaftDBAdapter::Put(const WriteOptions& options, const Slice& key,
+                          const Slice& value) {
+  std::lock_guard<std::mutex> lock(write_mutex_);
   if (!raft_->IsLeader()) {
     return NotLeader();
   }
-  return raft_->Propose(raft::EncodePutCmd(key.ToString(), value.ToString()));
+  uint64_t expires_at_ms = 0;
+  Status s = ExpiryFromTTL(options.ttl_ms, &expires_at_ms);
+  if (!s.ok()) return s;
+  return raft_->Propose(expires_at_ms == 0
+      ? raft::EncodePutCmd(key.ToString(), value.ToString())
+      : raft::EncodePutWithExpiryCmd(key.ToString(), value.ToString(),
+                                     expires_at_ms));
 }
 
 Status RaftDBAdapter::Get(const ReadOptions& options, const Slice& key,
@@ -49,14 +57,24 @@ Status RaftDBAdapter::Get(const ReadOptions& options, const Slice& key,
 }
 
 Status RaftDBAdapter::Delete(const WriteOptions&, const Slice& key) {
+  std::lock_guard<std::mutex> lock(write_mutex_);
   if (!raft_->IsLeader()) {
     return NotLeader();
   }
   return raft_->Propose(raft::EncodeDelCmd(key.ToString()));
 }
 
-Status RaftDBAdapter::Expire(const WriteOptions&, const Slice& key,
+Status RaftDBAdapter::Expire(const WriteOptions& options, const Slice& key,
                              int64_t ttl_seconds) {
+  int64_t ttl_ms = 0;
+  Status s = TTLSecondsToMillis(ttl_seconds, &ttl_ms);
+  if (!s.ok()) return s;
+  return ExpireMillis(options, key, ttl_ms);
+}
+
+Status RaftDBAdapter::ExpireMillis(const WriteOptions&, const Slice& key,
+                                   int64_t ttl_ms) {
+  std::lock_guard<std::mutex> lock(write_mutex_);
   if (!raft_->IsLeader()) return NotLeader();
   Status s = raft_->LinearizableReadBarrier();
   if (!s.ok()) return s;
@@ -64,21 +82,15 @@ Status RaftDBAdapter::Expire(const WriteOptions&, const Slice& key,
   std::string value;
   s = local_db_->Get(ReadOptions{}, key, &value);
   if (!s.ok()) return s;
-  if (ttl_seconds <= 0) {
+  if (ttl_ms <= 0) {
     return raft_->Propose(raft::EncodeDelCmd(key.ToString()));
   }
 
-  const uint64_t now_ms = NowUnixMillis();
-  if (static_cast<uint64_t>(ttl_seconds) >
-      std::numeric_limits<uint64_t>::max() / 1000ULL) {
-    return Status::InvalidArgument("ttl is too large");
-  }
-  const uint64_t ttl_ms = static_cast<uint64_t>(ttl_seconds) * 1000ULL;
-  if (ttl_ms > std::numeric_limits<uint64_t>::max() - now_ms) {
-    return Status::InvalidArgument("ttl is too large");
-  }
+  uint64_t expires_at_ms = 0;
+  s = ExpiryFromTTL(ttl_ms, &expires_at_ms);
+  if (!s.ok()) return s;
   return raft_->Propose(
-      raft::EncodeExpireCmd(key.ToString(), now_ms + ttl_ms));
+      raft::EncodePutWithExpiryCmd(key.ToString(), value, expires_at_ms));
 }
 
 Status RaftDBAdapter::TTL(const ReadOptions& options, const Slice& key,
@@ -89,7 +101,16 @@ Status RaftDBAdapter::TTL(const ReadOptions& options, const Slice& key,
   return local_db_->TTL(options, key, ttl_seconds);
 }
 
+Status RaftDBAdapter::PTTL(const ReadOptions& options, const Slice& key,
+                           int64_t* ttl_ms) {
+  if (!raft_->IsLeader()) return NotLeader();
+  Status s = raft_->LinearizableReadBarrier();
+  if (!s.ok()) return s;
+  return local_db_->PTTL(options, key, ttl_ms);
+}
+
 Status RaftDBAdapter::Persist(const WriteOptions&, const Slice& key) {
+  std::lock_guard<std::mutex> lock(write_mutex_);
   if (!raft_->IsLeader()) return NotLeader();
   Status s = raft_->LinearizableReadBarrier();
   if (!s.ok()) return s;
@@ -101,7 +122,7 @@ Status RaftDBAdapter::Persist(const WriteOptions&, const Slice& key) {
   s = local_db_->TTL(ReadOptions{}, key, &ttl_seconds);
   if (!s.ok()) return s;
   if (ttl_seconds == -1) return Status::OK();
-  return raft_->Propose(raft::EncodeExpireCmd(key.ToString(), 0));
+  return raft_->Propose(raft::EncodePutWithExpiryCmd(key.ToString(), value, 0));
 }
 
 Status RaftDBAdapter::Write(const WriteOptions&, const WriteBatch&) {

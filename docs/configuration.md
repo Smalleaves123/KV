@@ -87,6 +87,7 @@ storage:
   compaction_min_input_files: 2
   compaction_level_max_bytes: 268435456
   auto_compaction_enabled: true
+  expiry_cleanup_interval_ms: 1000
 ```
 
 Fields:
@@ -101,6 +102,11 @@ Fields:
 - `compaction_level_max_bytes`: total L1 size that triggers automatic deeper-level compaction; zero uses file count only.
 - `auto_compaction_enabled`: try compaction after flush when the threshold is
   met.
+- `expiry_cleanup_interval_ms`: interval for idle-time physical expiry cleanup.
+  The default is 1000 ms; zero disables cleanup while reads still enforce TTL.
+  Cleanup flushes mutable data and compacts all current SST inputs into L2,
+  including when ordinary automatic compaction is disabled. Active snapshots
+  and transactions defer cleanup. Larger intervals reduce compaction activity.
 
 Environment overrides:
 
@@ -112,6 +118,7 @@ KV_BLOOM_BITS_PER_KEY=10
 KV_TABLE_CACHE_CAPACITY=64
 KV_COMPACTION_MIN_INPUT_FILES=2
 KV_AUTO_COMPACTION=1
+KV_EXPIRY_CLEANUP_INTERVAL_MS=1000
 ```
 
 ## Cache Section

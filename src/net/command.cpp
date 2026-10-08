@@ -1,6 +1,7 @@
 #include "kv/net/command.h"
 
 #include <cctype>
+#include <charconv>
 #include <cstdlib>
 #include <map>
 #include <sstream>
@@ -8,6 +9,7 @@
 #include <vector>
 
 #include "kv/cluster/cluster_manager.h"
+#include "kv/common/time.h"
 #include "kv/data_types/counter.h"
 #include "kv/data_types/hash.h"
 #include "kv/data_types/list.h"
@@ -42,11 +44,8 @@ bool ParseSizeT(const std::string& text, size_t* value) {
 
 bool ParseInt64(const std::string& text, int64_t* value) {
   if (value == nullptr || text.empty()) return false;
-  char* end = nullptr;
-  const long long parsed = std::strtoll(text.c_str(), &end, 10);
-  if (end == nullptr || *end != '\0') return false;
-  *value = static_cast<int64_t>(parsed);
-  return true;
+  const auto result = std::from_chars(text.data(), text.data() + text.size(), *value);
+  return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 }
 
 std::string NodeToLine(const NodeInfo& node) {
@@ -202,8 +201,25 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
     }
 
     case CommandType::kSet: {
-      if (cmd.args.size() != 2) return Error("wrong number of arguments for 'SET'");
-      Status s = db_->Put(WriteOptions{}, cmd.args[0], cmd.args[1]);
+      if (cmd.args.size() != 2 && cmd.args.size() != 4) {
+        return Error("wrong number of arguments for 'SET'");
+      }
+      WriteOptions options;
+      if (cmd.args.size() == 4) {
+        const std::string unit = ToUpper(cmd.args[2]);
+        if (unit != "EX" && unit != "PX") return Error("syntax error");
+        int64_t ttl = 0;
+        if (!ParseInt64(cmd.args[3], &ttl) || ttl <= 0) {
+          return Error("invalid expire time in 'SET'");
+        }
+        if (unit == "EX") {
+          Status s = TTLSecondsToMillis(ttl, &options.ttl_ms);
+          if (!s.ok()) return Error(s.ToString());
+        } else {
+          options.ttl_ms = ttl;
+        }
+      }
+      Status s = db_->Put(options, cmd.args[0], cmd.args[1]);
       if (!s.ok()) return Error(s.ToString());
       return SimpleString("OK");
     }
@@ -215,26 +231,34 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
       return SimpleString("OK");
     }
 
-    case CommandType::kExpire: {
+    case CommandType::kExpire:
+    case CommandType::kPExpire: {
+      const std::string name = cmd.type == CommandType::kExpire ? "EXPIRE" : "PEXPIRE";
       if (cmd.args.size() != 2) {
-        return Error("wrong number of arguments for 'EXPIRE'");
+        return Error("wrong number of arguments for '" + name + "'");
       }
       int64_t seconds = 0;
       if (!ParseInt64(cmd.args[1], &seconds)) {
-        return Error("invalid TTL value for 'EXPIRE'");
+        return Error("invalid TTL value for '" + name + "'");
       }
-      Status s = db_->Expire(WriteOptions{}, cmd.args[0], seconds);
+      Status s = cmd.type == CommandType::kExpire
+          ? db_->Expire(WriteOptions{}, cmd.args[0], seconds)
+          : db_->ExpireMillis(WriteOptions{}, cmd.args[0], seconds);
       if (s.ok()) return Integer(1);
       if (s.IsNotFound()) return Integer(0);
       return Error(s.ToString());
     }
 
-    case CommandType::kTTL: {
+    case CommandType::kTTL:
+    case CommandType::kPTTL: {
+      const std::string name = cmd.type == CommandType::kTTL ? "TTL" : "PTTL";
       if (cmd.args.size() != 1) {
-        return Error("wrong number of arguments for 'TTL'");
+        return Error("wrong number of arguments for '" + name + "'");
       }
       int64_t seconds = -2;
-      Status s = db_->TTL(ReadOptions{}, cmd.args[0], &seconds);
+      Status s = cmd.type == CommandType::kTTL
+          ? db_->TTL(ReadOptions{}, cmd.args[0], &seconds)
+          : db_->PTTL(ReadOptions{}, cmd.args[0], &seconds);
       if (!s.ok()) return Error(s.ToString());
       return Integer(seconds);
     }

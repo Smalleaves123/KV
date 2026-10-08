@@ -48,6 +48,8 @@ enum class CommandType {
   kLLen,
   kLIndex,
   kLRange,
+  kPExpire,
+  kPTTL,
   kAuth,
 };
 

@@ -60,6 +60,15 @@ TEST_F(ServerConfigTest, OmittedCompactionOptionsUseEngineDefaults) {
   EXPECT_EQ(options.compaction_output_file_size_bytes,
             defaults.compaction_output_file_size_bytes);
   EXPECT_EQ(options.compaction_level_max_bytes, defaults.compaction_level_max_bytes);
+  EXPECT_EQ(options.expiry_cleanup_interval_ms, defaults.expiry_cleanup_interval_ms);
+}
+
+TEST_F(ServerConfigTest, YamlCanConfigureOrDisableExpiryCleanup) {
+  DBOptions options;
+  ASSERT_NO_FATAL_FAILURE(LoadOptions("  expiry_cleanup_interval_ms: 25\n", &options));
+  EXPECT_EQ(options.expiry_cleanup_interval_ms, 25U);
+  ASSERT_NO_FATAL_FAILURE(LoadOptions("  expiry_cleanup_interval_ms: 0\n", &options));
+  EXPECT_EQ(options.expiry_cleanup_interval_ms, 0U);
 }
 
 TEST_F(ServerConfigTest, YamlOutputSizeControlsSplittingIncludingZero) {

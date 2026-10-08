@@ -32,6 +32,8 @@ TEST(CommandParserTest, ParsesTTLCommands) {
   EXPECT_EQ(CommandParser::ParseLine("EXPIRE key 10").type,
             CommandType::kExpire);
   EXPECT_EQ(CommandParser::ParseLine("ttl key").type, CommandType::kTTL);
+  EXPECT_EQ(CommandParser::ParseLine("pexpire key 10").type, CommandType::kPExpire);
+  EXPECT_EQ(CommandParser::ParseLine("pttl key").type, CommandType::kPTTL);
   EXPECT_EQ(CommandParser::ParseLine("PERSIST key").type,
             CommandType::kPersist);
 }

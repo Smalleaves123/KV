@@ -47,6 +47,7 @@ add_executable(kv_engine_test
   engine/db_test.cpp
   engine/cache_integration_test.cpp
   engine/compaction_test.cpp
+  engine/session_test.cpp
   engine/sst_metadata_test.cpp
   engine/iterator_test.cpp
   engine/write_batch_test.cpp

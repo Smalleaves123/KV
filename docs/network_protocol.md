@@ -77,9 +77,14 @@ Response:
 
 ```text
 SET key value
+SET key value EX seconds
+SET key value PX milliseconds
 ```
 
-Writes a key.
+Writes a key. `EX` and `PX` atomically store the value and its data-level expiry
+in one write. Durations must be positive integers; malformed or overflowing
+durations leave the key unchanged. A plain `SET` clears any existing expiry.
+The expiry forms are available outside `BEGIN`/`EXEC` transactions.
 
 Response:
 
@@ -112,20 +117,25 @@ Stores a tombstone for the key. Deleting a missing key still returns `OK`.
 
 ```text
 EXPIRE key seconds
+PEXPIRE key milliseconds
 ```
 
 Sets a data-level wall-clock expiry. The response is `:1` when the key exists
 and the expiry is applied, or `:0` when the key is missing. A non-positive
 value deletes the key, matching the immediate-expiry behavior.
+Both commands preserve the existing payload and can renew a live session.
+An expired session is missing and cannot be renewed.
 
 ### TTL
 
 ```text
 TTL key
+PTTL key
 ```
 
 Returns an integer response: remaining whole seconds, `:-1` for a persistent
 key, or `:-2` for a missing/expired key.
+`PTTL` uses the same sentinels and reports remaining milliseconds.
 
 ### PERSIST
 
@@ -314,8 +324,8 @@ The monitoring listener is independent from the command protocol and binds to
 loopback by default. It exposes connection, request, transaction, cache,
 Bloom-filter, table-cache, compaction, request error, response traffic, and
 request duration metrics. Request totals and errors are also grouped by the
-fixed `command` label (`INVALID`, `PING`, `GET`, `SET`, `DEL`, `EXPIRE`,
-  `TTL`, `PERSIST`, `MGET`, `INFO`, `STATS`, `CLUSTER`, `BEGIN`, `EXEC`,
+fixed `command` label (`INVALID`, `PING`, `GET`, `SET`, `DEL`, `EXPIRE`, `PEXPIRE`,
+  `TTL`, `PTTL`, `PERSIST`, `MGET`, `INFO`, `STATS`, `CLUSTER`, `BEGIN`, `EXEC`,
   `ABORT`, `SCAN`, and the counter/hash/list commands) to keep Prometheus
   label cardinality bounded.
 
@@ -324,7 +334,8 @@ fixed `command` label (`INVALID`, `PING`, `GET`, `SET`, `DEL`, `EXPIRE`,
 When Raft is enabled:
 
 - writes are proposed through Raft and must be sent to the leader;
-- `EXPIRE` and `PERSIST` are replicated as logical expiry operations;
+- `SET EX/PX`, renewal, and `PERSIST` replicate the value and its absolute expiry
+  together, allowing a lagging replica to restore a reclaimed session;
 - expiry timestamps are computed by the leader before proposal so replicas do
   not independently choose different deadlines;
 - reads require the node to be leader and pass a linearizable read barrier;

@@ -290,7 +290,6 @@ Status RaftServer::Stop() {
   if (platform::IsValidSocket(rpc_fd_)) {
     (void)platform::ShutdownSocket(rpc_fd_);
     (void)platform::CloseSocket(rpc_fd_);
-    rpc_fd_ = platform::kInvalidSocket;
   }
 
   {
@@ -303,6 +302,8 @@ Status RaftServer::Stop() {
 
   if (tick_thread_.joinable()) tick_thread_.join();
   if (rpc_thread_.joinable()) rpc_thread_.join();
+  // RpcListenLoop reads the handle until it exits; reset it after joining.
+  rpc_fd_ = platform::kInvalidSocket;
   if (inbound_rpc_pool_ != nullptr) inbound_rpc_pool_->WaitAndStop();
   rpc_pool_->WaitAndStop();
 

@@ -105,6 +105,15 @@ requested key.
 If L1-to-L2 compaction filters out every entry, the empty output is committed
 by removing the input manifest records and files without adding an output SST.
 
+The expiry cleanup worker also runs during idle periods. It tracks one current
+deadline per expiring key, reconstructs deadlines from WAL/SST recovery, and
+flushes mutable data before a complete-input reclamation pass at L2. This pass
+is deferred while snapshots or transactions are active. Renewal replaces the
+scheduled deadline, and a concurrent write keeps its new deadline after an old
+cleanup pass commits. `expiry_cleanup_interval_ms: 0` disables this worker
+behavior without changing logical expiry. Physical cleanup reclaims SST data;
+WAL segments follow the existing flush/rotation cleanup rules.
+
 Manual compaction:
 
 ```bash

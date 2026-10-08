@@ -218,6 +218,12 @@ int main(int argc, char** argv) {
     bool parsed = true;
     if (kv::app::ParseBoolValue(v, &parsed)) options.auto_compaction_enabled = parsed;
   }
+  if (const char* v = std::getenv("KV_EXPIRY_CLEANUP_INTERVAL_MS"); v != nullptr) {
+    size_t parsed = 0;
+    if (kv::app::ParseSizeValue(v, &parsed)) {
+      options.expiry_cleanup_interval_ms = parsed;
+    }
+  }
 
   std::unique_ptr<kv::DB> db;
   kv::Status s = kv::DB::Open(options, &db);

@@ -76,7 +76,7 @@ Status MaybeInjectFailure(FailurePoint point) {
   {
     std::lock_guard<std::mutex> lk(FailureMutex());
     if (HookState().point == point) {
-      hook = std::move(HookState().callback);
+      hook.swap(HookState().callback);
     }
     InjectedFailure& failure = FailureState();
     if (failure.enabled && failure.point == point) {

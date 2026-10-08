@@ -37,6 +37,7 @@ struct AppConfigFile {
   size_t compaction_output_file_size_bytes = 64 * 1024 * 1024;
   size_t compaction_level_max_bytes = 256 * 1024 * 1024;
   bool auto_compaction_enabled = true;
+  size_t expiry_cleanup_interval_ms = 1000;
 };
 
 int ParsePort(const char* value);

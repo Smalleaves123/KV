@@ -76,12 +76,13 @@ Status Server::Stop() {
   if (platform::IsValidSocket(listen_fd_)) {
     (void)platform::ShutdownSocket(listen_fd_);
     (void)platform::CloseSocket(listen_fd_);
-    listen_fd_ = platform::kInvalidSocket;
   }
 
   if (accept_thread_.joinable()) {
     accept_thread_.join();
   }
+  // AcceptLoop reads the handle until it exits; only reset it after joining.
+  listen_fd_ = platform::kInvalidSocket;
 
   if (pool_ != nullptr) {
     pool_->WaitAndStop();

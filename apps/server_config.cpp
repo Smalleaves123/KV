@@ -398,6 +398,8 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
         ParseSizeValue(value, &cfg.compaction_level_max_bytes);
       } else if (key == "auto_compaction_enabled") {
         ParseBoolValue(value, &cfg.auto_compaction_enabled);
+      } else if (key == "expiry_cleanup_interval_ms") {
+        ParseSizeValue(value, &cfg.expiry_cleanup_interval_ms);
       }
       continue;
     }
@@ -458,6 +460,7 @@ kv::DBOptions BuildDBOptions(const AppConfigFile& config) {
       config.compaction_output_file_size_bytes;
   options.compaction_level_max_bytes = config.compaction_level_max_bytes;
   options.auto_compaction_enabled = config.auto_compaction_enabled;
+  options.expiry_cleanup_interval_ms = config.expiry_cleanup_interval_ms;
   options.cache_enabled = config.cache_enabled;
   options.cache_policy = config.cache_policy;
   options.cache_capacity = config.cache_capacity;

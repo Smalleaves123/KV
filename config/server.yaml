@@ -33,6 +33,8 @@ storage:
   table_cache_capacity: 64
   compaction_min_input_files: 2
   auto_compaction_enabled: true
+  # Reclaim expired values during idle periods; 0 disables physical cleanup.
+  expiry_cleanup_interval_ms: 1000
 
 raft:
   enabled: false

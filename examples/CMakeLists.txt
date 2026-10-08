@@ -3,6 +3,7 @@ set(KV_EXAMPLE_SOURCES
   cache_demo.cpp
   skiplist_demo.cpp
   wal_recovery_demo.cpp
+  session_demo.cpp
 )
 
 foreach(source IN LISTS KV_EXAMPLE_SOURCES)

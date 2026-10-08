@@ -80,6 +80,10 @@ struct DBOptions {
 
   // 是否在 flush 后自动尝试 compaction
   bool auto_compaction_enabled = true;
+
+  // Background expiry reclamation interval; 0 disables physical cleanup.
+  // Logical expiry checks remain active regardless of this setting.
+  size_t expiry_cleanup_interval_ms = 1000;
 };
 
 struct ReadOptions {
@@ -89,6 +93,9 @@ struct ReadOptions {
 
 struct WriteOptions {
   bool sync = false;
+  // Put only: atomically set the value and its TTL in milliseconds.
+  // 0 writes a persistent value; negative TTLs are invalid.
+  int64_t ttl_ms = 0;
 };
 
 struct ReadPathStats {
@@ -143,10 +150,15 @@ class DB {
   // Set a wall-clock expiry in seconds. A non-positive TTL deletes the key.
   virtual Status Expire(const WriteOptions& options, const Slice& key,
                         int64_t ttl_seconds) = 0;
+  virtual Status ExpireMillis(const WriteOptions& options, const Slice& key,
+                              int64_t ttl_ms) = 0;
   // Redis-compatible result: -2 missing/expired, -1 persistent, otherwise
   // remaining whole seconds (rounded down).
   virtual Status TTL(const ReadOptions& options, const Slice& key,
                      int64_t* ttl_seconds) = 0;
+  // Same missing/persistent sentinels as TTL, with millisecond precision.
+  virtual Status PTTL(const ReadOptions& options, const Slice& key,
+                      int64_t* ttl_ms) = 0;
   virtual Status Persist(const WriteOptions& options, const Slice& key) = 0;
 
   virtual Status Write(const WriteOptions& options,
