@@ -70,6 +70,10 @@ TEST(VersionSetTest, RecoverFromManifestBuildsCurrent) {
 
   ManifestFileMeta f1{1, "a.sst", 10};
   ManifestFileMeta f2{2, "b.sst", 20};
+  f2.level = 3;
+  f2.file_size = 8192;
+  f2.smallest_key = "alpha";
+  f2.largest_key = "omega";
   ASSERT_TRUE(manifest.AddFile(f1).ok());
   ASSERT_TRUE(manifest.AddFile(f2).ok());
 
@@ -80,6 +84,10 @@ TEST(VersionSetTest, RecoverFromManifestBuildsCurrent) {
   FileMeta out;
   EXPECT_TRUE(vs.current().FindFile(1, &out));
   EXPECT_TRUE(vs.current().FindFile(2, &out));
+  EXPECT_EQ(out.level, 3U);
+  EXPECT_EQ(out.file_size, 8192U);
+  EXPECT_EQ(out.smallest_key, "alpha");
+  EXPECT_EQ(out.largest_key, "omega");
 }
 
 }  // namespace

@@ -69,7 +69,8 @@ For `Get`:
    - latest read: `uint64_t::max()`;
    - snapshot read: snapshot sequence.
 3. Search the memtable for the newest visible version.
-4. If not found, search SST files from newest to oldest.
+4. If not found, select the highest-sequence visible entry across candidate SST
+   files, regardless of their publication order.
 5. Each SST lookup checks the table cache, Bloom filter, index block, and data
    block.
 6. If value caching is enabled and the read is a latest read, SST hits are
@@ -143,8 +144,8 @@ See [Transactions And Snapshots](transaction.md).
 The DB exposes:
 
 - `CacheStats`: value-cache hits, misses, evictions, expirations.
-- `ReadPathStats`: table-cache hits/misses/evictions/entries and Bloom filter
-  query/negative counts.
+- `ReadPathStats`: table-cache hits/misses/evictions/entries, Bloom filter
+  query/negative counts, and range-pruning counts.
 - `CompactionStats`: attempts, skipped attempts, successes, failures.
 - server health logs: connection and transaction counters.
 

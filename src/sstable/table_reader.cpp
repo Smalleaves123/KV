@@ -114,7 +114,7 @@ Status TableReader::Get(const std::string& target, uint64_t read_seq,
 Status TableReader::Get(const std::string& target, uint64_t read_seq,
                         uint8_t* type, std::string* value,
                         uint64_t* expires_at_ms,
-                        TableReadStatsDelta* stats) const {
+                        TableReadStatsDelta* stats, uint64_t* sequence) const {
   if (type == nullptr || value == nullptr) {
     return Status::InvalidArgument("output pointer is null");
   }
@@ -169,6 +169,7 @@ Status TableReader::Get(const std::string& target, uint64_t read_seq,
 
       if (it.seq() <= read_seq) {
         *type = it.type();
+        if (sequence != nullptr) *sequence = it.seq();
         if (it.type() == 0) {
           const std::string encoded_value(it.value());
           DecodeSSTValue(encoded_value, value, expires_at_ms);
@@ -190,10 +191,15 @@ Status TableReader::ReadBlock(uint64_t offset, uint64_t size,
   }
   const uint64_t bytes_to_read = size + (has_data_block_checksums_ ? 4 : 0);
   block_data->assign(static_cast<size_t>(bytes_to_read), '\0');
-  file_.seekg(static_cast<std::streamoff>(offset));
-  file_.read(block_data->data(), static_cast<std::streamsize>(bytes_to_read));
-  if (!file_) {
-    return Status::IOError("failed to read block");
+  {
+    // Cached readers are shared by foreground lookups and compaction.
+    // Keep the stream position and read in one critical section.
+    std::lock_guard<std::mutex> lock(file_mutex_);
+    file_.seekg(static_cast<std::streamoff>(offset));
+    file_.read(block_data->data(), static_cast<std::streamsize>(bytes_to_read));
+    if (!file_) {
+      return Status::IOError("failed to read block");
+    }
   }
   if (has_data_block_checksums_) {
     const char* trailer = block_data->data() + size;
@@ -220,9 +226,11 @@ TableIterator::TableIterator(const TableReader& reader)
       current_type_(0),
       current_value_(),
       current_expires_at_ms_(0),
-      valid_(false) {}
+      valid_(false),
+      status_(Status::OK()) {}
 
 void TableIterator::SeekToFirst() {
+  status_ = Status::OK();
   block_idx_ = 0;
   block_data_.clear();
   block_ptr_ = nullptr;
@@ -233,6 +241,7 @@ void TableIterator::SeekToFirst() {
 }
 
 void TableIterator::Seek(const std::string& target) {
+  status_ = Status::OK();
   valid_ = false;
   block_data_.clear();
   block_ptr_ = nullptr;
@@ -268,6 +277,7 @@ void TableIterator::Seek(const std::string& target) {
     Status s = reader_.ReadBlock(idx[block_idx_].block_offset,
                                   idx[block_idx_].block_size, &block_data_);
     if (!s.ok()) {
+      status_ = s;
       valid_ = false;
       return;
     }
@@ -306,6 +316,7 @@ void TableIterator::LoadNextBlock() {
   Status s = reader_.ReadBlock(idx[block_idx_].block_offset,
                                 idx[block_idx_].block_size, &block_data_);
   if (!s.ok()) {
+    status_ = s;
     valid_ = false;
     return;
   }

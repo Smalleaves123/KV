@@ -82,8 +82,10 @@ storage:
   memtable_write_buffer_size: 4194304
   sstable_block_size_bytes: 4096
   bloom_bits_per_key: 10
+  compaction_output_file_size_bytes: 67108864
   table_cache_capacity: 64
   compaction_min_input_files: 2
+  compaction_level_max_bytes: 268435456
   auto_compaction_enabled: true
 ```
 
@@ -93,8 +95,10 @@ Fields:
 - `memtable_write_buffer_size`: flush threshold in bytes.
 - `sstable_block_size_bytes`: target SSTable data-block size in bytes.
 - `bloom_bits_per_key`: Bloom filter bits allocated per SSTable key.
+- `compaction_output_file_size_bytes`: target size of each split compaction output; zero disables splitting.
 - `table_cache_capacity`: maximum number of open SSTable readers cached.
 - `compaction_min_input_files`: minimum SST file count before compaction.
+- `compaction_level_max_bytes`: total L1 size that triggers automatic deeper-level compaction; zero uses file count only.
 - `auto_compaction_enabled`: try compaction after flush when the threshold is
   met.
 
@@ -263,9 +267,11 @@ options.sync_on_write = false;
 options.memtable_write_buffer_size = 4 * 1024 * 1024;
 options.sstable_block_size_bytes = 4 * 1024;
 options.bloom_bits_per_key = 10;
+options.compaction_output_file_size_bytes = 64 * 1024 * 1024;
 options.table_cache_capacity = 64;
 options.cache_enabled = false;
 options.compaction_min_input_files = 2;
+options.compaction_level_max_bytes = 256 * 1024 * 1024;
 options.auto_compaction_enabled = true;
 ```
 
@@ -280,6 +286,7 @@ Important fields:
 - `memtable_write_buffer_size`: flush threshold.
 - `sstable_block_size_bytes`, `bloom_bits_per_key`, `table_cache_capacity`:
   SSTable layout, Bloom filter, and open-table cache settings.
+- `compaction_output_file_size_bytes`: target size for each compaction output file.
 - `cache_enabled`, `cache_policy`, `cache_capacity`,
   `cache_default_ttl_ms`: value cache settings.
 - `compaction_min_input_files`: minimum SST count before compaction.

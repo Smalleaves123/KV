@@ -1,15 +1,16 @@
 #include "kv/engine/db_impl.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
-#include <map>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <sstream>
 #include <system_error>
 #include <unordered_set>
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "kv/engine/recovery.h"
+#include "kv/common/file_compat.h"
 #include "kv/common/time.h"
 #include "kv/sstable/block.h"
 #include "kv/sstable/block_iterator.h"
@@ -83,6 +85,88 @@ Status CopyMemTable(const MemTable& source,
   return Status::OK();
 }
 
+Status SyncFilePath(const std::filesystem::path& path) {
+  const int fd = platform::OpenSyncFile(path.string(), true);
+  if (fd < 0) {
+    return Status::IOError("failed to open file for sync: " + path.string() +
+                           ": " + platform::FileErrorString());
+  }
+  const int sync_result = platform::SyncFile(fd);
+  const std::string sync_error =
+      sync_result == 0 ? "" : platform::FileErrorString();
+  const int close_result = platform::CloseFile(fd);
+  if (sync_result != 0) {
+    return Status::IOError("failed to sync file: " + path.string() + ": " +
+                           sync_error);
+  }
+  if (close_result != 0) {
+    return Status::IOError("failed to close synced file: " + path.string() +
+                           ": " + platform::FileErrorString());
+  }
+  return Status::OK();
+}
+
+Status SyncParentDirectory(const std::filesystem::path& path) {
+  const std::filesystem::path parent = path.parent_path();
+  if (parent.empty()) {
+    return Status::OK();
+  }
+  if (platform::SyncDirectory(parent.string()) != 0) {
+    return Status::IOError("failed to sync directory: " + parent.string() +
+                           ": " + platform::FileErrorString());
+  }
+  return Status::OK();
+}
+
+Status SyncDirectoryPath(const std::filesystem::path& path) {
+  if (platform::SyncDirectory(path.string()) != 0) {
+    return Status::IOError("failed to sync directory: " + path.string() +
+                           ": " + platform::FileErrorString());
+  }
+  return Status::OK();
+}
+
+Status RemovePath(const std::filesystem::path& path, const std::string& label) {
+  std::error_code ec;
+  std::filesystem::remove_all(path, ec);
+  if (ec) {
+    return Status::IOError("failed to remove " + label + ": " + path.string());
+  }
+  return Status::OK();
+}
+
+Status MovePath(const std::filesystem::path& source,
+                const std::filesystem::path& destination,
+                const std::string& label, bool* moved) {
+  if (moved == nullptr) {
+    return Status::InvalidArgument("move result is null");
+  }
+  *moved = false;
+  std::error_code ec;
+  const bool exists = std::filesystem::exists(source, ec);
+  if (ec) {
+    return Status::IOError("failed to query " + label + ": " + source.string());
+  }
+  if (!exists) {
+    return Status::OK();
+  }
+  std::filesystem::rename(source, destination, ec);
+  if (ec) {
+    return Status::IOError("failed to move " + label + ": " + source.string());
+  }
+  *moved = true;
+  return SyncParentDirectory(source);
+}
+
+std::string NextCheckpointInstallSuffix() {
+  static std::atomic<uint64_t> counter{0};
+  const uint64_t id = counter.fetch_add(1, std::memory_order_relaxed);
+  const uint64_t now = static_cast<uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+  return ".checkpoint-install-" + std::to_string(now) + "-" +
+         std::to_string(id);
+}
+
 }  // namespace
 
 DBImpl::DBImpl(DBOptions options)
@@ -120,6 +204,10 @@ Status DBImpl::Init() {
 
   shutting_down_ = false;
   background_error_ = Status::OK();
+  wal_append_generation_.store(0, std::memory_order_release);
+  wal_synced_generation_ = 0;
+  wal_sync_in_progress_ = false;
+  wal_sync_error_ = Status::OK();
   immutable_mems_.clear();
   memtable_ = std::make_unique<MemTable>();
   latest_key_seq_.clear();
@@ -257,6 +345,13 @@ Status DBImpl::Put(const WriteOptions& options,
 
   ++next_seq_;
 
+  if (ShouldSync(options)) {
+    s = SyncWALGroup(lk);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
   s = MaybeFlushMemTable(lk);
   if (!s.ok()) {
     return s;
@@ -279,6 +374,8 @@ Status DBImpl::ApplyPut(const std::string& key, const std::string& value) {
   s = ApplyPut(seq, durable_options, Slice(key), Slice(value));
   if (!s.ok()) return s;
   ++next_seq_;
+  s = SyncWALGroup(lk);
+  if (!s.ok()) return s;
   return MaybeFlushMemTable(lk);
 }
 
@@ -296,6 +393,8 @@ Status DBImpl::ApplyDelete(const std::string& key) {
   s = ApplyDelete(seq, durable_options, Slice(key));
   if (!s.ok()) return s;
   ++next_seq_;
+  s = SyncWALGroup(lk);
+  if (!s.ok()) return s;
   return MaybeFlushMemTable(lk);
 }
 
@@ -314,6 +413,8 @@ Status DBImpl::ApplyPutWithExpiry(const std::string& key,
                          expires_at_ms);
   if (!s.ok()) return s;
   ++next_seq_;
+  s = SyncWALGroup(lk);
+  if (!s.ok()) return s;
   return MaybeFlushMemTable(lk);
 }
 
@@ -334,6 +435,8 @@ Status DBImpl::ApplyExpireAt(const std::string& key, uint64_t expires_at_ms) {
                          expires_at_ms);
   if (!s.ok()) return s;
   ++next_seq_;
+  s = SyncWALGroup(lk);
+  if (!s.ok()) return s;
   return MaybeFlushMemTable(lk);
 }
 
@@ -401,6 +504,13 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
 
   ++next_seq_;
 
+  if (ShouldSync(options)) {
+    s = SyncWALGroup(lk);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
   s = MaybeFlushMemTable(lk);
   if (!s.ok()) {
     return s;
@@ -440,6 +550,10 @@ Status DBImpl::Expire(const WriteOptions& options, const Slice& key,
   if (!s.ok()) return s;
 
   ++next_seq_;
+  if (ShouldSync(options)) {
+    s = SyncWALGroup(lk);
+    if (!s.ok()) return s;
+  }
   return MaybeFlushMemTable(lk);
 }
 
@@ -496,6 +610,10 @@ Status DBImpl::Persist(const WriteOptions& options, const Slice& key) {
   s = ApplyPutWithExpiry(next_seq_, options, key, Slice(value), 0);
   if (!s.ok()) return s;
   ++next_seq_;
+  if (ShouldSync(options)) {
+    s = SyncWALGroup(lk);
+    if (!s.ok()) return s;
+  }
   return MaybeFlushMemTable(lk);
 }
 
@@ -528,7 +646,7 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   }
 
   if (ShouldSync(options)) {
-    Status s = SyncWAL();
+    Status s = SyncWALGroup(lk);
     if (!s.ok()) {
       return s;
     }
@@ -568,6 +686,10 @@ Status DBImpl::Compact() {
     return Status::AlreadyExists("cannot compact with active snapshots");
   }
 
+  if (compaction_in_progress_) {
+    return Status::AlreadyExists("compaction already in progress");
+  }
+
   if (!memtable_->Empty()) {
     RotateMemTable();
     flush_cv_.notify_one();
@@ -577,12 +699,22 @@ Status DBImpl::Compact() {
     return flush_status;
   }
 
-  if (sst_files_.size() < options_.compaction_min_input_files) {
+  size_t l0_file_count = 0;
+  size_t l1_file_count = 0;
+  for (const auto& state : sst_files_) {
+    if (state.metadata.level == 0) {
+      ++l0_file_count;
+    } else if (state.metadata.level == 1) {
+      ++l1_file_count;
+    }
+  }
+  if (l0_file_count < options_.compaction_min_input_files &&
+      l1_file_count < options_.compaction_min_input_files) {
     return Status::NotFound("not enough sst files for compaction");
   }
 
   ++compaction_stats_.trigger_attempts;
-  Status s = CompactSSTFilesLocked();
+  Status s = CompactSSTFiles(lk);
   if (s.ok()) {
     ++compaction_stats_.succeeded;
   } else {
@@ -701,11 +833,6 @@ Status DBImpl::InstallCheckpoint(const std::string& checkpoint_dir) {
     return Status::Corruption("checkpoint is incomplete: " + checkpoint_dir);
   }
 
-  Status close_status = Close();
-  if (!close_status.ok()) {
-    return close_status;
-  }
-
   Manifest source_manifest_reader;
   Status s = source_manifest_reader.Open(source_manifest.string(), false);
   if (!s.ok()) {
@@ -721,68 +848,246 @@ Status DBImpl::InstallCheckpoint(const std::string& checkpoint_dir) {
     return s;
   }
 
-  const std::filesystem::path target_sst(sst_dir_);
-  const std::filesystem::path target_manifest(manifest_path_);
-  if (target_sst.empty() || target_manifest.empty()) {
+  std::filesystem::path target_sst;
+  std::filesystem::path target_manifest;
+  std::filesystem::path target_wal;
+  bool segmented_wal = false;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    s = RequireOpen(open_);
+    if (!s.ok()) {
+      return s;
+    }
+    target_sst = sst_dir_;
+    target_manifest = manifest_path_;
+    segmented_wal = using_segmented_wal_;
+    target_wal = segmented_wal ? std::filesystem::path(wal_dir_)
+                               : std::filesystem::path(wal_path_);
+  }
+  if (target_sst.empty() || target_manifest.empty() || target_wal.empty()) {
     return Status::InvalidArgument("database paths are not initialized");
   }
 
-  std::filesystem::remove_all(target_sst, ec);
-  if (ec) {
-    return Status::IOError("failed to clear local sst directory");
-  }
-  std::filesystem::create_directories(target_sst, ec);
-  if (ec) {
-    return Status::IOError("failed to create local sst directory");
-  }
-  std::filesystem::remove(target_manifest, ec);
-  if (ec) {
-    return Status::IOError("failed to clear local manifest");
-  }
-
-  Manifest target_manifest_writer;
-  s = target_manifest_writer.Open(target_manifest.string(), true);
-  if (!s.ok()) {
-    return s;
-  }
+  // Validate every manifest entry before touching the live database. Snapshot
+  // archives can be extracted under a new directory, so rebuild paths from
+  // the checkpoint's own immutable SST directory instead of trusting the
+  // serialized source-machine paths in its manifest.
   for (const auto& file : files) {
-    const std::filesystem::path destination =
-        target_sst / std::filesystem::path(file.file_path).filename();
-    std::filesystem::copy_file(file.file_path, destination,
-                               std::filesystem::copy_options::overwrite_existing,
-                               ec);
-    if (ec) {
-      (void)target_manifest_writer.Close();
-      return Status::IOError("failed to copy checkpoint sst");
+    const std::filesystem::path expected =
+        (source_sst / BuildSSTFileName(file.file_number)).lexically_normal();
+    if (file.file_number == 0 ||
+        std::filesystem::path(file.file_path).filename() != expected.filename()) {
+      return Status::Corruption("checkpoint manifest references an invalid sst");
     }
+    if (!std::filesystem::is_regular_file(expected, ec) || ec) {
+      return Status::Corruption("checkpoint references missing sst: " +
+                                expected.string());
+    }
+  }
 
-    ManifestFileMeta target_file = file;
-    target_file.file_path = destination.string();
-    s = target_manifest_writer.AddFile(target_file);
+  const std::string suffix = NextCheckpointInstallSuffix();
+  const std::filesystem::path staged_sst = target_sst.string() + suffix + ".stage";
+  const std::filesystem::path staged_manifest =
+      target_manifest.string() + suffix + ".stage";
+  const std::filesystem::path backup_sst = target_sst.string() + suffix + ".backup";
+  const std::filesystem::path backup_manifest =
+      target_manifest.string() + suffix + ".backup";
+  const std::filesystem::path backup_wal = target_wal.string() + suffix + ".backup";
+
+  for (const auto& path : {staged_sst, staged_manifest, backup_sst,
+                           backup_manifest, backup_wal}) {
+    if (std::filesystem::exists(path, ec) || ec) {
+      if (ec) {
+        return Status::IOError("failed to query checkpoint staging path: " +
+                               path.string());
+      }
+      return Status::AlreadyExists("checkpoint staging path already exists: " +
+                                   path.string());
+    }
+  }
+
+  std::filesystem::create_directories(staged_sst, ec);
+  if (ec) {
+    return Status::IOError("failed to create checkpoint staging directory: " +
+                           staged_sst.string());
+  }
+  auto remove_staged = [&] {
+    (void)RemovePath(staged_sst, "checkpoint staging directory");
+    (void)RemovePath(staged_manifest, "checkpoint staging manifest");
+  };
+
+  for (const auto& file : files) {
+    const std::filesystem::path source_file =
+        source_sst / BuildSSTFileName(file.file_number);
+    const std::filesystem::path destination =
+        staged_sst / BuildSSTFileName(file.file_number);
+    std::filesystem::copy_file(source_file, destination, ec);
+    if (ec) {
+      remove_staged();
+      return Status::IOError("failed to stage checkpoint sst: " +
+                             source_file.string());
+    }
+    s = SyncFilePath(destination);
     if (!s.ok()) {
-      (void)target_manifest_writer.Close();
+      remove_staged();
+      return s;
+    }
+    s = testing::MaybeInjectFailure(testing::FailurePoint::kDuringCheckpointStage);
+    if (!s.ok()) {
+      remove_staged();
       return s;
     }
   }
-  s = target_manifest_writer.Sync();
-  Status manifest_close_status = target_manifest_writer.Close();
+
+  s = SyncDirectoryPath(staged_sst);
+  if (!s.ok()) {
+    remove_staged();
+    return s;
+  }
+
+  Manifest staged_manifest_writer;
+  s = staged_manifest_writer.Open(staged_manifest.string(), true);
+  for (const auto& file : files) {
+    if (!s.ok()) {
+      break;
+    }
+    ManifestFileMeta staged_file = file;
+    staged_file.file_path =
+        (target_sst / BuildSSTFileName(file.file_number)).string();
+    s = staged_manifest_writer.AddFile(staged_file);
+  }
+  if (s.ok()) {
+    s = staged_manifest_writer.Sync();
+  }
+  Status manifest_close_status = staged_manifest_writer.Close();
   if (s.ok() && !manifest_close_status.ok()) {
     s = manifest_close_status;
   }
   if (!s.ok()) {
+    remove_staged();
     return s;
   }
 
-  if (using_segmented_wal_) {
-    std::filesystem::remove_all(wal_dir_, ec);
-  } else {
-    std::filesystem::remove(wal_path_, ec);
-  }
-  if (ec) {
-    return Status::IOError("failed to clear local wal");
+  s = SyncParentDirectory(staged_manifest);
+  if (!s.ok()) {
+    remove_staged();
+    return s;
   }
 
-  return Init();
+  Status close_status = Close();
+  if (!close_status.ok()) {
+    remove_staged();
+    return close_status;
+  }
+
+  bool backed_up_sst = false;
+  bool backed_up_manifest = false;
+  bool backed_up_wal = false;
+  bool published_sst = false;
+  bool published_manifest = false;
+  bool init_attempted = false;
+
+  auto rollback = [&](const Status& failure) {
+    Status rollback_status = Status::OK();
+    auto remember_failure = [&rollback_status](const Status& candidate) {
+      if (rollback_status.ok() && !candidate.ok()) {
+        rollback_status = candidate;
+      }
+    };
+    if (init_attempted) {
+      remember_failure(CloseWAL());
+      remember_failure(manifest_.Close());
+      if (table_cache_ != nullptr) {
+        table_cache_->Clear();
+      }
+      remember_failure(RemovePath(target_wal, "partially initialized wal"));
+    }
+    if (published_manifest) {
+      remember_failure(RemovePath(target_manifest, "published checkpoint manifest"));
+    }
+    if (published_sst) {
+      remember_failure(RemovePath(target_sst, "published checkpoint sst"));
+    }
+
+    auto restore = [&remember_failure](const std::filesystem::path& backup,
+                                        const std::filesystem::path& target,
+                                        const std::string& label, bool moved) {
+      if (!moved) {
+        return;
+      }
+      bool restored = false;
+      Status restore_status = MovePath(backup, target, label, &restored);
+      if (restore_status.ok() && !restored) {
+        restore_status = Status::IOError("missing checkpoint backup: " +
+                                         backup.string());
+      }
+      remember_failure(restore_status);
+    };
+    restore(backup_wal, target_wal, "checkpoint wal backup", backed_up_wal);
+    restore(backup_manifest, target_manifest, "checkpoint manifest backup",
+            backed_up_manifest);
+    restore(backup_sst, target_sst, "checkpoint sst backup", backed_up_sst);
+    remove_staged();
+
+    if (rollback_status.ok()) {
+      Status reopen_status = Init();
+      if (!reopen_status.ok()) {
+        rollback_status = reopen_status;
+      }
+    }
+    if (!rollback_status.ok()) {
+      return Status::IOError("checkpoint install failed: " + failure.ToString() +
+                             "; rollback failed: " + rollback_status.ToString());
+    }
+    return failure;
+  };
+
+  s = MovePath(target_sst, backup_sst, "local sst directory", &backed_up_sst);
+  if (!s.ok()) {
+    return rollback(s);
+  }
+  s = MovePath(target_manifest, backup_manifest, "local manifest",
+               &backed_up_manifest);
+  if (!s.ok()) {
+    return rollback(s);
+  }
+  s = MovePath(target_wal, backup_wal,
+               segmented_wal ? "local wal directory" : "local wal",
+               &backed_up_wal);
+  if (!s.ok()) {
+    return rollback(s);
+  }
+
+  s = testing::MaybeInjectFailure(testing::FailurePoint::kDuringCheckpointPublish);
+  if (!s.ok()) {
+    return rollback(s);
+  }
+  s = MovePath(staged_sst, target_sst, "staged checkpoint sst", &published_sst);
+  if (!s.ok() || !published_sst) {
+    return rollback(s.ok() ? Status::IOError("missing staged checkpoint sst") : s);
+  }
+  s = MovePath(staged_manifest, target_manifest, "staged checkpoint manifest",
+               &published_manifest);
+  if (!s.ok() || !published_manifest) {
+    return rollback(s.ok() ? Status::IOError("missing staged checkpoint manifest")
+                           : s);
+  }
+
+  s = testing::MaybeInjectFailure(
+      testing::FailurePoint::kAfterCheckpointPublishBeforeInit);
+  if (!s.ok()) {
+    return rollback(s);
+  }
+  init_attempted = true;
+  s = Init();
+  if (!s.ok()) {
+    return rollback(s);
+  }
+
+  (void)RemovePath(backup_sst, "checkpoint sst backup");
+  (void)RemovePath(backup_manifest, "checkpoint manifest backup");
+  (void)RemovePath(backup_wal, "checkpoint wal backup");
+  return Status::OK();
 }
 
 Status DBImpl::GetCacheStats(CacheStats* stats) const {
@@ -856,7 +1161,12 @@ void DBImpl::TxnUnregister(Transaction* txn) {
 }
 
 const Snapshot* DBImpl::GetSnapshot() {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::unique_lock<std::mutex> lk(mu_);
+
+  // Compaction may be reclaiming versions based on the absence of snapshots.
+  // Delay snapshot creation until the commit point so it cannot race with
+  // that decision.
+  compaction_done_cv_.wait(lk, [this] { return !compaction_in_progress_; });
 
   Status open_status = RequireOpen(open_);
   if (!open_status.ok()) {
@@ -931,9 +1241,9 @@ std::unique_ptr<Iterator> DBImpl::NewIterator(const ReadOptions& options) {
   // SST iterators.
   std::vector<std::unique_ptr<TableIterator>> sst_iters;
   sst_iters.reserve(sst_files_.size());
-  for (const auto& file : sst_files_) {
+  for (const auto& state : sst_files_) {
     std::shared_ptr<const TableReader> reader;
-    s = table_cache_->Get(file, &reader);
+    s = table_cache_->Get(state.file_path, &reader);
     if (!s.ok()) {
       return nullptr;
     }
@@ -992,12 +1302,18 @@ Status DBImpl::Close() {
       return immutable_mems_.empty() || !background_error_.ok();
     });
   }
+  compaction_done_cv_.wait(lk, [this] { return !compaction_in_progress_; });
   flush_cv_.notify_one();
   lk.unlock();
   if (flush_thread_.joinable()) {
     flush_thread_.join();
   }
   lk.lock();
+
+  // A grouped WAL sync temporarily releases mu_. Wait for that sync to
+  // publish its result before closing the WAL, otherwise CloseWAL() could
+  // hold wal_mu_ while the sync thread waits to reacquire mu_.
+  wal_sync_cv_.wait(lk, [this] { return !wal_sync_in_progress_; });
 
   Status result = background_error_;
   Status s = CloseWAL();
@@ -1052,13 +1368,7 @@ Status DBImpl::ApplyPut(uint64_t seq,
   if (!s.ok()) {
     return s;
   }
-  if (ShouldSync(options)) {
-    s = SyncWAL();
-    if (!s.ok()) {
-      return s;
-    }
-  }
-
+  (void)options;
   return Status::OK();
 }
 
@@ -1079,9 +1389,7 @@ Status DBImpl::ApplyPutWithExpiry(uint64_t seq, const WriteOptions& options,
   if (!s.ok()) return s;
   InvalidateCacheEntry(key.ToString());
   latest_key_seq_[key.ToString()] = seq;
-  if (ShouldSync(options)) {
-    return SyncWAL();
-  }
+  (void)options;
   return Status::OK();
 }
 
@@ -1096,13 +1404,7 @@ Status DBImpl::ApplyDelete(uint64_t seq,
   if (!s.ok()) {
     return s;
   }
-  if (ShouldSync(options)) {
-    s = SyncWAL();
-    if (!s.ok()) {
-      return s;
-    }
-  }
-
+  (void)options;
   return Status::OK();
 }
 
@@ -1138,10 +1440,16 @@ Status DBImpl::AppendWALPut(uint64_t seq,
                             const Slice& key,
                             const Slice& value) {
   std::lock_guard<std::mutex> lk(wal_mu_);
+  Status s;
   if (using_segmented_wal_) {
-    return wal_manager_.AppendPut(seq, key.ToString(), value.ToString());
+    s = wal_manager_.AppendPut(seq, key.ToString(), value.ToString());
+  } else {
+    s = wal_writer_.AppendPut(seq, key, value);
   }
-  return wal_writer_.AppendPut(seq, key, value);
+  if (s.ok()) {
+    wal_append_generation_.fetch_add(1, std::memory_order_release);
+  }
+  return s;
 }
 
 Status DBImpl::AppendWALPutWithTTL(uint64_t seq,
@@ -1149,24 +1457,87 @@ Status DBImpl::AppendWALPutWithTTL(uint64_t seq,
                                    const Slice& value,
                                    uint64_t expires_at_ms) {
   std::lock_guard<std::mutex> lk(wal_mu_);
+  Status s;
   if (using_segmented_wal_) {
-    return wal_manager_.AppendPutWithTTL(seq, key.ToString(), value.ToString(),
-                                         expires_at_ms);
+    s = wal_manager_.AppendPutWithTTL(seq, key.ToString(), value.ToString(),
+                                      expires_at_ms);
+  } else {
+    s = wal_writer_.AppendPutWithTTL(seq, key, value, expires_at_ms);
   }
-  return wal_writer_.AppendPutWithTTL(seq, key, value, expires_at_ms);
+  if (s.ok()) {
+    wal_append_generation_.fetch_add(1, std::memory_order_release);
+  }
+  return s;
 }
 
 Status DBImpl::AppendWALDelete(uint64_t seq, const Slice& key) {
   std::lock_guard<std::mutex> lk(wal_mu_);
+  Status s;
   if (using_segmented_wal_) {
-    return wal_manager_.AppendDelete(seq, key.ToString());
+    s = wal_manager_.AppendDelete(seq, key.ToString());
+  } else {
+    s = wal_writer_.AppendDelete(seq, key);
   }
-  return wal_writer_.AppendDelete(seq, key);
+  if (s.ok()) {
+    wal_append_generation_.fetch_add(1, std::memory_order_release);
+  }
+  return s;
 }
 
 Status DBImpl::SyncWAL() {
   std::lock_guard<std::mutex> lk(wal_mu_);
   return using_segmented_wal_ ? wal_manager_.Sync() : wal_writer_.Sync();
+}
+
+Status DBImpl::SyncWALGroup(std::unique_lock<std::mutex>& lock) {
+  const uint64_t requested_generation =
+      wal_append_generation_.load(std::memory_order_acquire);
+  if (requested_generation <= wal_synced_generation_) {
+    return Status::OK();
+  }
+
+  while (true) {
+    if (!wal_sync_in_progress_) {
+      wal_sync_in_progress_ = true;
+      break;
+    }
+    wal_sync_cv_.wait(lock, [this, requested_generation] {
+      return wal_synced_generation_ >= requested_generation ||
+             !wal_sync_in_progress_;
+    });
+    if (wal_synced_generation_ >= requested_generation) {
+      return Status::OK();
+    }
+    if (!wal_sync_error_.ok()) {
+      return wal_sync_error_;
+    }
+    // The previous group completed before this append reached wal_mu_. Loop
+    // and become the sole leader for a second sync covering this writer.
+  }
+
+  wal_sync_error_ = Status::OK();
+  lock.unlock();
+
+  // Holding wal_mu_ makes the generation snapshot precise: appends that
+  // completed before this lock are included in the sync; later appends wait
+  // and will be handled by the next group.
+  std::unique_lock<std::mutex> wal_lock(wal_mu_);
+  const uint64_t sync_generation =
+      wal_append_generation_.load(std::memory_order_acquire);
+  Status sync_status = using_segmented_wal_ ? wal_manager_.Sync()
+                                            : wal_writer_.Sync();
+  wal_lock.unlock();
+
+  lock.lock();
+  if (sync_status.ok()) {
+    wal_synced_generation_ =
+        std::max(wal_synced_generation_, sync_generation);
+  } else {
+    wal_sync_error_ = sync_status;
+  }
+  wal_sync_in_progress_ = false;
+  wal_sync_cv_.notify_all();
+  return sync_status;
 }
 
 Status DBImpl::CloseWAL() {
@@ -1226,12 +1597,37 @@ Status DBImpl::WaitForImmutableMemTableSpace(
   return CheckWritable();
 }
 
-void DBImpl::MaybeCompactAfterFlushLocked() {
+void DBImpl::MaybeCompactAfterFlush(std::unique_lock<std::mutex>& lock) {
   if (!options_.auto_compaction_enabled) {
     return;
   }
 
-  if (sst_files_.size() < options_.compaction_min_input_files) {
+  if (compaction_in_progress_) {
+    return;
+  }
+
+  const auto level1_over_threshold = [this]() {
+    size_t files = 0;
+    uint64_t bytes = 0;
+    for (const auto& state : sst_files_) {
+      if (state.metadata.level == 1) {
+        ++files;
+        bytes += state.metadata.file_size;
+      }
+    }
+    return files >= options_.compaction_min_input_files &&
+           (options_.compaction_level_max_bytes == 0 ||
+            bytes >= options_.compaction_level_max_bytes);
+  };
+
+  size_t l0_file_count = 0;
+  for (const auto& state : sst_files_) {
+    if (state.metadata.level == 0) ++l0_file_count;
+  }
+  const bool should_compact_l0 =
+      l0_file_count >= options_.compaction_min_input_files;
+  const bool should_compact_l1 = l0_file_count == 0 && level1_over_threshold();
+  if (!should_compact_l0 && !should_compact_l1) {
     ++compaction_stats_.skipped_due_threshold;
     return;
   }
@@ -1241,9 +1637,23 @@ void DBImpl::MaybeCompactAfterFlushLocked() {
   }
 
   ++compaction_stats_.trigger_attempts;
-  Status compact_status = CompactSSTFilesLocked();
+  Status compact_status = CompactSSTFiles(lock);
   if (compact_status.ok()) {
     ++compaction_stats_.succeeded;
+
+    // A successful L0→L1 pass can make L1 exceed its size budget. Run one
+    // follow-up pass immediately while the flush worker already has control;
+    // future flushes will retry if the budget remains exceeded.
+    if (should_compact_l0 && level1_over_threshold() &&
+        !compaction_in_progress_) {
+      ++compaction_stats_.trigger_attempts;
+      Status next_status = CompactSSTFiles(lock);
+      if (next_status.ok()) {
+        ++compaction_stats_.succeeded;
+      } else {
+        ++compaction_stats_.failed;
+      }
+    }
     return;
   }
 
@@ -1281,11 +1691,16 @@ void DBImpl::FlushWorker() {
     ImmutableMemTable& immutable_mem = immutable_mems_.front();
     immutable_mem.flushing = true;
     MemTable* memtable = immutable_mem.table.get();
+    // Reserve the file number while holding the DB mutex. The actual SST
+    // build runs without the mutex, so explicit compaction and concurrent
+    // flushes cannot allocate the same output name.
+    const uint64_t file_number = next_file_number_++;
     lock.unlock();
 
     const auto start = std::chrono::steady_clock::now();
     std::string sst_file;
-    Status s = FlushMemTableToSST(*memtable, &sst_file);
+    ManifestFileMeta sst_meta;
+    Status s = FlushMemTableToSST(*memtable, file_number, &sst_file, &sst_meta);
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - start);
 
@@ -1299,10 +1714,34 @@ void DBImpl::FlushWorker() {
       continue;
     }
 
-    sst_files_.push_back(std::move(sst_file));
+    if (manifest_.IsOpen()) {
+      s = manifest_.AddFile(sst_meta);
+      if (s.ok()) {
+        s = testing::MaybeInjectFailure(
+            testing::FailurePoint::kAfterManifestAppendBeforeSync);
+      }
+      if (s.ok()) {
+        s = manifest_.Sync();
+      }
+      if (s.ok()) {
+        s = testing::MaybeInjectFailure(
+            testing::FailurePoint::kAfterManifestSyncBeforeWALCleanup);
+      }
+      if (s.ok()) {
+        s = RemoveFlushedWAL(sst_meta.max_seq);
+      }
+      if (!s.ok()) {
+        ++flush_stats_.failed;
+        background_error_ = s;
+        flush_done_cv_.notify_all();
+        continue;
+      }
+    }
+
+    sst_files_.push_back({std::move(sst_file), std::move(sst_meta)});
     immutable_mems_.pop_front();
     ++flush_stats_.completed;
-    MaybeCompactAfterFlushLocked();
+    MaybeCompactAfterFlush(lock);
     flush_done_cv_.notify_all();
   }
 }
@@ -1315,9 +1754,14 @@ Status DBImpl::CheckWritable() const {
 }
 
 Status DBImpl::FlushMemTableToSST(const MemTable& memtable,
-                                  std::string* out_file) {
+                                  uint64_t file_number,
+                                  std::string* out_file,
+                                  ManifestFileMeta* out_meta) {
   if (out_file == nullptr) {
     return Status::InvalidArgument("out_file is null");
+  }
+  if (out_meta == nullptr) {
+    return Status::InvalidArgument("out_meta is null");
   }
 
   if (memtable.Empty()) {
@@ -1331,18 +1775,24 @@ Status DBImpl::FlushMemTableToSST(const MemTable& memtable,
   }
 
   const std::string sst_path =
-      sst_dir_ + "/" + BuildSSTFileName(next_file_number_);
-  const uint64_t file_number = next_file_number_;
+      sst_dir_ + "/" + BuildSSTFileName(file_number);
 
   TableBuilder builder(sst_path, options_.sstable_block_size_bytes,
                        options_.bloom_bits_per_key);
 
   auto it = memtable.NewIterator();
   uint64_t max_flushed_seq = 0;
+  ManifestFileMeta meta;
+  meta.file_number = file_number;
+  meta.file_path = sst_path;
 
   for (it.SeekToFirst(); it.Valid(); it.Next()) {
     const auto& entry = it.entry();
     max_flushed_seq = std::max(max_flushed_seq, entry.seq);
+    if (meta.smallest_key.empty()) {
+      meta.smallest_key = entry.key;
+    }
+    meta.largest_key = entry.key;
 
     uint8_t type = (entry.type == RecordType::kDeletion) ? 1 : 0;
     Status s = builder.Add(entry.key, entry.seq, type, entry.expires_at_ms,
@@ -1368,37 +1818,14 @@ Status DBImpl::FlushMemTableToSST(const MemTable& memtable,
     return Status::NotFound("no visible entries to flush");
   }
 
-  if (manifest_.IsOpen()) {
-    ManifestFileMeta meta;
-    meta.file_number = file_number;
-    meta.file_path = sst_path;
-    meta.max_seq = max_flushed_seq;
-    s = manifest_.AddFile(meta);
-    if (!s.ok()) {
-      return s;
-    }
-    s = testing::MaybeInjectFailure(
-        testing::FailurePoint::kAfterManifestAppendBeforeSync);
-    if (!s.ok()) {
-      return s;
-    }
-    s = manifest_.Sync();
-    if (!s.ok()) {
-      return s;
-    }
-    s = testing::MaybeInjectFailure(
-        testing::FailurePoint::kAfterManifestSyncBeforeWALCleanup);
-    if (!s.ok()) {
-      return s;
-    }
-    s = RemoveFlushedWAL(max_flushed_seq);
-    if (!s.ok()) {
-      return s;
-    }
+  meta.max_seq = max_flushed_seq;
+  meta.file_size = std::filesystem::file_size(sst_path, ec);
+  if (ec) {
+    return Status::IOError("failed to query flushed sst size: " + sst_path);
   }
 
   *out_file = sst_path;
-  ++next_file_number_;
+  *out_meta = meta;
   return Status::OK();
 }
 
@@ -1475,10 +1902,25 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
     }
   }
 
-  // Walk SST files from newest to oldest so duplicate keys split across blocks
-  // still resolve to the newest visible version.
+  // Publication order is not version order: a compaction can publish old
+  // entries after a concurrent flush. Compare visible entry sequences across
+  // files, including tombstones and expired values, before resolving the key.
+  bool have_latest = false;
+  uint64_t latest_seq = 0;
+  uint8_t latest_type = 0;
+  uint64_t latest_expires_at_ms = 0;
+  std::string latest_value;
   for (size_t i = sst_files_.size(); i-- > 0;) {
-    const std::string& file = sst_files_[i];
+    const SSTFileState& state = sst_files_[i];
+    if (have_latest && state.metadata.max_seq <= latest_seq) continue;
+    const std::string& file = state.file_path;
+    if (state.metadata.HasKeyRange()) {
+      const auto& range = state.metadata;
+      if (target < range.smallest_key || target > range.largest_key) {
+        ++read_path_stats_.range_prunes;
+        continue;
+      }
+    }
 
     std::shared_ptr<const TableReader> reader;
     Status s = table_cache_->Get(file, &reader);
@@ -1487,38 +1929,36 @@ Status DBImpl::GetFromSSTFilesAt(const Slice& key,
     }
 
     uint8_t entry_type = 0;
+    uint64_t entry_seq = 0;
     uint64_t entry_expires_at_ms = 0;
+    std::string entry_value;
     TableReadStatsDelta stats_delta;
-    s = reader->Get(target, read_seq, &entry_type, value,
-                    &entry_expires_at_ms, &stats_delta);
+    s = reader->Get(target, read_seq, &entry_type, &entry_value,
+                    &entry_expires_at_ms, &stats_delta, &entry_seq);
     read_path_stats_.bloom_queries += stats_delta.bloom_queries;
     read_path_stats_.bloom_negatives += stats_delta.bloom_negatives;
-    if (s.ok()) {
-      if (entry_type == 1) {
-        // deletion tombstone
-        return Status::NotFound("key deleted");
-      }
-      if (expires_at_ms != nullptr) *expires_at_ms = entry_expires_at_ms;
-      if (IsExpired(entry_expires_at_ms, NowUnixMillis())) {
-        return Status::NotFound("key expired");
-      }
-      if (allow_cache) {
-        if (entry_expires_at_ms == 0) {
-          cache_->Put(target, *value);
-        }
-      }
-      return Status::OK();
-    }
-    if (s.IsNotFound()) {
-      if (entry_type == 1) {
-        return s;
+    if (s.ok() || (s.IsNotFound() && entry_type == 1)) {
+      if (!have_latest || entry_seq > latest_seq) {
+        have_latest = true;
+        latest_seq = entry_seq;
+        latest_type = entry_type;
+        latest_expires_at_ms = entry_expires_at_ms;
+        latest_value = std::move(entry_value);
       }
       continue;
     }
-    return s;
+    if (!s.IsNotFound()) return s;
   }
 
-  return Status::NotFound("key not found");
+  if (!have_latest) return Status::NotFound("key not found");
+  if (latest_type == 1) return Status::NotFound("key deleted");
+  if (expires_at_ms != nullptr) *expires_at_ms = latest_expires_at_ms;
+  if (IsExpired(latest_expires_at_ms, NowUnixMillis())) {
+    return Status::NotFound("key expired");
+  }
+  *value = std::move(latest_value);
+  if (allow_cache && latest_expires_at_ms == 0) cache_->Put(target, *value);
+  return Status::OK();
 }
 
 Status DBImpl::GetAtSequence(const Slice& key,
@@ -1555,7 +1995,8 @@ Status DBImpl::GetAtSequence(const Slice& key,
 Status DBImpl::RebuildLatestKeySeqIndex() {
   latest_key_seq_.clear();
 
-  for (const auto& file : sst_files_) {
+  for (const auto& state : sst_files_) {
+    const auto& file = state.file_path;
     std::shared_ptr<const TableReader> reader;
     Status s = table_cache_->Get(file, &reader);
     if (!s.ok()) {
@@ -1648,7 +2089,7 @@ Status DBImpl::CommitOCCTransaction(
   }
 
   if (ShouldSync(options)) {
-    Status s = SyncWAL();
+    Status s = SyncWALGroup(lk);
     if (!s.ok()) {
       return s;
     }
@@ -1698,7 +2139,7 @@ Status DBImpl::LoadSSTFilesFromManifest(uint64_t* max_seq) {
       return Status::Corruption("manifest references missing sst file: " +
                                 f.file_path);
     }
-    sst_files_.push_back(f.file_path);
+    sst_files_.push_back({f.file_path, f});
     max_file_number = std::max(max_file_number, f.file_number);
     *max_seq = std::max(*max_seq, f.max_seq);
   }
@@ -1776,9 +2217,6 @@ Status DBImpl::LoadSSTFilesFromDir(uint64_t* max_seq) {
   });
 
   for (const auto& [number, file] : files) {
-    (void)number;
-    sst_files_.push_back(file);
-
     // Get max_seq from the file via TableReader
     std::unique_ptr<TableReader> reader;
     Status s = TableReader::Open(file, &reader);
@@ -1786,6 +2224,33 @@ Status DBImpl::LoadSSTFilesFromDir(uint64_t* max_seq) {
       return s;
     }
     *max_seq = std::max(*max_seq, reader->MaxSequence());
+
+    ManifestFileMeta meta;
+    meta.file_number = number;
+    meta.file_path = file;
+    meta.max_seq = reader->MaxSequence();
+    meta.level = 0;
+    std::error_code size_ec;
+    meta.file_size = std::filesystem::file_size(file, size_ec);
+    if (size_ec) {
+      return Status::IOError("failed to query sst file size: " + file);
+    }
+    TableIterator iterator(*reader);
+    iterator.SeekToFirst();
+    if (!iterator.status().ok()) {
+      return iterator.status();
+    }
+    if (iterator.Valid()) {
+      meta.smallest_key = iterator.key();
+      while (iterator.Valid()) {
+        meta.largest_key = iterator.key();
+        iterator.Next();
+        if (!iterator.status().ok()) {
+          return iterator.status();
+        }
+      }
+    }
+    sst_files_.push_back({file, std::move(meta)});
   }
 
   if (!files.empty()) {
@@ -1889,55 +2354,111 @@ std::string DBImpl::BuildSSTCacheKey(const std::string& sst_file,
   return out;
 }
 
-Status DBImpl::CompactSSTFilesLocked() {
-  if (sst_files_.size() <= 1) {
+Status DBImpl::CompactSSTFiles(std::unique_lock<std::mutex>& lock) {
+  if (compaction_in_progress_) {
+    return Status::AlreadyExists("compaction already in progress");
+  }
+  if (sst_files_.empty()) {
     return Status::OK();
   }
-  const std::vector<std::string> old_files = sst_files_;
 
-  std::map<std::string, CompactionEntry> latest;
-  uint64_t compact_max_seq = 0;
-
-  for (const auto& file : sst_files_) {
-    std::shared_ptr<const TableReader> reader;
-    Status s = table_cache_->Get(file, &reader);
-    if (!s.ok()) {
-      return s;
+  // Select inputs while holding the DB mutex. The selected paths and metadata
+  // form an immutable plan; flushes may append newer files while I/O runs.
+  std::vector<size_t> selected_indices;
+  uint32_t input_level = 0;
+  if (std::none_of(sst_files_.begin(), sst_files_.end(),
+                   [](const SSTFileState& state) {
+                     return state.metadata.level == 0;
+                   })) {
+    input_level = 1;
+  }
+  bool have_range = false;
+  bool unknown_input_range = false;
+  std::string input_smallest;
+  std::string input_largest;
+  for (size_t i = 0; i < sst_files_.size(); ++i) {
+    const auto& meta = sst_files_[i].metadata;
+    if (meta.level != input_level) {
+      continue;
     }
-
-    for (const auto& index_entry : reader->index()) {
-      std::string block_data;
-      s = reader->ReadBlock(index_entry.block_offset,
-                            index_entry.block_size,
-                            &block_data);
-      if (!s.ok()) {
-        return s;
-      }
-
-      Block block(block_data.data(), block_data.size());
-      BlockIterator iter(block);
-      for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
-        const std::string k = std::string(iter.key());
-        const uint64_t seq = iter.seq();
-        const uint8_t type = iter.type();
-
-        compact_max_seq = std::max(compact_max_seq, seq);
-        auto it = latest.find(k);
-        if (it == latest.end() || seq > it->second.seq) {
-          CompactionEntry entry;
-          entry.seq = seq;
-          entry.type = type;
-          DecodeSSTValue(std::string(iter.value()), &entry.value,
-                         &entry.expires_at_ms);
-          latest[k] = std::move(entry);
-        }
-      }
+    selected_indices.push_back(i);
+    if (!meta.HasKeyRange()) {
+      unknown_input_range = true;
+      continue;
+    }
+    if (!have_range) {
+      input_smallest = meta.smallest_key;
+      input_largest = meta.largest_key;
+      have_range = true;
+    } else {
+      input_smallest = std::min(input_smallest, meta.smallest_key);
+      input_largest = std::max(input_largest, meta.largest_key);
     }
   }
-
-  if (latest.empty()) {
-    return Status::OK();
+  if (selected_indices.empty()) {
+    return Status::NotFound("no L0 files to compact");
   }
+  for (size_t i = 0; i < sst_files_.size(); ++i) {
+    const auto& meta = sst_files_[i].metadata;
+    if (meta.level != input_level + 1) {
+      continue;
+    }
+    const bool overlaps = unknown_input_range || !have_range ||
+                          !meta.HasKeyRange() ||
+                          !(meta.largest_key < input_smallest ||
+                            meta.smallest_key > input_largest);
+    if (overlaps) {
+      selected_indices.push_back(i);
+    }
+  }
+  std::sort(selected_indices.begin(), selected_indices.end());
+
+  CompactionPlan plan;
+  plan.old_files.reserve(selected_indices.size());
+  plan.old_metadata.reserve(selected_indices.size());
+  for (size_t index : selected_indices) {
+    plan.old_files.push_back(sst_files_[index].file_path);
+    plan.old_metadata.push_back(sst_files_[index].metadata);
+  }
+  // Reserve the output number before releasing the mutex. Gaps are harmless
+  // after a failed compaction and prevent names from racing with flushes.
+  plan.output_file_number = next_file_number_++;
+  plan.output_level = input_level + 1;
+  compaction_in_progress_ = true;
+
+  std::vector<ManifestFileMeta> output_metadata;
+  const auto compaction_start = std::chrono::steady_clock::now();
+  lock.unlock();
+  Status status = ExecuteCompaction(plan, &output_metadata);
+  lock.lock();
+
+  uint64_t output_bytes = 0;
+  for (const auto& meta : output_metadata) output_bytes += meta.file_size;
+  if (status.ok()) {
+    status = CommitCompaction(plan, std::move(output_metadata));
+  }
+  if (status.ok()) {
+    uint64_t input_bytes = 0;
+    for (const auto& meta : plan.old_metadata) input_bytes += meta.file_size;
+    compaction_stats_.input_bytes += input_bytes;
+    compaction_stats_.output_bytes += output_bytes;
+    compaction_stats_.total_duration_us += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - compaction_start)
+            .count());
+  }
+  compaction_in_progress_ = false;
+  compaction_done_cv_.notify_all();
+  return status;
+}
+
+Status DBImpl::ExecuteCompaction(
+    const CompactionPlan& plan,
+    std::vector<ManifestFileMeta>* output_metadata) {
+  if (output_metadata == nullptr) {
+    return Status::InvalidArgument("compaction output is null");
+  }
+  output_metadata->clear();
 
   std::error_code ec;
   std::filesystem::create_directories(sst_dir_, ec);
@@ -1945,93 +2466,261 @@ Status DBImpl::CompactSSTFilesLocked() {
     return Status::IOError("failed to create sst dir: " + sst_dir_);
   }
 
-  const std::string sst_path =
-      sst_dir_ + "/" + BuildSSTFileName(next_file_number_);
-  const uint64_t file_number = next_file_number_;
-
-  TableBuilder builder(sst_path, options_.sstable_block_size_bytes,
-                       options_.bloom_bits_per_key);
-  for (const auto& [key, entry] : latest) {
-    Status s = builder.Add(key, entry.seq, entry.type, entry.expires_at_ms,
-                           entry.value);
-    if (!s.ok()) {
-      return s;
+  // Each input iterator owns at most one decoded data block. The heap holds
+  // one entry per input, so compaction memory is O(number of input files).
+  struct MergeSource {
+    std::shared_ptr<const TableReader> reader;
+    std::unique_ptr<TableIterator> iterator;
+  };
+  struct HeapEntry {
+    std::string key;
+    uint64_t seq = 0;
+    uint8_t type = 0;
+    uint64_t expires_at_ms = 0;
+    std::string value;
+    size_t source = 0;
+  };
+  struct HeapCompare {
+    bool operator()(const HeapEntry& lhs, const HeapEntry& rhs) const {
+      if (lhs.key != rhs.key) return lhs.key > rhs.key;
+      if (lhs.seq != rhs.seq) return lhs.seq < rhs.seq;
+      return lhs.source > rhs.source;
     }
+  };
+
+  std::vector<MergeSource> sources;
+  sources.reserve(plan.old_files.size());
+  std::priority_queue<HeapEntry, std::vector<HeapEntry>, HeapCompare> heap;
+  for (const auto& file : plan.old_files) {
+    MergeSource source;
+    Status s = table_cache_->Get(file, &source.reader);
+    if (!s.ok()) return s;
+    source.iterator = std::make_unique<TableIterator>(*source.reader);
+    source.iterator->SeekToFirst();
+    if (!source.iterator->status().ok()) return source.iterator->status();
+    sources.push_back(std::move(source));
   }
 
-  Status s = builder.Finish();
-  if (!s.ok()) {
-    return s;
+  const auto push_current = [&heap, &sources](size_t source_index) {
+    const TableIterator& iterator = *sources[source_index].iterator;
+    if (!iterator.Valid()) return;
+    HeapEntry entry;
+    entry.key = iterator.key();
+    entry.seq = iterator.seq();
+    entry.type = iterator.type();
+    entry.expires_at_ms = iterator.expires_at_ms();
+    entry.value = iterator.value();
+    entry.source = source_index;
+    heap.push(std::move(entry));
+  };
+  for (size_t i = 0; i < sources.size(); ++i) push_current(i);
+
+  const uint64_t target_size =
+      static_cast<uint64_t>(options_.compaction_output_file_size_bytes);
+  std::unique_ptr<TableBuilder> builder;
+  ManifestFileMeta current_meta;
+  bool current_has_entries = false;
+  size_t shard_index = 0;
+  const auto start_builder = [&]() {
+    const std::string path = sst_dir_ + "/.compaction-" +
+                             std::to_string(plan.output_file_number) + "-" +
+                             std::to_string(shard_index++) + ".sst";
+    builder = std::make_unique<TableBuilder>(
+        path, options_.sstable_block_size_bytes, options_.bloom_bits_per_key);
+    current_meta = ManifestFileMeta();
+    current_meta.file_path = path;
+    current_meta.level = plan.output_level;
+    current_has_entries = false;
+  };
+  const auto finish_builder = [&]() -> Status {
+    if (!builder || !current_has_entries) return Status::OK();
+    Status s = builder->Finish();
+    if (!s.ok()) return s;
+    current_meta.file_size = std::filesystem::file_size(current_meta.file_path, ec);
+    if (ec) {
+      return Status::IOError("failed to query compacted sst size: " +
+                             current_meta.file_path);
+    }
+    output_metadata->push_back(current_meta);
+    builder.reset();
+    current_has_entries = false;
+    return Status::OK();
+  };
+
+  uint64_t compact_max_seq = 0;
+  while (!heap.empty()) {
+    const std::string key = heap.top().key;
+    CompactionEntry latest;
+    bool have_latest = false;
+    while (!heap.empty() && heap.top().key == key) {
+      HeapEntry entry = heap.top();
+      heap.pop();
+      if (!have_latest || entry.seq > latest.seq) {
+        latest.seq = entry.seq;
+        latest.type = entry.type;
+        latest.expires_at_ms = entry.expires_at_ms;
+        latest.value = std::move(entry.value);
+        have_latest = true;
+      }
+      MergeSource& source = sources[entry.source];
+      source.iterator->Next();
+      if (!source.iterator->status().ok()) return source.iterator->status();
+      push_current(entry.source);
+    }
+    if (!have_latest) continue;
+
+    // Once compaction advances into L2 or deeper, every older overlapping
+    // level is part of the input set. With no active snapshots (checked by
+    // the caller), a deletion marker or already-expired value can therefore
+    // be discarded together with the shadowed history.
+    if (plan.output_level >= 2 &&
+        (latest.type == 1 || IsExpired(latest.expires_at_ms, NowUnixMillis()))) {
+      continue;
+    }
+
+    if (!builder) start_builder();
+    if (target_size != 0 && current_has_entries &&
+        builder->FileSize() >= target_size) {
+      Status s = finish_builder();
+      if (!s.ok()) return s;
+      start_builder();
+    }
+
+    Status s = builder->Add(key, latest.seq, latest.type,
+                            latest.expires_at_ms, latest.value);
+    if (!s.ok()) return s;
+    if (!current_has_entries) current_meta.smallest_key = key;
+    current_meta.largest_key = key;
+    current_meta.max_seq = std::max(current_meta.max_seq, latest.seq);
+    compact_max_seq = std::max(compact_max_seq, latest.seq);
+    current_has_entries = true;
   }
 
-  s = testing::MaybeInjectFailure(
-      testing::FailurePoint::kDuringCompactionOutput);
-  if (!s.ok()) {
-    return s;
+  Status s = finish_builder();
+  if (!s.ok()) return s;
+  s = testing::MaybeInjectFailure(testing::FailurePoint::kDuringCompactionOutput);
+  if (!s.ok()) return s;
+  (void)compact_max_seq;
+  return Status::OK();
+}
+
+Status DBImpl::CommitCompaction(
+    const CompactionPlan& plan,
+    std::vector<ManifestFileMeta> output_metadata) {
+  if (plan.old_files.size() != plan.old_metadata.size()) {
+    return Status::Corruption("compaction plan metadata is out of sync");
   }
+
+  std::vector<size_t> selected_indices;
+  selected_indices.reserve(plan.old_files.size());
+  for (size_t old = 0; old < plan.old_files.size(); ++old) {
+    size_t found = sst_files_.size();
+    for (size_t i = 0; i < sst_files_.size(); ++i) {
+      if (sst_files_[i].file_path == plan.old_files[old] &&
+          sst_files_[i].metadata.file_number ==
+              plan.old_metadata[old].file_number) {
+        found = i;
+        break;
+      }
+    }
+    if (found == sst_files_.size()) {
+      return Status::Corruption("compaction input changed while compacting");
+    }
+    selected_indices.push_back(found);
+  }
+  std::sort(selected_indices.begin(), selected_indices.end());
+
+  // Convert lock-free temporary outputs into numbered files during the short
+  // commit section. This reserves as many file numbers as the split produced,
+  // without racing with flush allocations.
+  for (auto& meta : output_metadata) {
+    const uint64_t file_number = next_file_number_++;
+    const std::filesystem::path final_path =
+        sst_dir_ + "/" + BuildSSTFileName(file_number);
+    std::error_code rename_ec;
+    std::filesystem::rename(meta.file_path, final_path, rename_ec);
+    if (rename_ec) {
+      return Status::IOError("failed to publish compacted sst: " +
+                             final_path.string());
+    }
+    meta.file_number = file_number;
+    meta.file_path = final_path.string();
+  }
+
+  bool output_added = false;
+  std::vector<uint64_t> removed_numbers;
+  auto rollback_manifest = [&]() {
+    if (!manifest_.IsOpen()) return;
+    if (output_added) {
+      for (const auto& meta : output_metadata) {
+        (void)manifest_.RemoveFile(meta.file_number);
+      }
+    }
+    for (uint64_t removed : removed_numbers) {
+      for (const auto& old_meta : plan.old_metadata) {
+        if (old_meta.file_number == removed) {
+          (void)manifest_.AddFile(old_meta);
+          break;
+        }
+      }
+    }
+    (void)manifest_.Sync();
+  };
 
   if (manifest_.IsOpen()) {
-    ManifestFileMeta meta;
-    meta.file_number = file_number;
-    meta.file_path = sst_path;
-    meta.max_seq = compact_max_seq;
-    s = manifest_.AddFile(meta);
-    if (!s.ok()) {
-      return s;
+    Status s;
+    for (const auto& meta : output_metadata) {
+      s = manifest_.AddFile(meta);
+      if (!s.ok()) return s;
     }
+    output_added = true;
     s = manifest_.Sync();
     if (!s.ok()) {
+      rollback_manifest();
       return s;
     }
-
     s = testing::MaybeInjectFailure(
         testing::FailurePoint::kAfterCompactionAddBeforeRemove);
     if (!s.ok()) {
+      rollback_manifest();
       return s;
     }
-
-    for (const auto& old_file : old_files) {
-      // Parse file number from path
-      const std::filesystem::path path(old_file);
-      if (path.extension() != ".sst") {
-        return Status::Corruption("unexpected sst extension: " + old_file);
-      }
-      const std::string stem = path.stem().string();
-      uint64_t old_number = 0;
-      for (char c : stem) {
-        if (c < '0' || c > '9') {
-          return Status::Corruption(
-              "failed to parse old sst file number: " + old_file);
-        }
-        old_number = old_number * 10 + static_cast<uint64_t>(c - '0');
-      }
-      s = manifest_.RemoveFile(old_number);
+    for (const auto& old_meta : plan.old_metadata) {
+      s = manifest_.RemoveFile(old_meta.file_number);
       if (!s.ok()) {
+        rollback_manifest();
         return s;
       }
+      removed_numbers.push_back(old_meta.file_number);
       s = manifest_.Sync();
       if (!s.ok()) {
+        rollback_manifest();
         return s;
       }
     }
   }
 
-  // Evict old files from cache
-  for (const auto& old_file : old_files) {
-    table_cache_->Evict(old_file);
+  for (const auto& old_file : plan.old_files) table_cache_->Evict(old_file);
+
+  std::vector<SSTFileState> remaining_files;
+  remaining_files.reserve(sst_files_.size() - selected_indices.size() +
+                          output_metadata.size());
+  for (size_t i = 0; i < sst_files_.size(); ++i) {
+    if (std::binary_search(selected_indices.begin(), selected_indices.end(), i)) {
+      continue;
+    }
+    remaining_files.push_back(std::move(sst_files_[i]));
   }
+  for (auto& meta : output_metadata) {
+    remaining_files.push_back({meta.file_path, std::move(meta)});
+  }
+  sst_files_ = std::move(remaining_files);
 
-  sst_files_.clear();
-  sst_files_.push_back(sst_path);
-  ++next_file_number_;
-
-  // Delete old files
-  for (const auto& old_file : old_files) {
+  for (const auto& old_file : plan.old_files) {
     std::error_code remove_ec;
     (void)std::filesystem::remove(old_file, remove_ec);
   }
-
-  return RebuildLatestKeySeqIndex();
+  return Status::OK();
 }
 
 }  // namespace kv

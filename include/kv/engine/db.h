@@ -51,6 +51,9 @@ struct DBOptions {
   // 每个 SSTable key 使用的 Bloom filter bit 数。
   size_t bloom_bits_per_key = 10;
 
+  // 压缩输出 SST 的目标大小；0 表示不切分。
+  size_t compaction_output_file_size_bytes = 64 * 1024 * 1024;
+
   // 已打开 SSTable reader 的 LRU 缓存容量。
   size_t table_cache_capacity = 64;
 
@@ -72,6 +75,9 @@ struct DBOptions {
   // 手动/后台 compaction 最少输入 SST 文件数
   size_t compaction_min_input_files = 2;
 
+  // L1 及更深层触发后台 compaction 的总文件大小阈值。
+  size_t compaction_level_max_bytes = 256 * 1024 * 1024;
+
   // 是否在 flush 后自动尝试 compaction
   bool auto_compaction_enabled = true;
 };
@@ -92,6 +98,7 @@ struct ReadPathStats {
   uint64_t table_cache_entries = 0;
   uint64_t bloom_queries = 0;
   uint64_t bloom_negatives = 0;
+  uint64_t range_prunes = 0;
 };
 
 struct CompactionStats {
@@ -100,6 +107,9 @@ struct CompactionStats {
   uint64_t skipped_due_threshold = 0;
   uint64_t succeeded = 0;
   uint64_t failed = 0;
+  uint64_t input_bytes = 0;
+  uint64_t output_bytes = 0;
+  uint64_t total_duration_us = 0;
 };
 
 struct FlushStats {

@@ -186,8 +186,7 @@ TEST(CacheIntegrationTest, BloomFilterStatsTrackRejectedSSTLookups) {
 
   ReadPathStats after;
   ASSERT_TRUE(db->GetReadPathStats(&after).ok());
-  EXPECT_GE(after.bloom_queries, before.bloom_queries + 1);
-  EXPECT_GE(after.bloom_negatives, before.bloom_negatives + 1);
+  EXPECT_GE(after.range_prunes, before.range_prunes + 1);
 }
 
 TEST(CacheIntegrationTest, ConfiguredTableCacheCapacityEvictsReaders) {

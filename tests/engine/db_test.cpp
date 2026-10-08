@@ -9,6 +9,7 @@
 
 #include "gtest/gtest.h"
 #include "kv/engine/write_applier.h"
+#include "kv/testing/failure_injection.h"
 
 namespace kv {
 namespace {
@@ -265,6 +266,79 @@ TEST(DBTest, InstallCheckpointReplacesOpenState) {
   ASSERT_TRUE(target->Get(ReadOptions{}, "snapshot-key", &value).ok());
   EXPECT_EQ(value, "snapshot-value");
   EXPECT_TRUE(target->Get(ReadOptions{}, "stale-key", &value).IsNotFound());
+  ASSERT_TRUE(target->Close().ok());
+
+  RemovePathIfExists(source_options.wal_path);
+  RemovePathIfExists(source_options.manifest_path);
+  RemoveDirIfExists(source_options.sst_dir);
+  RemovePathIfExists(target_options.wal_path);
+  RemovePathIfExists(target_options.manifest_path);
+  RemoveDirIfExists(target_options.sst_dir);
+  RemoveDirIfExists(checkpoint_dir);
+}
+
+TEST(DBTest, InstallCheckpointFailureRestoresOpenState) {
+  DBOptions source_options = MakeDBOptions("install_checkpoint_rollback_source");
+  DBOptions target_options = MakeDBOptions("install_checkpoint_rollback_target");
+  const std::string checkpoint_dir = source_options.sst_dir + "_checkpoint";
+  RemovePathIfExists(source_options.wal_path);
+  RemovePathIfExists(source_options.manifest_path);
+  RemoveDirIfExists(source_options.sst_dir);
+  RemoveDirIfExists(checkpoint_dir);
+  RemovePathIfExists(target_options.wal_path);
+  RemovePathIfExists(target_options.manifest_path);
+  RemoveDirIfExists(target_options.sst_dir);
+  testing::ClearFailureInjection();
+
+  {
+    std::unique_ptr<DB> source;
+    ASSERT_TRUE(DB::Open(source_options, &source).ok());
+    ASSERT_TRUE(source->Put(WriteOptions{}, "checkpoint-key", "checkpoint-value")
+                    .ok());
+    ASSERT_TRUE(source->CreateCheckpoint(checkpoint_dir).ok());
+    ASSERT_TRUE(source->Close().ok());
+  }
+
+  std::unique_ptr<DB> target;
+  ASSERT_TRUE(DB::Open(target_options, &target).ok());
+  ASSERT_TRUE(target->Put(WriteOptions{}, "live-key", "live-value").ok());
+  auto* applier = dynamic_cast<WriteApplier*>(target.get());
+  ASSERT_NE(applier, nullptr);
+
+  const auto expect_live_state = [&] {
+    std::string value;
+    EXPECT_TRUE(target->Get(ReadOptions{}, "live-key", &value).ok());
+    EXPECT_EQ(value, "live-value");
+    EXPECT_TRUE(target->Get(ReadOptions{}, "checkpoint-key", &value).IsNotFound());
+  };
+
+  testing::InjectFailure(testing::FailurePoint::kDuringCheckpointStage,
+                         Status::IOError("injected checkpoint staging failure"));
+  Status s = applier->InstallCheckpoint(checkpoint_dir);
+  testing::ClearFailureInjection();
+  EXPECT_TRUE(s.IsIOError()) << s.ToString();
+  expect_live_state();
+
+  testing::InjectFailure(testing::FailurePoint::kDuringCheckpointPublish,
+                         Status::IOError("injected checkpoint publish failure"));
+  s = applier->InstallCheckpoint(checkpoint_dir);
+  testing::ClearFailureInjection();
+  EXPECT_TRUE(s.IsIOError()) << s.ToString();
+  expect_live_state();
+
+  testing::InjectFailure(
+      testing::FailurePoint::kAfterCheckpointPublishBeforeInit,
+      Status::IOError("injected checkpoint rollback failure"));
+  s = applier->InstallCheckpoint(checkpoint_dir);
+  testing::ClearFailureInjection();
+  EXPECT_TRUE(s.IsIOError()) << s.ToString();
+  expect_live_state();
+
+  ASSERT_TRUE(applier->InstallCheckpoint(checkpoint_dir).ok());
+  std::string value;
+  ASSERT_TRUE(target->Get(ReadOptions{}, "checkpoint-key", &value).ok());
+  EXPECT_EQ(value, "checkpoint-value");
+  EXPECT_TRUE(target->Get(ReadOptions{}, "live-key", &value).IsNotFound());
   ASSERT_TRUE(target->Close().ok());
 
   RemovePathIfExists(source_options.wal_path);

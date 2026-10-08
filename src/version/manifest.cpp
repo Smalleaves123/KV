@@ -7,6 +7,7 @@
 #include <system_error>
 
 #include "kv/common/encoding.h"
+#include "kv/common/checksum.h"
 #include "kv/common/file_compat.h"
 
 namespace kv {
@@ -15,6 +16,9 @@ namespace {
 enum class ManifestTag : uint8_t {
   kAddFile = 1,
   kRemoveFile = 2,
+  kAddFileWithMetadata = 3,
+  kAddFileWithMetadataChecksum = 4,
+  kRemoveFileChecksum = 5,
 };
 
 Status EnsureParentDirectory(const std::filesystem::path& path) {
@@ -138,14 +142,29 @@ Status Manifest::AddFile(const ManifestFileMeta& file_meta) {
   if (file_meta.file_path.size() > Manifest::kMaxFilePathSize) {
     return Status::InvalidArgument("manifest file path is too long");
   }
+  if (!file_meta.IsValid()) {
+    return Status::InvalidArgument("manifest file key range is invalid");
+  }
+  if (file_meta.smallest_key.size() > kMaxKeySize ||
+      file_meta.largest_key.size() > kMaxKeySize) {
+    return Status::InvalidArgument("manifest file key is too long");
+  }
 
   std::string record;
-  record.reserve(1 + 8 + 8 + 4 + file_meta.file_path.size());
-  record.push_back(static_cast<char>(ManifestTag::kAddFile));
+  record.reserve(41 + file_meta.file_path.size() +
+                 file_meta.smallest_key.size() + file_meta.largest_key.size());
+  record.push_back(static_cast<char>(ManifestTag::kAddFileWithMetadataChecksum));
   EncodeFixed64(&record, file_meta.file_number);
   EncodeFixed64(&record, file_meta.max_seq);
   EncodeFixed32(&record, static_cast<uint32_t>(file_meta.file_path.size()));
   record.append(file_meta.file_path);
+  EncodeFixed32(&record, file_meta.level);
+  EncodeFixed64(&record, file_meta.file_size);
+  EncodeFixed32(&record, static_cast<uint32_t>(file_meta.smallest_key.size()));
+  EncodeFixed32(&record, static_cast<uint32_t>(file_meta.largest_key.size()));
+  record.append(file_meta.smallest_key);
+  record.append(file_meta.largest_key);
+  EncodeFixed32(&record, CRC32(record.data(), record.size()));
 
   append_stream_.write(record.data(), static_cast<std::streamsize>(record.size()));
   if (!append_stream_) {
@@ -188,8 +207,9 @@ Status Manifest::RemoveFile(uint64_t file_number) {
 
   std::string record;
   record.reserve(1 + 8);
-  record.push_back(static_cast<char>(ManifestTag::kRemoveFile));
+  record.push_back(static_cast<char>(ManifestTag::kRemoveFileChecksum));
   EncodeFixed64(&record, file_number);
+  EncodeFixed32(&record, CRC32(record.data(), record.size()));
 
   append_stream_.write(record.data(), static_cast<std::streamsize>(record.size()));
   if (!append_stream_) {
@@ -235,7 +255,9 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
     }
 
     const ManifestTag tag = static_cast<ManifestTag>(static_cast<uint8_t>(tag_raw));
-    if (tag == ManifestTag::kAddFile) {
+    if (tag == ManifestTag::kAddFile ||
+        tag == ManifestTag::kAddFileWithMetadata ||
+        tag == ManifestTag::kAddFileWithMetadataChecksum) {
       std::array<char, 20> header{};
       in.read(header.data(), static_cast<std::streamsize>(header.size()));
       if (in.gcount() != static_cast<std::streamsize>(header.size())) {
@@ -265,6 +287,81 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
         return Status::Corruption("truncated manifest add-file path");
       }
 
+      if (tag == ManifestTag::kAddFileWithMetadata ||
+          tag == ManifestTag::kAddFileWithMetadataChecksum) {
+        std::array<char, 20> metadata{};
+        in.read(metadata.data(), static_cast<std::streamsize>(metadata.size()));
+        if (in.gcount() != static_cast<std::streamsize>(metadata.size())) {
+          if (IsTrailingShortRead(in)) {
+            break;
+          }
+          return Status::Corruption("truncated manifest file metadata");
+        }
+        meta.level = DecodeFixed32(metadata.data());
+        meta.file_size = DecodeFixed64(metadata.data() + 4);
+        const uint32_t smallest_len = DecodeFixed32(metadata.data() + 12);
+        const uint32_t largest_len = DecodeFixed32(metadata.data() + 16);
+        if (smallest_len > kMaxKeySize || largest_len > kMaxKeySize) {
+          return Status::Corruption("manifest file key is too long");
+        }
+        if ((smallest_len == 0) != (largest_len == 0)) {
+          return Status::Corruption("manifest file key range is incomplete");
+        }
+        meta.smallest_key.assign(smallest_len, '\0');
+        in.read(meta.smallest_key.data(),
+                static_cast<std::streamsize>(smallest_len));
+        if (in.gcount() != static_cast<std::streamsize>(smallest_len)) {
+          if (IsTrailingShortRead(in)) {
+            break;
+          }
+          return Status::Corruption("truncated manifest smallest key");
+        }
+        meta.largest_key.assign(largest_len, '\0');
+        in.read(meta.largest_key.data(),
+                static_cast<std::streamsize>(largest_len));
+        if (in.gcount() != static_cast<std::streamsize>(largest_len)) {
+          if (IsTrailingShortRead(in)) {
+            break;
+          }
+          return Status::Corruption("truncated manifest largest key");
+        }
+      }
+      if (!meta.IsValid()) {
+        return Status::Corruption("invalid manifest file metadata");
+      }
+
+      if (tag == ManifestTag::kAddFileWithMetadataChecksum) {
+        std::array<char, 4> checksum_bytes{};
+        in.read(checksum_bytes.data(),
+                static_cast<std::streamsize>(checksum_bytes.size()));
+        if (in.gcount() != static_cast<std::streamsize>(checksum_bytes.size())) {
+          if (IsTrailingShortRead(in)) {
+            break;
+          }
+          return Status::Corruption("truncated manifest checksum");
+        }
+        std::string checksum_input(1, tag_raw);
+        EncodeFixed64(&checksum_input, meta.file_number);
+        EncodeFixed64(&checksum_input, meta.max_seq);
+        EncodeFixed32(&checksum_input,
+                      static_cast<uint32_t>(meta.file_path.size()));
+        checksum_input.append(meta.file_path);
+        EncodeFixed32(&checksum_input, meta.level);
+        EncodeFixed64(&checksum_input, meta.file_size);
+        EncodeFixed32(&checksum_input,
+                      static_cast<uint32_t>(meta.smallest_key.size()));
+        EncodeFixed32(&checksum_input,
+                      static_cast<uint32_t>(meta.largest_key.size()));
+        checksum_input.append(meta.smallest_key);
+        checksum_input.append(meta.largest_key);
+        const uint32_t expected = DecodeFixed32(checksum_bytes.data());
+        const uint32_t actual =
+            CRC32(checksum_input.data(), checksum_input.size());
+        if (actual != expected) {
+          return Status::Corruption("manifest add-file checksum mismatch");
+        }
+      }
+
       if (order_index.find(meta.file_number) == order_index.end()) {
         order_index.emplace(meta.file_number, order.size());
         order.push_back(meta.file_number);
@@ -273,7 +370,8 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
       continue;
     }
 
-    if (tag == ManifestTag::kRemoveFile) {
+    if (tag == ManifestTag::kRemoveFile ||
+        tag == ManifestTag::kRemoveFileChecksum) {
       std::array<char, 8> payload{};
       in.read(payload.data(), static_cast<std::streamsize>(payload.size()));
       if (in.gcount() != static_cast<std::streamsize>(payload.size())) {
@@ -283,6 +381,25 @@ Status Manifest::Recover(std::vector<ManifestFileMeta>* files) const {
         return Status::Corruption("truncated manifest remove-file payload");
       }
       const uint64_t file_number = DecodeFixed64(payload.data());
+      if (tag == ManifestTag::kRemoveFileChecksum) {
+        std::array<char, 4> checksum_bytes{};
+        in.read(checksum_bytes.data(),
+                static_cast<std::streamsize>(checksum_bytes.size()));
+        if (in.gcount() != static_cast<std::streamsize>(checksum_bytes.size())) {
+          if (IsTrailingShortRead(in)) {
+            break;
+          }
+          return Status::Corruption("truncated manifest remove checksum");
+        }
+        std::string checksum_input(1, tag_raw);
+        checksum_input.append(payload.data(), payload.size());
+        const uint32_t expected = DecodeFixed32(checksum_bytes.data());
+        const uint32_t actual =
+            CRC32(checksum_input.data(), checksum_input.size());
+        if (actual != expected) {
+          return Status::Corruption("manifest remove checksum mismatch");
+        }
+      }
       latest.erase(file_number);
       continue;
     }

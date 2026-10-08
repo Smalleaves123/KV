@@ -1,11 +1,16 @@
 #include "kv/engine/db.h"
 
 #include <filesystem>
+#include <chrono>
+#include <thread>
 #include <sstream>
 #include <string>
 
 #include "gtest/gtest.h"
 #include "kv/testing/failure_injection.h"
+#include "kv/engine/write_applier.h"
+#include "kv/engine/write_batch.h"
+#include "kv/version/manifest.h"
 
 namespace kv {
 namespace {
@@ -121,6 +126,115 @@ TEST(CompactionTest, CompactRejectedWhenSnapshotActive) {
   ASSERT_TRUE(db->Compact().ok());
 }
 
+TEST(CompactionTest, ConcurrentFlushKeepsVersionPriorityAfterCommitAndReopen) {
+  DBOptions options = MakeCompactionDBOptions("compact_concurrent_flush");
+  options.cache_enabled = true;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+  testing::ClearFailureInjection();
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "k", "v1").ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "deleted", "old").ok());
+  ASSERT_TRUE(db->Delete(WriteOptions{}, "resurrected").ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "expired", "old").ok());
+
+  bool hook_ran = false;
+  testing::SetFailurePointHook(
+      testing::FailurePoint::kDuringCompactionOutput, [&] {
+        hook_ran = true;
+        FlushStats before;
+        ASSERT_TRUE(db->GetFlushStats(&before).ok());
+        ASSERT_TRUE(db->Put(WriteOptions{}, "k", "v2").ok());
+        ASSERT_TRUE(db->Delete(WriteOptions{}, "deleted").ok());
+        ASSERT_TRUE(db->Put(WriteOptions{}, "resurrected", "new").ok());
+        auto* applier = dynamic_cast<WriteApplier*>(db.get());
+        ASSERT_NE(applier, nullptr);
+        ASSERT_TRUE(applier->ApplyPutWithExpiry("expired", "new", 1).ok());
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(10);
+        FlushStats after;
+        do {
+          ASSERT_TRUE(db->GetFlushStats(&after).ok());
+          if (after.completed >= before.completed + 4) break;
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (std::chrono::steady_clock::now() < deadline);
+        ASSERT_EQ(after.completed, before.completed + 4);
+      });
+  const Status compact_status = db->Compact();
+  testing::ClearFailureInjection();
+  ASSERT_TRUE(compact_status.ok()) << compact_status.ToString();
+  ASSERT_TRUE(hook_ran);
+
+  const auto check_versions = [&] {
+    std::string value;
+    // Read twice to cover both SST resolution and cache backfill.
+    for (int i = 0; i < 2; ++i) {
+      ASSERT_TRUE(db->Get(ReadOptions{}, "k", &value).ok());
+      EXPECT_EQ(value, "v2");
+      EXPECT_TRUE(db->Get(ReadOptions{}, "deleted", &value).IsNotFound());
+      ASSERT_TRUE(db->Get(ReadOptions{}, "resurrected", &value).ok());
+      EXPECT_EQ(value, "new");
+      EXPECT_TRUE(db->Get(ReadOptions{}, "expired", &value).IsNotFound());
+    }
+  };
+  ASSERT_NO_FATAL_FAILURE(check_versions());
+  ASSERT_TRUE(db->Close().ok());
+  db.reset();
+  RemovePathIfExists(options.wal_path);
+  options.create_if_missing = false;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+  ASSERT_NO_FATAL_FAILURE(check_versions());
+}
+
+TEST(CompactionTest, EmptyL2OutputRemovesTombstonesAndExpiredValues) {
+  DBOptions options = MakeCompactionDBOptions("compact_empty_l2");
+  options.compaction_min_input_files = 1;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "deleted", "old").ok());
+  ASSERT_TRUE(db->Delete(WriteOptions{}, "deleted").ok());
+  auto* applier = dynamic_cast<WriteApplier*>(db.get());
+  ASSERT_NE(applier, nullptr);
+  ASSERT_TRUE(applier->ApplyPutWithExpiry("expired", "old", 1).ok());
+  ASSERT_TRUE(db->Compact().ok());
+  ASSERT_EQ(CountSSTFiles(options.sst_dir), 1U);
+
+  // A failed empty commit must still roll back the manifest removals.
+  testing::InjectFailure(testing::FailurePoint::kAfterCompactionAddBeforeRemove,
+                         Status::IOError("empty output commit failure"));
+  const Status failed = db->Compact();
+  testing::ClearFailureInjection();
+  ASSERT_TRUE(failed.IsIOError());
+  EXPECT_EQ(CountSSTFiles(options.sst_dir), 1U);
+  ASSERT_TRUE(db->Compact().ok());
+  EXPECT_EQ(CountSSTFiles(options.sst_dir), 0U);
+  CompactionStats stats;
+  ASSERT_TRUE(db->GetCompactionStats(&stats).ok());
+  EXPECT_EQ(stats.succeeded, 2U);
+  EXPECT_EQ(stats.failed, 1U);
+
+  ASSERT_TRUE(db->Close().ok());
+  db.reset();
+  Manifest manifest;
+  ASSERT_TRUE(manifest.Open(options.manifest_path, false).ok());
+  std::vector<ManifestFileMeta> files;
+  ASSERT_TRUE(manifest.Recover(&files).ok());
+  EXPECT_TRUE(files.empty());
+  options.create_if_missing = false;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+  std::string value;
+  EXPECT_TRUE(db->Get(ReadOptions{}, "deleted", &value).IsNotFound());
+  EXPECT_TRUE(db->Get(ReadOptions{}, "expired", &value).IsNotFound());
+  ASSERT_TRUE(db->Put(WriteOptions{}, "deleted", "new").ok());
+  ASSERT_TRUE(db->Get(ReadOptions{}, "deleted", &value).ok());
+  EXPECT_EQ(value, "new");
+}
+
 TEST(CompactionTest, CompactNeedsEnoughInputFiles) {
   DBOptions options = MakeCompactionDBOptions("compact_need_enough_files");
   options.compaction_min_input_files = 2;
@@ -135,6 +249,31 @@ TEST(CompactionTest, CompactNeedsEnoughInputFiles) {
   Status s = db->Compact();
   EXPECT_FALSE(s.ok());
   EXPECT_TRUE(s.IsNotFound());
+}
+
+TEST(CompactionTest, AutoCompactionAcceptsEmptyL2Output) {
+  DBOptions options = MakeCompactionDBOptions("auto_compaction_empty_l2");
+  options.auto_compaction_enabled = true;
+  options.compaction_min_input_files = 1;
+  options.compaction_output_file_size_bytes = 128;
+  options.sstable_block_size_bytes = 128;
+  options.compaction_level_max_bytes = 0;
+  RemovePathIfExists(options.wal_path);
+  RemovePathIfExists(options.manifest_path);
+  RemoveDirIfExists(options.sst_dir);
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(options, &db).ok());
+  WriteBatch batch;
+  for (int i = 0; i < 40; ++i) {
+    batch.Delete("key" + std::to_string(100 + i));
+  }
+  ASSERT_TRUE(db->Write(WriteOptions{}, batch).ok());
+  ASSERT_TRUE(db->Close().ok());
+  CompactionStats stats;
+  ASSERT_TRUE(db->GetCompactionStats(&stats).ok());
+  EXPECT_EQ(stats.succeeded, 2U);
+  EXPECT_EQ(stats.failed, 0U);
+  EXPECT_EQ(CountSSTFiles(options.sst_dir), 0U);
 }
 
 TEST(CompactionTest, AutoCompactionTriggeredAfterFlush) {

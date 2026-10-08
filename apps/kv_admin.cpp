@@ -1,7 +1,9 @@
 // apps/kv_admin.cpp
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,16 @@ std::string SstDir(const std::string& db_path) {
 
 std::string ManifestPath(const std::string& db_path) {
   return db_path + "/MANIFEST";
+}
+
+// Keys are arbitrary bytes; hex keeps dump records on one printable line.
+std::string HexKey(const std::string& key) {
+  std::ostringstream out;
+  out << std::hex << std::setfill('0');
+  for (unsigned char byte : key) {
+    out << std::setw(2) << static_cast<unsigned int>(byte);
+  }
+  return out.str();
 }
 
 std::pair<size_t, uint64_t> SstCountAndBytes(const std::string& sst_dir) {
@@ -123,7 +135,15 @@ void CmdManifestDump(const std::string& db_path) {
   for (const auto& f : files) {
     std::cout << "file_number=" << f.file_number
               << " max_seq=" << f.max_seq
-              << " path=" << f.file_path << "\n";
+              << " level=" << f.level
+              << " file_size=" << f.file_size;
+    if (f.HasKeyRange()) {
+      std::cout << " smallest_key_hex=" << HexKey(f.smallest_key)
+                << " largest_key_hex=" << HexKey(f.largest_key);
+    } else {
+      std::cout << " key_range=unknown";
+    }
+    std::cout << " path=" << f.file_path << "\n";
   }
 
   (void)manifest.Close();
@@ -180,6 +200,7 @@ void CmdStats(const std::string& db_path) {
             << "\n";
   std::cout << "read.bloom_negatives : " << read_stats.bloom_negatives
             << "\n";
+  std::cout << "read.range_prunes    : " << read_stats.range_prunes << "\n";
   std::cout << "compact.trigger      : " << compaction_stats.trigger_attempts << "\n";
   std::cout << "compact.skip_snapshot: " << compaction_stats.skipped_due_snapshot
             << "\n";
@@ -187,6 +208,10 @@ void CmdStats(const std::string& db_path) {
             << "\n";
   std::cout << "compact.success      : " << compaction_stats.succeeded << "\n";
   std::cout << "compact.failed       : " << compaction_stats.failed << "\n";
+  std::cout << "compact.input_bytes  : " << compaction_stats.input_bytes << "\n";
+  std::cout << "compact.output_bytes : " << compaction_stats.output_bytes << "\n";
+  std::cout << "compact.duration_us  : " << compaction_stats.total_duration_us
+            << "\n";
 
   (void)db->Close();
 }

@@ -132,6 +132,7 @@ Add fields to `DBOptions`:
 size_t sstable_block_size_bytes = 4 * 1024;
 int bloom_bits_per_key = 10;
 size_t table_cache_capacity = 128;
+size_t compaction_output_file_size_bytes = 64 * 1024 * 1024;
 ```
 
 Implementation path:
@@ -173,14 +174,24 @@ optimize by seeking directly into SSTable indexes.
 
 ### File Metadata
 
-Add a level field to `FileMeta`:
+The metadata foundation is implemented in `FileMeta` and the manifest:
 
 ```cpp
-int level = 0;
+uint64_t file_size = 0;
+uint32_t level = 0;
+std::string smallest_key;
+std::string largest_key;
 ```
 
-The manifest must persist this level. Recovery must rebuild the same level
-layout.
+Flush outputs record their physical size and inclusive user-key bounds at L0.
+The initial L0-to-L1 policy is implemented: it selects all L0 files and the L1
+files whose ranges overlap the L0 input range, then retains non-overlapping L1
+files. Point reads use known ranges to skip impossible files. Old manifest
+records default to L0 with unknown size and range; unknown ranges are included
+conservatively. The on-disk format, record checksums, and upgrade behavior are documented in
+[SSTable](../sstable.md#file-metadata).
+
+Deeper levels, output splitting, and size-based picking remain pending.
 
 ### Level Semantics
 
@@ -206,6 +217,9 @@ Later:
 - choose the largest or oldest file;
 - include overlapping files in the next level.
 
+The current implementation also splits large compaction output by
+`compaction_output_file_size_bytes` and supports the next-level L1→L2 pass.
+
 Correctness is more important than a clever picker in the first version.
 
 ## Tombstone Rules
@@ -218,6 +232,10 @@ Basic rules:
 - If a tombstone is the newest version for a key and lower levels may contain
   older values, keep the tombstone.
 - If the implementation cannot prove a tombstone is safe to drop, keep it.
+
+For L2 and deeper output, the implementation has a complete overlapping input
+set and no active snapshots, so deletion markers and expired newest versions
+can be safely reclaimed.
 
 The current project already skips or rejects compaction when snapshots are
 active. Preserve that conservative behavior until more precise version-retention

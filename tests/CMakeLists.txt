@@ -47,6 +47,7 @@ add_executable(kv_engine_test
   engine/db_test.cpp
   engine/cache_integration_test.cpp
   engine/compaction_test.cpp
+  engine/sst_metadata_test.cpp
   engine/iterator_test.cpp
   engine/write_batch_test.cpp
   engine/recovery_test.cpp
@@ -204,6 +205,13 @@ target_include_directories(kv_data_types_test
 )
 
 include(GoogleTest)
+add_executable(kv_server_config_test
+  apps/server_config_test.cpp
+  ${PROJECT_SOURCE_DIR}/apps/server_config.cpp
+)
+target_link_libraries(kv_server_config_test PRIVATE kv GTest::gtest_main)
+target_include_directories(kv_server_config_test PRIVATE ${PROJECT_SOURCE_DIR}/apps)
+gtest_discover_tests(kv_server_config_test)
 gtest_discover_tests(kv_memtable_test)
 gtest_discover_tests(kv_wal_test)
 gtest_discover_tests(kv_engine_test)

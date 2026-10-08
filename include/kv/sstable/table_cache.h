@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -52,6 +53,7 @@ class TableCache {
   };
 
   size_t max_open_files_;
+  mutable std::mutex mu_;
   std::list<Entry> lru_;
   std::unordered_map<std::string, decltype(lru_.begin())> map_;
   uint64_t hits_;

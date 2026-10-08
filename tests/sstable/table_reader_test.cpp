@@ -1,7 +1,10 @@
 #include <filesystem>
+#include <atomic>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "gtest/gtest.h"
 
@@ -147,6 +150,56 @@ TEST(TableReaderTest, DetectsCorruptedDataBlockChecksum) {
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 
   std::filesystem::remove(file_path, ec);
+}
+
+TEST(TableReaderTest, ConcurrentPointReadsAndIterationShareReaderSafely) {
+  const std::filesystem::path dir("test_tmp/sstable");
+  std::filesystem::create_directories(dir);
+  const std::string file_path = (dir / "concurrent_reads.sst").string();
+  {
+    TableBuilder builder(file_path, 128);
+    for (int i = 0; i < 100; ++i) {
+      const std::string key = "key" + std::to_string(100 + i);
+      ASSERT_TRUE(builder.Add(key, i + 1, 0, std::string(128, 'a' + i % 26)).ok());
+    }
+    ASSERT_TRUE(builder.Finish().ok());
+  }
+  std::unique_ptr<TableReader> reader;
+  ASSERT_TRUE(TableReader::Open(file_path, &reader).ok());
+  ASSERT_GT(reader->NumDataBlocks(), 10U);
+  std::atomic<bool> start{false};
+  std::vector<std::thread> threads;
+  for (int worker = 0; worker < 4; ++worker) {
+    threads.emplace_back([&, worker] {
+      while (!start.load()) std::this_thread::yield();
+      for (int pass = 0; pass < 50; ++pass) {
+        if (worker < 2) {
+          TableIterator iterator(*reader);
+          int count = 0;
+          for (iterator.SeekToFirst(); iterator.Valid(); iterator.Next()) {
+            EXPECT_EQ(iterator.key(), "key" + std::to_string(100 + count));
+            EXPECT_EQ(iterator.value(), std::string(128, 'a' + count % 26));
+            ++count;
+          }
+          ASSERT_TRUE(iterator.status().ok()) << iterator.status().ToString();
+          ASSERT_EQ(count, 100);
+        } else {
+          for (int i = 99; i >= 0; --i) {
+            uint8_t type = 0;
+            std::string value;
+            const Status s = reader->Get("key" + std::to_string(100 + i),
+                                         100, &type, &value);
+            ASSERT_TRUE(s.ok()) << s.ToString();
+            ASSERT_EQ(value, std::string(128, 'a' + i % 26));
+          }
+        }
+      }
+    });
+  }
+  start.store(true);
+  for (auto& thread : threads) thread.join();
+  reader.reset();
+  std::filesystem::remove(file_path);
 }
 
 TEST(TableReaderTest, ReadsLegacyTableWithoutDataBlockChecksums) {

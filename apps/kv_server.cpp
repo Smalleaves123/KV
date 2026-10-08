@@ -150,19 +150,8 @@ int main(int argc, char** argv) {
   }
 
   // ---- Open DB ----
-  kv::DBOptions options;
+  kv::DBOptions options = kv::app::BuildDBOptions(file_config);
   options.db_path = db_path;
-  options.sync_on_write = file_config.sync_on_write;
-  options.memtable_write_buffer_size = file_config.memtable_write_buffer_size;
-  options.sstable_block_size_bytes = file_config.sstable_block_size_bytes;
-  options.bloom_bits_per_key = file_config.bloom_bits_per_key;
-  options.table_cache_capacity = file_config.table_cache_capacity;
-  options.compaction_min_input_files = file_config.compaction_min_input_files;
-  options.auto_compaction_enabled = file_config.auto_compaction_enabled;
-  options.cache_enabled = file_config.cache_enabled;
-  options.cache_policy = file_config.cache_policy;
-  options.cache_capacity = file_config.cache_capacity;
-  options.cache_default_ttl_ms = file_config.cache_ttl_ms;
 
   // Cache config from env
   if (const char* v = std::getenv("KV_CACHE"); v != nullptr) {

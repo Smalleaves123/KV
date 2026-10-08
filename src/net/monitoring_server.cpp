@@ -315,7 +315,9 @@ std::string MonitoringServer::RenderMetrics(const Server& server,
         << "# TYPE kv_db_bloom_queries_total counter\n"
         << "kv_db_bloom_queries_total " << read_stats.bloom_queries << "\n"
         << "# TYPE kv_db_bloom_negatives_total counter\n"
-        << "kv_db_bloom_negatives_total " << read_stats.bloom_negatives << "\n";
+        << "kv_db_bloom_negatives_total " << read_stats.bloom_negatives << "\n"
+        << "# TYPE kv_db_range_prunes_total counter\n"
+        << "kv_db_range_prunes_total " << read_stats.range_prunes << "\n";
   }
   if (compaction_ok) {
     out << "# TYPE kv_db_compaction_attempts_total counter\n"
@@ -330,7 +332,16 @@ std::string MonitoringServer::RenderMetrics(const Server& server,
         << "kv_db_compaction_skipped_total{reason=\"snapshot\"} "
         << compaction_stats.skipped_due_snapshot << "\n"
         << "kv_db_compaction_skipped_total{reason=\"threshold\"} "
-        << compaction_stats.skipped_due_threshold << "\n";
+        << compaction_stats.skipped_due_threshold << "\n"
+        << "# TYPE kv_db_compaction_input_bytes_total counter\n"
+        << "kv_db_compaction_input_bytes_total " << compaction_stats.input_bytes
+        << "\n"
+        << "# TYPE kv_db_compaction_output_bytes_total counter\n"
+        << "kv_db_compaction_output_bytes_total " << compaction_stats.output_bytes
+        << "\n"
+        << "# TYPE kv_db_compaction_duration_microseconds_total counter\n"
+        << "kv_db_compaction_duration_microseconds_total "
+        << compaction_stats.total_duration_us << "\n";
   }
   if (flush_ok) {
     out << "# TYPE kv_db_flush_completed_total counter\n"

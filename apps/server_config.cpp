@@ -392,6 +392,10 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
         ParseSizeValue(value, &cfg.table_cache_capacity);
       } else if (key == "compaction_min_input_files") {
         ParseSizeValue(value, &cfg.compaction_min_input_files);
+      } else if (key == "compaction_output_file_size_bytes") {
+        ParseSizeValue(value, &cfg.compaction_output_file_size_bytes);
+      } else if (key == "compaction_level_max_bytes") {
+        ParseSizeValue(value, &cfg.compaction_level_max_bytes);
       } else if (key == "auto_compaction_enabled") {
         ParseBoolValue(value, &cfg.auto_compaction_enabled);
       }
@@ -439,6 +443,26 @@ std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
   flush_peer();
   flush_node();
   return cfg;
+}
+
+kv::DBOptions BuildDBOptions(const AppConfigFile& config) {
+  kv::DBOptions options;
+  options.db_path = config.db_path;
+  options.sync_on_write = config.sync_on_write;
+  options.memtable_write_buffer_size = config.memtable_write_buffer_size;
+  options.sstable_block_size_bytes = config.sstable_block_size_bytes;
+  options.bloom_bits_per_key = config.bloom_bits_per_key;
+  options.table_cache_capacity = config.table_cache_capacity;
+  options.compaction_min_input_files = config.compaction_min_input_files;
+  options.compaction_output_file_size_bytes =
+      config.compaction_output_file_size_bytes;
+  options.compaction_level_max_bytes = config.compaction_level_max_bytes;
+  options.auto_compaction_enabled = config.auto_compaction_enabled;
+  options.cache_enabled = config.cache_enabled;
+  options.cache_policy = config.cache_policy;
+  options.cache_capacity = config.cache_capacity;
+  options.cache_default_ttl_ms = config.cache_ttl_ms;
+  return options;
 }
 
 // Parse Raft peers from env: "1:127.0.0.1:9528[:9527],2:127.0.0.1:9628[:9627]"

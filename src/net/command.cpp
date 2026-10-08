@@ -303,13 +303,17 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
           << read_path_stats.table_cache_entries << "\n"
           << "read.bloom_queries=" << read_path_stats.bloom_queries << "\n"
           << "read.bloom_negatives=" << read_path_stats.bloom_negatives << "\n"
+          << "read.range_prunes=" << read_path_stats.range_prunes << "\n"
           << "compaction.trigger_attempts=" << compaction_stats.trigger_attempts << "\n"
           << "compaction.skipped_due_snapshot="
           << compaction_stats.skipped_due_snapshot << "\n"
           << "compaction.skipped_due_threshold="
           << compaction_stats.skipped_due_threshold << "\n"
           << "compaction.succeeded=" << compaction_stats.succeeded << "\n"
-          << "compaction.failed=" << compaction_stats.failed;
+          << "compaction.failed=" << compaction_stats.failed << "\n"
+          << "compaction.input_bytes=" << compaction_stats.input_bytes << "\n"
+          << "compaction.output_bytes=" << compaction_stats.output_bytes << "\n"
+          << "compaction.duration_us=" << compaction_stats.total_duration_us;
       return BulkString(oss.str());
     }
 

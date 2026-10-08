@@ -64,6 +64,8 @@ SSTable Bloom filter counters are also exposed through `ReadPathStats`:
 
 - `bloom_queries`: number of SST Bloom filter checks;
 - `bloom_negatives`: number of checks that rejected a key.
+- `range_prunes`: number of SST files skipped using known key bounds before
+  opening or querying their Bloom filters.
 
 A high negative ratio usually means Bloom filters are avoiding unnecessary data
 block reads.

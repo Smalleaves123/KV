@@ -7,18 +7,18 @@
 #include <vector>
 
 #include "kv/common/status.h"
+#include "kv/version/file_meta.h"
 
 namespace kv {
 
-struct ManifestFileMeta {
-  uint64_t file_number = 0;
-  std::string file_path;
-  uint64_t max_seq = 0;
-};
+// Share the full file description with the recovered in-memory Version.
+using ManifestFileMeta = FileMeta;
 
 class Manifest {
  public:
   static constexpr size_t kMaxFilePathSize = 4096;
+  // Match the maximum user-key size accepted by the WAL codec.
+  static constexpr size_t kMaxKeySize = 64 * 1024 * 1024;
 
   Manifest();
   ~Manifest();

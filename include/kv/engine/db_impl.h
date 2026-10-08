@@ -2,6 +2,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -117,6 +118,7 @@ class DBImpl final : public DB, public WriteApplier {
                              uint64_t expires_at_ms);
   Status AppendWALDelete(uint64_t seq, const Slice& key);
   Status SyncWAL();
+  Status SyncWALGroup(std::unique_lock<std::mutex>& lock);
   Status CloseWAL();
   Status RemoveFlushedWAL(uint64_t max_flushed_seq);
   Status MaybeFlushMemTable(std::unique_lock<std::mutex>& lock);
@@ -125,8 +127,10 @@ class DBImpl final : public DB, public WriteApplier {
   void FlushWorker();
   void RotateMemTable();
   Status FlushMemTableToSST(const MemTable& memtable,
-                            std::string* out_file);
-  void MaybeCompactAfterFlushLocked();
+                            uint64_t file_number,
+                            std::string* out_file,
+                            ManifestFileMeta* out_meta);
+  void MaybeCompactAfterFlush(std::unique_lock<std::mutex>& lock);
   Status CheckWritable() const;
   Status GetFromMemTableAt(const Slice& key,
                            uint64_t read_seq,
@@ -165,14 +169,31 @@ class DBImpl final : public DB, public WriteApplier {
   static std::string BuildSSTFileName(uint64_t file_number);
   static std::string BuildSSTCacheKey(const std::string& sst_file,
                                       const std::string& user_key);
-  Status CompactSSTFilesLocked();
+  struct CompactionPlan {
+    std::vector<std::string> old_files;
+    std::vector<ManifestFileMeta> old_metadata;
+    uint64_t output_file_number = 0;
+    uint32_t output_level = 1;
+  };
+
+  Status CompactSSTFiles(std::unique_lock<std::mutex>& lock);
+  Status ExecuteCompaction(const CompactionPlan& plan,
+                           std::vector<ManifestFileMeta>* output_metadata);
+  Status CommitCompaction(const CompactionPlan& plan,
+                          std::vector<ManifestFileMeta> output_metadata);
 
   DBOptions options_;
   std::string wal_path_;
   std::string wal_dir_;
   std::string sst_dir_;
   std::string manifest_path_;
-  std::vector<std::string> sst_files_;
+  struct SSTFileState {
+    std::string file_path;
+    ManifestFileMeta metadata;
+  };
+  // Path and manifest metadata move together so a file can never become
+  // detached from the range, level, or sequence information used with it.
+  std::vector<SSTFileState> sst_files_;
   Manifest manifest_;
   std::unique_ptr<MemTable> memtable_;
   struct ImmutableMemTable {
@@ -191,10 +212,17 @@ class DBImpl final : public DB, public WriteApplier {
   bool open_;
   mutable std::mutex mu_;
   mutable std::mutex wal_mu_;
+  std::condition_variable wal_sync_cv_;
+  std::atomic<uint64_t> wal_append_generation_{0};
+  uint64_t wal_synced_generation_ = 0;
+  bool wal_sync_in_progress_ = false;
+  Status wal_sync_error_;
   std::condition_variable flush_cv_;
   std::condition_variable flush_done_cv_;
+  std::condition_variable compaction_done_cv_;
   std::thread flush_thread_;
   bool shutting_down_ = false;
+  bool compaction_in_progress_ = false;
   Status background_error_;
   std::unordered_set<Transaction*> active_transactions_;
   std::unordered_map<std::string, uint64_t> latest_key_seq_;

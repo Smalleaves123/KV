@@ -216,6 +216,7 @@ read.table_cache_evictions=0
 read.table_cache_entries=0
 read.bloom_queries=0
 read.bloom_negatives=0
+read.range_prunes=0
 compaction.trigger_attempts=0
 compaction.skipped_due_snapshot=0
 compaction.skipped_due_threshold=0

@@ -2,6 +2,7 @@
 
 #include "kv/cache/cache.h"
 #include "kv/cluster/node.h"
+#include "kv/engine/db.h"
 #include "kv/raft/raft_server.h"
 
 #include <cstddef>
@@ -33,6 +34,8 @@ struct AppConfigFile {
   size_t bloom_bits_per_key = 10;
   size_t table_cache_capacity = 64;
   size_t compaction_min_input_files = 2;
+  size_t compaction_output_file_size_bytes = 64 * 1024 * 1024;
+  size_t compaction_level_max_bytes = 256 * 1024 * 1024;
   bool auto_compaction_enabled = true;
 };
 
@@ -45,6 +48,7 @@ bool ParseCachePolicyValue(const std::string& value, kv::CachePolicy* policy);
 
 std::optional<AppConfigFile> LoadConfigFile(const std::string& path,
                                             std::string* error);
+kv::DBOptions BuildDBOptions(const AppConfigFile& config);
 
 std::unordered_map<uint64_t, kv::RaftConfig::Peer> ParsePeers(const std::string& value);
 std::vector<uint64_t> ParseRaftMembers(const std::string& value);

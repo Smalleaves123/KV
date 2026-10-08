@@ -14,6 +14,10 @@ TableCache::TableCache(size_t max_open_files)
 
 Status TableCache::Get(const std::string& file_path,
                        std::shared_ptr<const TableReader>* out) {
+  if (out == nullptr) {
+    return Status::InvalidArgument("table cache output is null");
+  }
+  std::lock_guard<std::mutex> lock(mu_);
   auto it = map_.find(file_path);
   if (it != map_.end()) {
     // Move to front of LRU
@@ -43,6 +47,7 @@ Status TableCache::Get(const std::string& file_path,
 }
 
 void TableCache::Evict(const std::string& file_path) {
+  std::lock_guard<std::mutex> lock(mu_);
   auto it = map_.find(file_path);
   if (it == map_.end()) return;
 
@@ -51,15 +56,18 @@ void TableCache::Evict(const std::string& file_path) {
 }
 
 void TableCache::Clear() {
+  std::lock_guard<std::mutex> lock(mu_);
   lru_.clear();
   map_.clear();
 }
 
 size_t TableCache::Size() const noexcept {
+  std::lock_guard<std::mutex> lock(mu_);
   return map_.size();
 }
 
 TableCacheStats TableCache::Stats() const noexcept {
+  std::lock_guard<std::mutex> lock(mu_);
   TableCacheStats stats;
   stats.hit = hits_;
   stats.miss = misses_;

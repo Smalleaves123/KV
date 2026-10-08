@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -35,9 +36,10 @@ class TableReader {
              std::string* value) const;
   Status Get(const std::string& target, uint64_t read_seq, uint8_t* type,
              std::string* value, TableReadStatsDelta* stats) const;
+  // If a visible value or tombstone is found, also set *sequence when supplied.
   Status Get(const std::string& target, uint64_t read_seq, uint8_t* type,
              std::string* value, uint64_t* expires_at_ms,
-             TableReadStatsDelta* stats) const;
+             TableReadStatsDelta* stats, uint64_t* sequence = nullptr) const;
 
   // Maximum sequence number in this file.
   uint64_t MaxSequence() const noexcept { return max_seq_; }
@@ -65,6 +67,7 @@ class TableReader {
 
   std::string file_path_;
   mutable std::ifstream file_;
+  mutable std::mutex file_mutex_;
   std::vector<IndexEntry> index_;
   std::string filter_data_;
   FilterBlockReader filter_;
@@ -83,6 +86,9 @@ class TableIterator {
   void Seek(const std::string& target);
   void Next();
   bool Valid() const noexcept;
+  // If iteration stopped because a data block could not be read or verified,
+  // expose that error instead of silently treating it as end of file.
+  const Status& status() const noexcept { return status_; }
 
   const std::string& key() const noexcept;
   uint64_t seq() const noexcept;
@@ -107,6 +113,7 @@ class TableIterator {
   std::string current_value_;
   uint64_t current_expires_at_ms_;
   bool valid_;
+  Status status_;
 };
 
 }  // namespace kv

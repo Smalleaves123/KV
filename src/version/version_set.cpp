@@ -25,12 +25,7 @@ Status VersionSet::RecoverFromManifest(Manifest* manifest) {
 
   current_ = Version();
   for (const auto& f : files) {
-    FileMeta meta;
-    meta.file_number = f.file_number;
-    meta.file_path = f.file_path;
-    meta.max_seq = f.max_seq;
-    meta.file_size = 0;
-    current_.AddFile(meta);
+    current_.AddFile(f);
   }
   return Status::OK();
 }

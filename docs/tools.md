@@ -203,6 +203,15 @@ Recovers and prints manifest file metadata:
 ./build/apps/kv_admin manifest-dump data/db
 ```
 
+Each live-file record includes `file_number`, `max_seq`, `level`, `file_size`
+and `path`. Known key bounds are printed as `smallest_key_hex` and
+`largest_key_hex`, using lowercase hexadecimal so binary keys remain printable.
+For example, the range `alpha` through `omega` appears as
+`smallest_key_hex=616c706861 largest_key_hex=6f6d656761`.
+
+Legacy records display `level=0 file_size=0 key_range=unknown`; zero size means
+the size was not recorded. See [SSTable metadata and compatibility](sstable.md#file-metadata).
+
 ## Simple TCP Check
 
 With the server running:

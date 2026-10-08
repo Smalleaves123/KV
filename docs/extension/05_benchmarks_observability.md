@@ -159,6 +159,7 @@ Suggested report:
     "cache_misses": 0,
     "bloom_queries": 0,
     "bloom_negatives": 0,
+    "range_prunes": 0,
     "compactions": 0
   }
 }
