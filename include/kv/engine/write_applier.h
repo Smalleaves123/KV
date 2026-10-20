@@ -17,6 +17,10 @@ public:
 
   virtual Status ApplyPut(const std::string& key, const std::string& value) = 0;
   virtual Status ApplyDelete(const std::string& key) = 0;
+  // Used by the leader to evaluate a conditional write after draining its log.
+  virtual Status KeyExists(const std::string&, bool*) {
+    return Status::InvalidArgument("state machine does not support conditional writes");
+  }
   virtual Status ApplyPutWithExpiry(const std::string& key,
                                     const std::string& value,
                                     uint64_t expires_at_ms) {

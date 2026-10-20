@@ -43,6 +43,7 @@ Supported through the server wrapper:
 - `GET`
 - `DEL`
 - `SET key value EX seconds` / `PX milliseconds`
+- `SET key value NX [EX seconds / PX milliseconds]`
 - `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, and `PERSIST`
 - `INFO`
 - `STATS`
@@ -57,6 +58,13 @@ and `PERSIST` carry the current payload as well as the updated expiry, so a
 lagging replica can apply them even after its old local value was reclaimed.
 The server adapter serializes client writes with renewal/persist requests to
 avoid overwriting a concurrent replacement with a previously read payload.
+
+Conditional `SET NX` requests share the Raft proposal lock across adapter
+instances. After a committed read barrier, the leader checks that every prior
+log entry has been applied, evaluates absence, and appends the accepted value
+under that lock. Followers apply the decided value with its absolute expiry;
+they do not reevaluate absence against their local expiry or cleanup timing.
+See [Idempotency](idempotency.md) for examples and application boundaries.
 
 ## Configuration
 

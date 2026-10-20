@@ -1,5 +1,9 @@
 #include "kv/raft/raft_server.h"
 
+#include "kv/common/time.h"
+#include "kv/raft/raft_rpc_codec.h"
+#include "kv/raft/raft_storage_impl.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -7,9 +11,6 @@
 #include <fstream>
 #include <limits>
 #include <thread>
-
-#include "kv/raft/raft_rpc_codec.h"
-#include "kv/raft/raft_storage_impl.h"
 
 namespace kv {
 
@@ -329,7 +330,71 @@ Status RaftServer::Propose(const std::string& cmd) {
   if (!propose_status.ok()) return propose_status;
   Status persist_status = PersistHardState();
   if (!persist_status.ok()) return persist_status;
+  return WaitForApply(index);
+}
 
+Status RaftServer::ProposePutIfAbsent(const std::string& key, const std::string& value,
+                                      int64_t ttl_ms, bool* inserted) {
+  if (inserted == nullptr) {
+    return Status::InvalidArgument("inserted output pointer is null");
+  }
+  *inserted = false;
+  if (ttl_ms < 0)
+    return Status::InvalidArgument("ttl must not be negative");
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < deadline) {
+    uint64_t term = 0;
+    {
+      std::lock_guard<std::mutex> lock(raft_mu_);
+      term = raft_node_->current_term();
+    }
+    Status s = LinearizableReadBarrier();
+    if (!s.ok())
+      return s;
+
+    uint64_t index = 0;
+    {
+      std::lock_guard<std::mutex> lock(raft_mu_);
+      if (!running_.load())
+        return Status::IOError("raft server not running");
+      if (raft_node_->role() != raft::RaftRole::kLeader) {
+        return Status::AlreadyExists("not the leader");
+      }
+      // A concurrent proposal may have arrived after the barrier. Drain it
+      // before deciding; no writer can append between this check and Propose.
+      if (raft_node_->current_term() != term ||
+          last_applied_ != raft_node_->last_log_index()) {
+        continue;
+      }
+      bool exists = false;
+      s = applier_->KeyExists(key, &exists);
+      if (!s.ok() || exists)
+        return s;
+
+      uint64_t expires_at_ms = 0;
+      s = ExpiryFromTTL(ttl_ms, &expires_at_ms);
+      if (!s.ok())
+        return s;
+      // Replicate the leader's decision, not a TTL-sensitive condition that a
+      // delayed follower could evaluate differently after local reclamation.
+      s = raft_node_->Propose(raft::EncodePutWithExpiryCmd(key, value, expires_at_ms),
+                              &index);
+    }
+    if (!s.ok())
+      return s;
+    s = PersistHardState();
+    if (!s.ok())
+      return s;
+    s = WaitForApply(index);
+    if (s.ok())
+      *inserted = true;
+    return s;
+  }
+  return Status::IOError("timed out ordering conditional raft write");
+}
+
+Status RaftServer::WaitForApply(uint64_t index) {
   std::unique_lock<std::mutex> lk(apply_mu_);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   const bool applied = apply_cv_.wait_until(lk, deadline, [this, index]() {

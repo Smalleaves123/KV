@@ -39,6 +39,14 @@ engine into a more complete storage-system project.
   SST expiry cleanup support the session-storage use case.
 - See [Session storage](session_storage.md) for the first business example.
 
+### Request Deduplication
+
+- Atomic `DB::PutIfAbsent` and `SET NX [EX/PX]` support request acceptance and
+  duplicate suppression with persistent or expiring claims.
+- Local and Raft-backed writes preserve the first accepted payload and deadline.
+- See [Idempotency](idempotency.md) for examples and the external-work boundary.
+- Ownership-checked completion and an application workflow remain future work.
+
 ### WAL
 
 - WAL segment rotation.

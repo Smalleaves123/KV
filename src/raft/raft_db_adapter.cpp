@@ -44,6 +44,13 @@ Status RaftDBAdapter::Put(const WriteOptions& options, const Slice& key,
                                      expires_at_ms));
 }
 
+Status RaftDBAdapter::PutIfAbsent(const WriteOptions& options, const Slice& key,
+                                  const Slice& value, bool* inserted) {
+  std::lock_guard<std::mutex> lock(write_mutex_);
+  return raft_->ProposePutIfAbsent(key.ToString(), value.ToString(), options.ttl_ms,
+                                   inserted);
+}
+
 Status RaftDBAdapter::Get(const ReadOptions& options, const Slice& key,
                           std::string* value) {
   if (!raft_->IsLeader()) {

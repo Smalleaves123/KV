@@ -331,6 +331,20 @@ Status DBImpl::Init() {
 Status DBImpl::Put(const WriteOptions& options,
                    const Slice& key,
                    const Slice& value) {
+  return PutImpl(options, key, value, nullptr);
+}
+
+Status DBImpl::PutIfAbsent(const WriteOptions& options, const Slice& key,
+                           const Slice& value, bool* inserted) {
+  if (inserted == nullptr) {
+    return Status::InvalidArgument("inserted output pointer is null");
+  }
+  *inserted = false;
+  return PutImpl(options, key, value, inserted);
+}
+
+Status DBImpl::PutImpl(const WriteOptions& options, const Slice& key,
+                       const Slice& value, bool* inserted) {
   std::unique_lock<std::mutex> lk(mu_);
 
   Status open_status = RequireOpen(open_);
@@ -347,6 +361,14 @@ Status DBImpl::Put(const WriteOptions& options,
   uint64_t expires_at_ms = 0;
   Status s = ExpiryFromTTL(options.ttl_ms, &expires_at_ms);
   if (!s.ok()) return s;
+  if (inserted != nullptr) {
+    std::string existing;
+    s = GetAtSequence(key, std::numeric_limits<uint64_t>::max(), &existing);
+    if (s.ok())
+      return Status::OK();
+    if (!s.IsNotFound())
+      return s;
+  }
   s = ApplyPutWithExpiry(seq, options, key, value, expires_at_ms);
   if (!s.ok()) {
     return s;
@@ -366,7 +388,18 @@ Status DBImpl::Put(const WriteOptions& options,
     return s;
   }
 
+  if (inserted != nullptr)
+    *inserted = true;
   return Status::OK();
+}
+
+Status DBImpl::KeyExists(const std::string& key, bool* exists) {
+  if (exists == nullptr)
+    return Status::InvalidArgument("exists output pointer is null");
+  std::string value;
+  Status s = Get(ReadOptions{}, key, &value);
+  *exists = s.ok();
+  return s.IsNotFound() ? Status::OK() : s;
 }
 
 Status DBImpl::ApplyPut(const std::string& key, const std::string& value) {

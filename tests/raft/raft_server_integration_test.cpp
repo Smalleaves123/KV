@@ -1,5 +1,14 @@
+#include "kv/common/time.h"
+#include "kv/engine/db.h"
+#include "kv/engine/write_applier.h"
+#include "kv/net/session.h"
+#include "kv/raft/raft_db_adapter.h"
+#include "kv/raft/raft_rpc_codec.h"
 #include "kv/raft/raft_server.h"
 
+#include "gtest/gtest.h"
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -7,14 +16,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-#include "gtest/gtest.h"
-#include "kv/engine/db.h"
-#include "kv/engine/write_applier.h"
-#include "kv/common/time.h"
-#include "kv/raft/raft_rpc_codec.h"
-#include "kv/raft/raft_db_adapter.h"
-#include "kv/net/session.h"
 
 namespace kv {
 namespace {
@@ -222,6 +223,223 @@ TEST_F(RaftServerIntegrationTest, LeaderReplicatesCommittedWriteToAllNodes) {
     std::string value;
     EXPECT_TRUE(node.db->Get(ReadOptions{}, "ttl-key", &value).IsNotFound());
   }
+}
+
+TEST_F(RaftServerIntegrationTest,
+       ConcurrentIdempotencyClaimsAcrossAdaptersHaveOneWinner) {
+  TestNode* leader = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&] {
+        for (auto& node : nodes_) {
+          if (node.raft->IsLeader()) {
+            leader = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  constexpr size_t kClients = 8;
+  std::array<Status, kClients> statuses;
+  std::array<bool, kClients> inserted{};
+  std::array<std::thread, kClients> threads;
+  std::atomic<bool> start{false};
+  for (size_t i = 0; i < kClients; ++i) {
+    threads[i] = std::thread([&, i] {
+      RaftDBAdapter adapter(leader->db.get(), leader->raft.get());
+      WriteOptions write;
+      write.ttl_ms = 60000;
+      while (!start.load())
+        std::this_thread::yield();
+      statuses[i] =
+          adapter.PutIfAbsent(write, "idem:request", std::to_string(i), &inserted[i]);
+    });
+  }
+  start.store(true);
+  for (auto& thread : threads)
+    thread.join();
+  size_t winners = 0;
+  std::string winner;
+  for (size_t i = 0; i < kClients; ++i) {
+    ASSERT_TRUE(statuses[i].ok()) << statuses[i].ToString();
+    if (inserted[i]) {
+      ++winners;
+      winner = std::to_string(i);
+    }
+  }
+  EXPECT_EQ(winners, 1U);
+  ASSERT_TRUE(WaitUntil(
+      [&] {
+        for (auto& node : nodes_) {
+          std::string value;
+          if (!node.db->Get(ReadOptions{}, "idem:request", &value).ok() ||
+              value != winner)
+            return false;
+        }
+        return true;
+      },
+      std::chrono::seconds(5)));
+}
+
+TEST_F(RaftServerIntegrationTest,
+       IdempotencyDoesNotOverwriteConcurrentOrdinaryProposals) {
+  TestNode* leader = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&] {
+        for (auto& node : nodes_) {
+          if (node.raft->IsLeader()) {
+            leader = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  constexpr size_t kKeys = 6;
+  std::array<Status, kKeys * 2> statuses;
+  std::array<bool, kKeys> inserted{};
+  std::array<std::thread, kKeys * 2> threads;
+  std::atomic<bool> start{false};
+  for (size_t i = 0; i < kKeys; ++i) {
+    threads[i * 2] = std::thread([&, i] {
+      while (!start.load())
+        std::this_thread::yield();
+      statuses[i * 2] = leader->raft->Propose(
+          raft::EncodePutCmd("idem:mixed:" + std::to_string(i), "ordinary"));
+    });
+    threads[i * 2 + 1] = std::thread([&, i] {
+      RaftDBAdapter adapter(leader->db.get(), leader->raft.get());
+      while (!start.load())
+        std::this_thread::yield();
+      statuses[i * 2 + 1] =
+          adapter.PutIfAbsent(WriteOptions{}, "idem:mixed:" + std::to_string(i),
+                              "conditional", &inserted[i]);
+    });
+  }
+  start.store(true);
+  for (auto& thread : threads)
+    thread.join();
+  for (const auto& status : statuses)
+    ASSERT_TRUE(status.ok()) << status.ToString();
+  // If NX comes first, ordinary SET replaces it. If SET comes first, NX fails.
+  // In either legal ordering the final payload must be the ordinary value.
+  ASSERT_TRUE(WaitUntil(
+      [&] {
+        for (auto& node : nodes_) {
+          for (size_t i = 0; i < kKeys; ++i) {
+            std::string value;
+            if (!node.db->Get(ReadOptions{}, "idem:mixed:" + std::to_string(i), &value)
+                     .ok() ||
+                value != "ordinary")
+              return false;
+          }
+        }
+        return true;
+      },
+      std::chrono::seconds(5)));
+}
+
+TEST_F(RaftServerIntegrationTest, IdempotencyClaimSurvivesClusterRestart) {
+  TestNode* leader = nullptr;
+  const auto find_leader = [&] {
+    for (auto& node : nodes_) {
+      if (node.raft->IsLeader()) {
+        leader = &node;
+        return true;
+      }
+    }
+    return false;
+  };
+  ASSERT_TRUE(WaitUntil(find_leader, std::chrono::seconds(5)));
+  WriteOptions write;
+  write.ttl_ms = 60000;
+  bool inserted = false;
+  ASSERT_TRUE(
+      leader->raft
+          ->ProposePutIfAbsent("idem:request", "accepted", write.ttl_ms, &inserted)
+          .ok());
+  ASSERT_TRUE(inserted);
+  for (auto& node : nodes_) {
+    ASSERT_TRUE(node.raft->Stop().ok());
+    node.raft.reset();
+    ASSERT_TRUE(node.db->Close().ok());
+    node.db.reset();
+  }
+  for (auto& node : nodes_) {
+    ASSERT_TRUE(DB::Open(node.db_options, &node.db).ok());
+    ASSERT_TRUE(StartNode(&node).ok());
+  }
+  leader = nullptr;
+  ASSERT_TRUE(WaitUntil(find_leader, std::chrono::seconds(5)));
+  RaftDBAdapter adapter(leader->db.get(), leader->raft.get());
+  net::Session session(&adapter, nullptr, "", leader->raft.get());
+  EXPECT_EQ(session.HandleLine("SET idem:request duplicate NX EX 120"), "$-1\r\n");
+  EXPECT_EQ(session.HandleLine("GET idem:request"), "$8\r\naccepted\r\n");
+  int64_t ttl = 0;
+  ASSERT_TRUE(adapter.PTTL(ReadOptions{}, "idem:request", &ttl).ok());
+  EXPECT_GT(ttl, 0);
+  EXPECT_LE(ttl, 60000);
+}
+
+TEST_F(RaftServerIntegrationTest, IdempotencyReuseCatchesUpAReclaimedFollower) {
+  TestNode* leader = nullptr;
+  ASSERT_TRUE(WaitUntil(
+      [&] {
+        for (auto& node : nodes_) {
+          if (node.raft->IsLeader()) {
+            leader = &node;
+            return true;
+          }
+        }
+        return false;
+      },
+      std::chrono::seconds(5)));
+  RaftDBAdapter adapter(leader->db.get(), leader->raft.get());
+  WriteOptions write;
+  write.ttl_ms = 2000;
+  bool inserted = false;
+  ASSERT_TRUE(adapter.PutIfAbsent(write, "idem:request", "old", &inserted).ok());
+  ASSERT_TRUE(inserted);
+  ASSERT_TRUE(WaitUntil(
+      [&] {
+        for (auto& node : nodes_) {
+          std::string value;
+          if (!node.db->Get(ReadOptions{}, "idem:request", &value).ok())
+            return false;
+        }
+        return true;
+      },
+      std::chrono::seconds(5)));
+  TestNode* follower = nullptr;
+  for (auto& node : nodes_) {
+    if (&node != leader) {
+      follower = &node;
+      break;
+    }
+  }
+  ASSERT_NE(follower, nullptr);
+  ASSERT_TRUE(follower->raft->Stop().ok());
+  follower->raft.reset();
+  ASSERT_TRUE(WaitUntil(
+      [&] {
+        CompactionStats stats;
+        return follower->db->GetCompactionStats(&stats).ok() && stats.succeeded > 0;
+      },
+      std::chrono::seconds(5)));
+  ASSERT_TRUE(std::filesystem::is_empty(follower->db_options.db_path + "/sst"));
+  write.ttl_ms = 60000;
+  ASSERT_TRUE(adapter.PutIfAbsent(write, "idem:request", "new", &inserted).ok());
+  EXPECT_TRUE(inserted);
+  ASSERT_TRUE(adapter.PutIfAbsent(write, "idem:request", "duplicate", &inserted).ok());
+  EXPECT_FALSE(inserted);
+  ASSERT_TRUE(StartNode(follower).ok());
+  ASSERT_TRUE(WaitUntil(
+      [&] {
+        std::string value;
+        return follower->db->Get(ReadOptions{}, "idem:request", &value).ok() &&
+               value == "new";
+      },
+      std::chrono::seconds(5)));
 }
 
 TEST_F(RaftServerIntegrationTest, RestartedFollowerCatchesUpCommittedWrite) {

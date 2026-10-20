@@ -40,6 +40,9 @@ class DBImpl final : public DB, public WriteApplier {
              const Slice& key,
              const Slice& value) override;
 
+  Status PutIfAbsent(const WriteOptions& options, const Slice& key, const Slice& value,
+                     bool* inserted) override;
+
   Status Get(const ReadOptions& options,
              const Slice& key,
              std::string* value) override;
@@ -91,6 +94,7 @@ class DBImpl final : public DB, public WriteApplier {
   Status ApplyPut(const std::string& key,
                   const std::string& value) override;
   Status ApplyDelete(const std::string& key) override;
+  Status KeyExists(const std::string& key, bool* exists) override;
   Status ApplyPutWithExpiry(const std::string& key, const std::string& value,
                             uint64_t expires_at_ms) override;
   Status ApplyExpireAt(const std::string& key,
@@ -154,6 +158,8 @@ class DBImpl final : public DB, public WriteApplier {
   Status LoadSSTFilesFromManifest(uint64_t* max_seq);
   Status LoadSSTFilesFromDir(uint64_t* max_seq);
   Status RebuildLatestKeySeqIndex();
+  Status PutImpl(const WriteOptions& options, const Slice& key, const Slice& value,
+                 bool* inserted);
   void UpdateKeyExpiry(const std::string& key, uint64_t expires_at_ms,
                        uint64_t seq);
   bool HasExpiredKeys() const;

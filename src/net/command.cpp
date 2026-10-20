@@ -201,15 +201,24 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
     }
 
     case CommandType::kSet: {
-      if (cmd.args.size() != 2 && cmd.args.size() != 4) {
+      if (cmd.args.size() < 2) {
         return Error("wrong number of arguments for 'SET'");
       }
       WriteOptions options;
-      if (cmd.args.size() == 4) {
-        const std::string unit = ToUpper(cmd.args[2]);
-        if (unit != "EX" && unit != "PX") return Error("syntax error");
+      bool only_if_absent = false;
+      bool has_expiry = false;
+      for (size_t i = 2; i < cmd.args.size(); ++i) {
+        const std::string unit = ToUpper(cmd.args[i]);
+        if (unit == "NX" && !only_if_absent) {
+          only_if_absent = true;
+          continue;
+        }
+        if ((unit != "EX" && unit != "PX") || has_expiry || i + 1 == cmd.args.size()) {
+          return Error("syntax error");
+        }
+        has_expiry = true;
         int64_t ttl = 0;
-        if (!ParseInt64(cmd.args[3], &ttl) || ttl <= 0) {
+        if (!ParseInt64(cmd.args[++i], &ttl) || ttl <= 0) {
           return Error("invalid expire time in 'SET'");
         }
         if (unit == "EX") {
@@ -219,9 +228,12 @@ std::string CommandExecutor::Execute(const Command& cmd) const {
           options.ttl_ms = ttl;
         }
       }
-      Status s = db_->Put(options, cmd.args[0], cmd.args[1]);
+      bool inserted = true;
+      Status s = only_if_absent
+                     ? db_->PutIfAbsent(options, cmd.args[0], cmd.args[1], &inserted)
+                     : db_->Put(options, cmd.args[0], cmd.args[1]);
       if (!s.ok()) return Error(s.ToString());
-      return SimpleString("OK");
+      return inserted ? SimpleString("OK") : Nil();
     }
 
     case CommandType::kDel: {

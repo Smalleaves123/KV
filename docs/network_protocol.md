@@ -79,17 +79,25 @@ Response:
 SET key value
 SET key value EX seconds
 SET key value PX milliseconds
+SET key value NX
+SET key value NX EX seconds
+SET key value PX milliseconds NX
 ```
 
 Writes a key. `EX` and `PX` atomically store the value and its data-level expiry
 in one write. Durations must be positive integers; malformed or overflowing
 durations leave the key unchanged. A plain `SET` clears any existing expiry.
-The expiry forms are available outside `BEGIN`/`EXEC` transactions.
+`NX` writes only if the key is missing, deleted, or expired; a live key returns
+nil without changing its payload or expiry. `NX` can precede or follow the
+expiry option. Repeated options and unsupported flags are rejected before
+writing. `SET` options are available outside `BEGIN`/`EXEC` transactions.
+See [Idempotency](idempotency.md) for request deduplication examples.
 
 Response:
 
 ```text
 +OK\r\n
+$-1\r\n                 NX condition was not met
 ```
 
 ### GET
@@ -334,6 +342,8 @@ fixed `command` label (`INVALID`, `PING`, `GET`, `SET`, `DEL`, `EXPIRE`, `PEXPIR
 When Raft is enabled:
 
 - writes are proposed through Raft and must be sent to the leader;
+- `SET NX` checks absence on the leader after draining prior log entries, then
+  appends the accepted write under the same lock used for ordinary proposals;
 - `SET EX/PX`, renewal, and `PERSIST` replicate the value and its absolute expiry
   together, allowing a lagging replica to restore a reclaimed session;
 - expiry timestamps are computed by the leader before proposal so replicas do

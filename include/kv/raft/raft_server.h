@@ -89,6 +89,10 @@ class RaftServer {
   // Propose a write command through Raft. Only valid on the leader.
   // cmd format: "S" + key (or "D" + key for delete)
   Status Propose(const std::string& cmd);
+  // The leader checks absence with no unapplied log entries, then appends the
+  // decided write under raft_mu_. Followers apply an ordinary absolute-TTL Put.
+  Status ProposePutIfAbsent(const std::string& key, const std::string& value,
+                            int64_t ttl_ms, bool* inserted);
   Status LinearizableReadBarrier();
 
   // Commit one membership change through the current quorum. The address book
@@ -116,6 +120,7 @@ class RaftServer {
   // Apply committed entries to the DB
   void ApplyCommitted();
   Status PersistHardState();
+  Status WaitForApply(uint64_t index);
   Status RecoverSnapshotOnStart();
   Status ApplyMembership(const std::vector<uint64_t>& members);
 

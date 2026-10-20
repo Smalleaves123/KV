@@ -140,6 +140,11 @@ class DB {
                      const Slice& key,
                      const Slice& value) = 0;
 
+  // Atomically write only if the key is missing or expired. On success,
+  // inserted reports whether the value was written; a rejected write keeps TTL.
+  virtual Status PutIfAbsent(const WriteOptions& options, const Slice& key,
+                             const Slice& value, bool* inserted) = 0;
+
   virtual Status Get(const ReadOptions& options,
                      const Slice& key,
                      std::string* value) = 0;

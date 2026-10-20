@@ -20,6 +20,8 @@ public:
 
   Status Put(const WriteOptions& options, const Slice& key,
              const Slice& value) override;
+  Status PutIfAbsent(const WriteOptions& options, const Slice& key, const Slice& value,
+                     bool* inserted) override;
   Status Get(const ReadOptions& options, const Slice& key, std::string* value) override;
   Status Delete(const WriteOptions& options, const Slice& key) override;
   Status Expire(const WriteOptions& options, const Slice& key,

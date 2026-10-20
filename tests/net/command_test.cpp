@@ -159,9 +159,55 @@ TEST(SessionTest, ExpiringSetIsRejectedInsideTransactionWithoutWriting) {
   Session session(db.get());
   ASSERT_EQ(session.HandleLine("BEGIN"), "+OK\r\n");
   EXPECT_EQ(session.HandleLine("SET session payload PX 1000"),
-            "-ERRSET with expiry is not supported in transactions\r\n");
+            "-ERRSET options are not supported in transactions\r\n");
   EXPECT_EQ(session.HandleLine("EXEC"), "+OK\r\n");
   EXPECT_EQ(session.HandleLine("GET session"), "$-1\r\n");
+}
+
+TEST(SessionTest, IdempotencyClaimsSupportNXBeforeOrAfterExpiry) {
+  auto db = OpenDBForTest("idempotency_commands");
+  Session session(db.get());
+  EXPECT_EQ(session.HandleLine("SET idem:request accepted NX EX 60"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("SET idem:request duplicate PX 120000 nx"), "$-1\r\n");
+  EXPECT_EQ(session.HandleLine("GET idem:request"), "$8\r\naccepted\r\n");
+  int64_t ttl = 0;
+  ASSERT_TRUE(db->PTTL(ReadOptions{}, "idem:request", &ttl).ok());
+  EXPECT_GT(ttl, 0);
+  EXPECT_LE(ttl, 60000);
+  EXPECT_EQ(session.HandleLine("SET idem:persistent accepted NX"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("SET idem:persistent duplicate NX"), "$-1\r\n");
+  EXPECT_EQ(session.HandleLine("PTTL idem:persistent"), ":-1\r\n");
+  EXPECT_EQ(session.HandleLine("DEL idem:request"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("SET idem:request again PX 60000 NX"), "+OK\r\n");
+}
+
+TEST(SessionTest, InvalidIdempotencyOptionsDoNotModifyExistingData) {
+  auto db = OpenDBForTest("idempotency_invalid_commands");
+  Session session(db.get());
+  ASSERT_EQ(session.HandleLine("SET idem:request accepted"), "+OK\r\n");
+  for (const auto& command :
+       {"SET idem:request duplicate NX NX", "SET idem:request duplicate NX XX",
+        "SET idem:request duplicate NX EX", "SET idem:request duplicate EX 1 PX 2 NX",
+        "SET idem:request duplicate NX PX 0", "SET idem:request duplicate NX EX -1",
+        "SET idem:request duplicate NX PX 9223372036854775808",
+        "SET idem:request duplicate NX EX 9223372036854775807",
+        "SET idem:request duplicate NX unexpected"}) {
+    EXPECT_EQ(session.HandleLine(command).front(), '-') << command;
+    EXPECT_EQ(session.HandleLine("GET idem:request"), "$8\r\naccepted\r\n");
+    EXPECT_EQ(session.HandleLine("PTTL idem:request"), ":-1\r\n");
+  }
+}
+
+TEST(SessionTest, IdempotencyOptionsAreRejectedInsideTransactions) {
+  auto db = OpenDBForTest("idempotency_transaction");
+  Session session(db.get());
+  ASSERT_EQ(session.HandleLine("BEGIN"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("SET idem:request accepted NX PX 60000"),
+            "-ERRSET options are not supported in transactions\r\n");
+  EXPECT_EQ(session.HandleLine("SET idem:request accepted NX"),
+            "-ERRSET options are not supported in transactions\r\n");
+  EXPECT_EQ(session.HandleLine("EXEC"), "+OK\r\n");
+  EXPECT_EQ(session.HandleLine("GET idem:request"), "$-1\r\n");
 }
 
 TEST(CommandExecutorTest, DataTTLCommands) {

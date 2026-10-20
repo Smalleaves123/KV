@@ -238,6 +238,30 @@ class ServerIntegrationTest : public ::testing::Test {
   Status last_status_ = Status::OK();
 };
 
+TEST_F(ServerIntegrationTest, RespIdempotencyPreservesBinaryPayload) {
+  if (!started_)
+    GTEST_SKIP() << last_status_.ToString();
+  const auto fd = ConnectWithRetry(port_);
+  ASSERT_TRUE(platform::IsValidSocket(fd));
+  struct SocketGuard {
+    platform::SocketHandle fd;
+    ~SocketGuard() { (void)platform::CloseSocket(fd); }
+  } socket_guard{fd};
+  const std::string payload("a\0 b", 4);
+  const std::string request = "*6\r\n$3\r\nSET\r\n$12\r\nidem:request\r\n$4\r\n" +
+                              payload + "\r\n$2\r\nNX\r\n$2\r\nPX\r\n$5\r\n60000\r\n";
+  std::string response;
+  ASSERT_TRUE(SendRaw(fd, request));
+  ASSERT_TRUE(ReadResp(fd, &response));
+  EXPECT_EQ(response, "+OK\r\n");
+  ASSERT_TRUE(SendLine(fd, "SET idem:request duplicate NX EX 60"));
+  ASSERT_TRUE(ReadResp(fd, &response));
+  EXPECT_EQ(response, "$-1\r\n");
+  ASSERT_TRUE(SendLine(fd, "GET idem:request"));
+  ASSERT_TRUE(ReadResp(fd, &response));
+  EXPECT_EQ(response, "$4\r\n" + payload + "\r\n");
+}
+
 TEST_F(ServerIntegrationTest, EndToEndCommandFlow) {
   if (!started_) {
     GTEST_SKIP() << "server failed to start in test environment: "

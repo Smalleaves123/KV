@@ -34,6 +34,8 @@ production database.
 
 For a session creation, lookup, renewal, and revocation walkthrough, see
 [Session storage](docs/session_storage.md).
+For atomic request acceptance and retry deduplication, see
+[Idempotency and request deduplication](docs/idempotency.md).
 
 ## Repository Layout
 

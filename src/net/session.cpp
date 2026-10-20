@@ -254,7 +254,7 @@ std::string Session::HandleDataCommandInTxn(const Command& cmd) {
 
     case CommandType::kSet: {
       if (cmd.args.size() != 2) {
-        return Error("SET with expiry is not supported in transactions");
+        return Error("SET options are not supported in transactions");
       }
       Status s = active_txn_->Put(cmd.args[0], cmd.args[1]);
       if (!s.ok()) {
